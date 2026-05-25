@@ -118,7 +118,7 @@ See `test.py` for the minimal working example.
 | `~/gs.key` | Ground station decryption key (64B, binary) |
 | `~/drone.key` | Drone encryption key — must differ MD5 from gs.key |
 | `~/wfb-ng/wfb_rx` | WFB-NG receiver binary |
-| `~/electronic_devices/` | Full hardware setup docs (8 .md files, read README.md first) |
+| `electronic_devices/` | Full hardware setup docs (8 .md files, read README.md first) |
 
 ## Key Gotcha — WFB Keys
 
