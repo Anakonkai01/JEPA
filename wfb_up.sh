@@ -5,10 +5,12 @@
 
 set -e
 
-# Find RTL8812AU interface by USB ID (0bda:8812)
+# Find RTL8812AU interface by USB vendor:product ID (0bda:8812)
 IFACE=$(for dev in /sys/class/net/*/; do
     iface=$(basename "$dev")
-    if readlink -f "$dev/device" 2>/dev/null | grep -q "0bda:8812\|0BDA:8812"; then
+    vendor=$(cat "$dev/device/../idVendor" 2>/dev/null)
+    product=$(cat "$dev/device/../idProduct" 2>/dev/null)
+    if [ "$vendor" = "0bda" ] && [ "$product" = "8812" ]; then
         echo "$iface"; break
     fi
 done)
@@ -27,5 +29,5 @@ sudo iw "$IFACE" set channel 161 HT20
 echo "      $(iw "$IFACE" info | grep -E 'type|channel' | tr -d '\t')"
 
 echo "[2/2] Starting wfb_rx (Ctrl+C to stop)..."
-sudo /home/anakonkai/wfb-ng/wfb_rx \
-    -p 0 -u 5600 -K /home/anakonkai/gs.key -i 7669206 "$IFACE"
+sudo "$HOME/wfb-ng/wfb_rx" \
+    -p 0 -u 5600 -K "$HOME/gs.key" -i 7669206 "$IFACE"

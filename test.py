@@ -4,7 +4,7 @@ import cv2
 from datetime import datetime
 
 W, H = 1280, 720
-SDP = "/home/anakonkai/runcam.sdp"
+SDP = "/home/pc5070ti/runcam.sdp"
 
 # ffmpeg: decode RTP/H.265 stream → raw BGR frames at 30fps
 proc = subprocess.Popen([

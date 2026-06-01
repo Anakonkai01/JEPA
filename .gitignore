@@ -1,2 +1,23 @@
+# IDE
 .vscode/
+
+# Data & model weights (quá lớn cho git)
+data/
+checkpoints/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+
+# Media
 *.mp4
+*.avi
+
+# Secrets / keys
+*.key
+drone.key
+gs.key*
+
+# Conda / venv
+.env

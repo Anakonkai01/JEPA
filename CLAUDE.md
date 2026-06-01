@@ -10,7 +10,7 @@ Freeze V-JEPA 2.1 encoder (pretrained ViT-L), train only a small AC Predictor (~
 
 Novel contribution: first evaluation of V-JEPA 2 family on a mobile robot — Meta only tested on robot arms.
 
-Deadline: 2026-06-25.
+Deadline: 2026-06-15.
 
 ## System Architecture
 
@@ -24,8 +24,8 @@ Deadline: 2026-06-25.
                                                                       → CEM planner
                                                                       → UDP 2 bytes
                                                                     [ESP32-S3 @ 192.168.1.23]
-                                                                      → SG90 servo (steering)
-                                                                      → ESC New Rain 320A (throttle)
+                                                                      → KDS N680 HV servo (steering, GPIO 5)
+                                                                      → Hobbywing QuicRun 8BL150 ESC (throttle, GPIO 6)
 ```
 
 ## Training Pipeline
@@ -48,9 +48,10 @@ Critical optimization: pre-encode the entire dataset through V-JEPA offline (onc
 | RX radio | RTL8812AU USB adapter as `wlan1`, driver: `88XXau_wfb` (DKMS) |
 | WFB link | ch161 (5805MHz) HT20, link_id=7669206, radio_port=0, key=`~/gs.key` |
 | Compute | Arch Linux, kernel 7.0.3, RTX 5070 Ti |
-| Controller | ESP32-S3 WROOM 16MB/8MB, IP 192.168.1.23 |
-| Servo | SG90, PWM 1000–2000µs |
-| ESC | New Rain 320A, PWM 1000–2000µs |
+| Controller | ESP32-S3 WROOM N16R8 (16MB flash, 8MB PSRAM), IP 192.168.1.23 |
+| Servo | KDS N680 HV Metal Gear Digital, 6.0–8.4V, GPIO 5, calibrated 1142–1880µs |
+| ESC | Hobbywing QuicRun WP 8BL150, 150A brushless, GPIO 6, 1000–2000µs |
+| Power | 20V drill battery → ESC; BEC 6V/3A → Servo; ESP32 from separate 5V |
 
 ## Daily Startup Commands
 
@@ -82,11 +83,12 @@ python test.py
 ## ESP32 Control Protocol
 
 2-byte UDP packet to `192.168.1.23:4210`:
-- `byte[0]`: steering (0=full left, 127=center, 255=full right)
-- `byte[1]`: throttle (0=full reverse, 127=neutral, 255=full forward)
+- `byte[0]`: steering (0=full left/1142µs, 127=center/1500µs, 255=full right/1880µs)
+- `byte[1]`: throttle (0=full reverse/1000µs, 127=neutral/1500µs, 255=full forward/2000µs)
 
-Mapping: `byte = int((value_in_[-1,1] + 1.0) / 2.0 * 255)`
-PWM range: 0→1000µs, 127→1500µs, 255→2000µs.
+Mapping from float in [-1, 1]: `byte = int((value + 1.0) / 2.0 * 255)`
+Servo PWM: `1142 + byte/255 * 738` µs (calibrated limits, see `rc-carcar/specs.md`)
+ESC PWM: `1000 + byte/255 * 1000` µs
 
 ## Video Capture Pattern
 
@@ -131,11 +133,21 @@ sshpass -p '12345' scp -O drone.key root@192.168.1.10:/etc/drone.key
 sshpass -p '12345' ssh root@192.168.1.10 '/etc/init.d/S98wifibroadcast stop && sleep 2 && /etc/init.d/S98wifibroadcast start'
 ```
 
+## Firmware (rc-carcar/)
+
+PlatformIO project, Arduino Core 3.x via pioarduino fork. Board: `esp32-s3-devkitc-1`, N16R8.
+
+Current state: Serial control firmware working (servo calibrated, ESC arms on boot).
+Next step: add WiFi + UDP server so PC can send 2-byte commands.
+
+ESC arming: output neutral (1500µs) immediately on boot, wait ~2s before accepting commands.
+Watchdog: return to neutral if no UDP packet received within 500ms.
+
 ## Development Phases
 
-See `PLAN.md` for the full 4-week roadmap. Phase status at project start:
+See `PLAN.md` for the full roadmap (deadline 2026-06-15).
 
-- **Phase 1** (Infrastructure): `src/capture.py`, `src/encoder.py`, `src/controller.py`, `firmware/`
+- **Phase 1** (Infrastructure): `rc-carcar/` firmware WiFi+UDP, `src/capture.py`, `src/encoder.py`, `src/controller.py`
 - **Phase 2** (Data): `src/recorder.py`, `src/offline_encode.py`
 - **Phase 3** (Training): `src/ac_predictor.py`, `src/train.py`, `src/baselines/`
 - **Phase 4** (Planning): `src/cem_planner.py`, `src/inference_loop.py`

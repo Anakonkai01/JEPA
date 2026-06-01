@@ -1,0 +1,14 @@
+# Core ML
+torch
+torchvision
+
+# Vision / video
+opencv-python
+numpy
+
+# Keyboard input (recorder.py)
+pynput
+
+# Utilities
+tqdm
+tensorboard
