@@ -137,11 +137,31 @@ sshpass -p '12345' ssh root@192.168.1.10 '/etc/init.d/S98wifibroadcast stop && s
 
 PlatformIO project, Arduino Core 3.x via pioarduino fork. Board: `esp32-s3-devkitc-1`, N16R8.
 
-Current state: Serial control firmware working (servo calibrated, ESC arms on boot).
-Next step: add WiFi + UDP server so PC can send 2-byte commands.
+Current state: Serial + WiFi/UDP control working. Servo calibrated, ESC arms on boot,
+static IP 192.168.1.23, watchdog 500ms (neutral on timeout).
 
 ESC arming: output neutral (1500µs) immediately on boot, wait ~2s before accepting commands.
 Watchdog: return to neutral if no UDP packet received within 500ms.
+
+### ⚠️ Outstanding firmware mismatch (2026-06-02)
+
+- **ESC physically set to Running Mode 3 (direct reverse)** via SET-button programming
+  (no program card). Hold SET while powering on → red LED ×3 = Mode 3 → power off to save.
+  Verified against official QuicRun WP 8BL150 manual.
+- **But `firmware/src/main.cpp` still implements the old Mode 2 double-tap reverse**
+  (`tickReverse`, `REV_ARM1/2`, `doReverseSerial`, byte<64 threshold). This NO LONGER
+  matches the hardware. Needs rewrite to a direct linear throttle map:
+  `esc_us = 1000 + byte[1]/255 * 1000` (0=full reverse, 127≈neutral, 255=full forward) —
+  which is what the "ESP32 Control Protocol" section above already describes.
+- **`src/controller.py` also needs updating**: its reverse branch maps `[-1,0)` → byte `[0,63]`
+  for the double-tap path. With Mode 3, use the symmetric map `byte = int((throttle+1)/2*255)`.
+
+### WiFi reachability
+
+Firmware hardcodes `WIFI_SSID "Hoang Kim"`. The ESP32 is only reachable from the PC when
+**both are on the same WiFi/router**. If `ping 192.168.1.23` fails (ARP INCOMPLETE), check
+the PC's current SSID vs the firmware SSID. The camera path (WFB-NG on `wlan1` monitor mode)
+is fully independent of this — different adapter, no IP, does not use the router.
 
 ## Development Phases
 
