@@ -4,7 +4,32 @@
 
 **Đề tài:** Action-Conditioned World Model for RC Car Navigation based on V-JEPA 2.1
 **Novel contribution:** First evaluation của V-JEPA 2 family trên mobile robot (RC car) — Meta chỉ test trên robot arm
-**Deadline: 2026-06-15** (~19 ngày từ 2026-05-27)
+**Deadline: 2026-06-15**
+
+---
+
+## Current Status (cập nhật 2026-06-03)
+
+### ✅ Đã xong & validate
+- **Phần cứng**: ESP32-S3 + FlySky FS-i6 (mod 10ch) / FS-iA10B qua **i-BUS** + servo + ESC. Verify trên bench: lùi (Mode 3), kill switch (CH9 giữa), lái đúng chiều — OK.
+- **Firmware** (`firmware/src/main.cpp`): i-BUS reader, 3 mode (CH9: RECORD/NEUTRAL/AUTO), CH10 = record on/off, **Mode-3 linear throttle**, telemetry 50Hz (packed struct), 2 watchdog (i-BUS 100ms + UDP 500ms), điều khiển LED. Servo clamp **1150–1850** (tâm đúng 1500).
+- **Pipeline thu data**: `capture.py` (ffmpeg + timestamp frame), `recorder.py` (nhận telemetry + ring buffer + **bù trễ realtime** + mask LED + log), `tools/measure_latency.py`, `tools/set_led_roi.py`.
+- **Đồng bộ latency realtime**: LED gắn cố định trong khung → tracker nháy mỗi 2s, median trượt. **Đã chứng minh cần thiết**: latency trôi 55ms ↔ 144ms giữa 2 session, tracker tự thích nghi.
+
+### ⚠️ Khác plan gốc
+- Thu data: **bỏ WASD → FlySky i-BUS** (action liên tục thật, kill switch vật lý, link 2.4GHz riêng). Steering giờ phủ đầy [−1,1] (142 mức) thay vì 3 mức rời rạc.
+- Latency: **realtime tracking** thay vì hằng số.
+
+### 🔜 Việc cần làm (ưu tiên trên xuống)
+1. **THU DATA XE CHẠY ĐẤT THẬT** — 2 session test mới chỉ kê cao (xe đứng yên, scene diff ~1.8/255 = ảnh tĩnh → **KHÔNG train được**). Cần xe di chuyển thật, ≥20 phút, đa dạng (thẳng/cua/tiến/lùi/tốc độ).
+2. Thêm đèn — frame hơi tối (64–73/255).
+3. Tắt OSD camera "Waiting for data on /dev/ttyS2" (cần cáp RJ45 + SSH `root@192.168.1.10`).
+4. `src/controller.py` — sửa map Mode-3 linear cho đường AUTO (Phase 4, **chưa làm**, vẫn còn logic double-tap cũ).
+5. Tải V-JEPA weights + `src/encoder.py` + `src/offline_encode.py`.
+6. Script cross-correlation validate latency (steering ↔ optical-flow) sau khi có session chạy đất.
+
+### 📌 Lưu ý Phase 3 (train)
+- **Chuẩn hóa thang action**: throttle ~±0.1 (do D/R remote) vs steering ±1 → rescale về cùng thang trước khi đưa vào model, kẻo model coi nhẹ throttle.
 
 ---
 

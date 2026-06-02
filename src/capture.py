@@ -6,6 +6,7 @@ Outputs BGR frames at the configured fps and resolution.
 import subprocess
 import threading
 import queue
+import time
 import numpy as np
 from pathlib import Path
 
@@ -62,12 +63,17 @@ class FrameCapture:
             self._proc = None
 
     # ------------------------------------------------------------------
-    def get_frame(self, timeout: float = 1.0) -> np.ndarray | None:
-        """Return latest BGR frame (H×W×3 uint8), or None on timeout."""
+    def get_frame_ts(self, timeout: float = 1.0):
+        """Return (BGR frame, t_read) ; (None, 0.0) on timeout.
+        t_read = thời điểm frame ra khỏi ffmpeg (cho đồng bộ latency)."""
         try:
             return self._q.get(timeout=timeout)
         except queue.Empty:
-            return None
+            return None, 0.0
+
+    def get_frame(self, timeout: float = 1.0) -> np.ndarray | None:
+        """Return latest BGR frame (H×W×3 uint8), or None on timeout."""
+        return self.get_frame_ts(timeout)[0]
 
     # ------------------------------------------------------------------
     def _reader(self):
@@ -80,6 +86,7 @@ class FrameCapture:
             if len(raw) < frame_bytes:
                 break
             frame = np.frombuffer(raw, dtype=np.uint8).reshape((self.h, self.w, 3)).copy()
+            t_read = time.time()
 
             # Drop oldest frame if queue is full (keep latency low)
             if self._q.full():
@@ -87,7 +94,7 @@ class FrameCapture:
                     self._q.get_nowait()
                 except queue.Empty:
                     pass
-            self._q.put(frame)
+            self._q.put((frame, t_read))
 
 
 # ------------------------------------------------------------------

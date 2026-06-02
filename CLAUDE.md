@@ -137,24 +137,36 @@ sshpass -p '12345' ssh root@192.168.1.10 '/etc/init.d/S98wifibroadcast stop && s
 
 PlatformIO project, Arduino Core 3.x via pioarduino fork. Board: `esp32-s3-devkitc-1`, N16R8.
 
-Current state: Serial + WiFi/UDP control working. Servo calibrated, ESC arms on boot,
-static IP 192.168.1.23, watchdog 500ms (neutral on timeout).
+Current state (2026-06-03): **FlySky i-BUS hub firmware** (`firmware/src/main.cpp`).
+Reads FS-iA10B i-BUS on `Serial1`/GPIO18 (115200, non-inverted). 3 modes via CH9
+(`<1300` RECORD / `1300–1700` NEUTRAL / `>1700` AUTO). CH10 = record on/off flag.
+Telemetry to PC @50Hz (packed struct: steering/throttle floats + ch µs + rec flag).
+ESC arms on boot (neutral ~3s). Two watchdogs: i-BUS loss >100ms → neutral; AUTO UDP
+loss >500ms → neutral. External LED on GPIO21 (+ onboard RGB) toggled by UDP 0x01/0x00
+for latency calibration. Servo safe clamp **1150–1850µs** (midpoint exactly 1500).
 
-ESC arming: output neutral (1500µs) immediately on boot, wait ~2s before accepting commands.
-Watchdog: return to neutral if no UDP packet received within 500ms.
+Channel map (FS-i6 modded 10ch): CH1=steering, CH2=throttle, CH9=mode, CH10=record.
 
-### ⚠️ Outstanding firmware mismatch (2026-06-02)
+### ✅ ESC Mode 3 — RESOLVED (was the 2026-06-02 mismatch)
 
-- **ESC physically set to Running Mode 3 (direct reverse)** via SET-button programming
-  (no program card). Hold SET while powering on → red LED ×3 = Mode 3 → power off to save.
-  Verified against official QuicRun WP 8BL150 manual.
-- **But `firmware/src/main.cpp` still implements the old Mode 2 double-tap reverse**
-  (`tickReverse`, `REV_ARM1/2`, `doReverseSerial`, byte<64 threshold). This NO LONGER
-  matches the hardware. Needs rewrite to a direct linear throttle map:
-  `esc_us = 1000 + byte[1]/255 * 1000` (0=full reverse, 127≈neutral, 255=full forward) —
-  which is what the "ESP32 Control Protocol" section above already describes.
-- **`src/controller.py` also needs updating**: its reverse branch maps `[-1,0)` → byte `[0,63]`
-  for the double-tap path. With Mode 3, use the symmetric map `byte = int((throttle+1)/2*255)`.
+ESC is physically in Running Mode 3 (direct reverse, set via SET-button: hold SET on
+power-on → red LED ×3). Firmware now uses a **direct linear throttle map**
+`esc_us = 1000 + (throttle+1)/2 * 1000` (full reverse↔neutral↔full forward); all the old
+Mode-2 double-tap code (`tickReverse`, `REV_ARM1/2`) is gone. Verified on bench.
+
+**Still pending — `src/controller.py` (AUTO/inference path, Phase 4):** its reverse branch
+still maps `[-1,0)` → byte `[0,63]` (old double-tap). For Mode 3 use the symmetric map
+`byte = int((throttle+1)/2*255)`. Not used during data collection, so deferred to Phase 4.
+
+### Data collection (FlySky, not WASD)
+
+Car is driven manually by FlySky during RECORD; `src/recorder.py` is a **passive logger**:
+receives telemetry → ring buffer → pairs each frame with the action at `t_read − latency`,
+where `latency` is measured **in realtime** by flashing the GPIO21 LED inside a fixed
+masked corner of the frame (`tools/set_led_roi.py` sets the bbox; tracker re-measures every
+~2s). `data/camera_latency.txt` is a fallback. The masked LED bbox is blacked out before
+saving so V-JEPA never sees the blinking light. Action recorded = normalized stick [−1,1]
+(remote D/R/EPA shapes it before i-BUS → recorded = actual command, fully synced).
 
 ### WiFi reachability
 
