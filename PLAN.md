@@ -71,7 +71,7 @@
 | Servo N680 HV | 50Hz | 1142µs (full left) | 1500µs | 1880µs (full right) |
 | ESC QuicRun 8BL150 | 50Hz | 1000µs (full reverse) | 1500µs | 2000µs (full forward) |
 
-Servo limits từ 5 lần thực nghiệm, trung bình ± 10µs safety padding — xem `rc-carcar/specs.md`.
+Servo limits từ 5 lần thực nghiệm, trung bình ± 10µs safety padding — xem `firmware/specs.md`.
 
 Mapping từ byte (0–255) cho steering: `pulse_us = 1142 + (byte / 255.0) * (1880 - 1142)`
 Mapping từ byte (0–255) cho throttle: `pulse_us = 1000 + (byte / 255.0) * 1000`
@@ -116,14 +116,14 @@ JEPA/
 │       ├── action_cnn.py      ← baseline 1: Oh et al. 2015 style
 │       └── lstm_predictor.py  ← baseline 2: GRU world model
 │
-├── rc-carcar/                 ← ESP32-S3 PlatformIO project (Arduino Core 3.x)
+├── firmware/                 ← ESP32-S3 PlatformIO project (Arduino Core 3.x)
 │   ├── platformio.ini         ← pioarduino fork, board esp32-s3-devkitc-1, N16R8
 │   ├── specs.md               ← kết quả calibrate servo (5 lần thực nghiệm)
 │   └── src/
 │       ├── main.cpp           ← Serial control firmware (DONE, cần thêm WiFi/UDP)
 │       └── servo_calibrate.cpp← calibration tool (đã dùng xong, commented out)
 │
-├── electronic_devices/        ← hardware setup docs
+├── docs/                      ← hardware setup docs
 ├── data/                      ← gitignored
 │   ├── raw/                   ← recorded sessions (frames + actions.csv)
 │   └── latents/               ← pre-encoded latent tensors (.pt)
@@ -142,8 +142,8 @@ JEPA/
 
 - [x] `requirements.txt` + `.gitignore` (update)
 - [ ] Tải V-JEPA 2.1 weights: `wget https://dl.fbaipublicfiles.com/vjepa2/vitl_fpc64_256.pth -P checkpoints/`
-- [x] `rc-carcar/` — PlatformIO project tạo xong, Arduino Core 3.x (pioarduino)
-- [x] Servo calibration — 5 lần thực nghiệm, limits: 1142–1880µs (xem `rc-carcar/specs.md`)
+- [x] `firmware/` — PlatformIO project tạo xong, Arduino Core 3.x (pioarduino)
+- [x] Servo calibration — 5 lần thực nghiệm, limits: 1142–1880µs (xem `firmware/specs.md`)
 - [x] Firmware Serial control — arm ESC, safe limits, lệnh `s<us>` / `e<us>` qua Serial
 - [ ] **Nối dây thực tế** — GPIO 5 → servo signal, GPIO 6 → ESC signal, GND chung
 - [x] **Thêm WiFi + UDP vào firmware** — static IP 192.168.1.23, port 4210, watchdog 500ms, reverse state machine
@@ -221,7 +221,7 @@ JEPA/
 
 ```bash
 # 1. WFB-NG
-bash wfb_up.sh
+bash scripts/wfb_up.sh
 
 # 2. Verify stream
 ffplay -protocol_whitelist file,rtp,udp -fflags nobuffer -flags low_delay -framedrop -i ~/runcam.sdp

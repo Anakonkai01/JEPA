@@ -56,16 +56,15 @@ Critical optimization: pre-encode the entire dataset through V-JEPA offline (onc
 ## Daily Startup Commands
 
 ```bash
-# Terminal 1: bring up WiFi adapter in monitor mode
-sudo ip link set wlan1 down && sudo iw wlan1 set monitor otherbss \
-  && sudo ip link set wlan1 up && sudo iw wlan1 set channel 161 HT20
+# Terminal 1: bring up WiFi adapter + start WFB-NG
+bash scripts/wfb_up.sh
 
-# Terminal 2: start WFB-NG receiver (decrypt + forward UDP 5600)
-sudo /home/anakonkai/wfb-ng/wfb_rx -p 0 -u 5600 -K ~/gs.key -i 7669206 wlan1
-
-# Terminal 3: verify stream works
+# Terminal 2: verify stream works
 ffplay -protocol_whitelist file,rtp,udp -fflags nobuffer -flags low_delay \
        -framedrop -i ~/runcam.sdp
+
+# Terminal 3: data collection
+conda activate ai && cd src && python recorder.py
 
 # Run existing PoC (OpenCV capture test)
 python test.py
@@ -87,7 +86,7 @@ python test.py
 - `byte[1]`: throttle (0=full reverse/1000µs, 127=neutral/1500µs, 255=full forward/2000µs)
 
 Mapping from float in [-1, 1]: `byte = int((value + 1.0) / 2.0 * 255)`
-Servo PWM: `1142 + byte/255 * 738` µs (calibrated limits, see `rc-carcar/specs.md`)
+Servo PWM: `1142 + byte/255 * 738` µs (calibrated limits, see `firmware/specs.md`)
 ESC PWM: `1000 + byte/255 * 1000` µs
 
 ## Video Capture Pattern
@@ -117,10 +116,11 @@ See `test.py` for the minimal working example.
 | Path | Purpose |
 |------|---------|
 | `~/runcam.sdp` | RTP stream descriptor for ffplay/ffmpeg |
-| `~/gs.key` | Ground station decryption key (64B, binary) |
-| `~/drone.key` | Drone encryption key — must differ MD5 from gs.key |
+| `~/gs.key` | Ground station decryption key — runtime copy used by wfb_up.sh |
+| `keys/gs.key` | Same key, version-controlled backup in repo |
+| `keys/drone.key` | Drone encryption key — upload to camera when regenerating keypair |
 | `~/wfb-ng/wfb_rx` | WFB-NG receiver binary |
-| `electronic_devices/` | Full hardware setup docs (8 .md files, read README.md first) |
+| `docs/` | Full hardware setup docs (8 .md files, read README.md first) |
 
 ## Key Gotcha — WFB Keys
 
@@ -133,7 +133,7 @@ sshpass -p '12345' scp -O drone.key root@192.168.1.10:/etc/drone.key
 sshpass -p '12345' ssh root@192.168.1.10 '/etc/init.d/S98wifibroadcast stop && sleep 2 && /etc/init.d/S98wifibroadcast start'
 ```
 
-## Firmware (rc-carcar/)
+## Firmware (firmware/)
 
 PlatformIO project, Arduino Core 3.x via pioarduino fork. Board: `esp32-s3-devkitc-1`, N16R8.
 
@@ -147,7 +147,7 @@ Watchdog: return to neutral if no UDP packet received within 500ms.
 
 See `PLAN.md` for the full roadmap (deadline 2026-06-15).
 
-- **Phase 1** (Infrastructure): `rc-carcar/` firmware WiFi+UDP, `src/capture.py`, `src/encoder.py`, `src/controller.py`
+- **Phase 1** (Infrastructure): `firmware/` ESP32 WiFi+UDP, `src/capture.py`, `src/encoder.py`, `src/controller.py`
 - **Phase 2** (Data): `src/recorder.py`, `src/offline_encode.py`
 - **Phase 3** (Training): `src/ac_predictor.py`, `src/train.py`, `src/baselines/`
 - **Phase 4** (Planning): `src/cem_planner.py`, `src/inference_loop.py`

@@ -3,7 +3,9 @@
 
 # Data & model weights (quá lớn cho git)
 data/
+!data/.gitkeep
 checkpoints/
+!checkpoints/.gitkeep
 
 # Python cache
 __pycache__/
@@ -14,10 +16,11 @@ __pycache__/
 *.mp4
 *.avi
 
-# Secrets / keys
-*.key
-drone.key
-gs.key*
-
 # Conda / venv
 .env
+
+# External dependency — clone separately (facebookresearch/vjepa2)
+vjepa2/
+
+# Editor/agent tooling
+.kilo/
