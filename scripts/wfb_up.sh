@@ -28,6 +28,9 @@ sudo ip link set "$IFACE" up
 sudo iw "$IFACE" set channel 161 HT20
 echo "      $(iw "$IFACE" info | grep -E 'type|channel' | tr -d '\t')"
 
-echo "[2/2] Starting wfb_rx (Ctrl+C to stop)..."
+WFB_STATS_LOG="${WFB_STATS_LOG:-/tmp/jepa_wfb_stats.log}"
+echo "[2/2] Starting wfb_rx (Ctrl+C to stop)...  stats → $WFB_STATS_LOG"
+# tee stdout (dòng RX_ANT/PKT) ra file cho recorder đọc RSSI + packet loss; vẫn hiện ở terminal.
 sudo "$HOME/wfb-ng/wfb_rx" \
-    -p 0 -u 5600 -K "$HOME/gs.key" -i 7669206 "$IFACE"
+    -p 0 -u 5600 -K "$HOME/gs.key" -i 7669206 "$IFACE" \
+    | tee "$WFB_STATS_LOG"

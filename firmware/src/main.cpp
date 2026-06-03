@@ -1,12 +1,16 @@
 // ============================================================
-//  RC Car controller — FlySky i-BUS + WiFi/UDP hub
+//  RC Car controller — FlySky i-BUS + ESP-NOW hub
 //  ESP32-S3 WROOM N16R8
 //
 //  3 chế độ (chọn bằng switch 3 nấc trên CH9):
 //    RECORD  (CH9 < 1300)  : lái bằng stick FlySky → servo+ESC,
-//                            đồng thời gửi telemetry action về PC @50Hz
+//                            đồng thời gửi telemetry action về dongle @50Hz
 //    NEUTRAL (1300–1700)   : kill switch — servo center, ESC neutral
-//    AUTO    (CH9 > 1700)  : nhận action 2-byte từ PC qua UDP → servo+ESC
+//    AUTO    (CH9 > 1700)  : nhận action 2-byte từ PC qua ESP-NOW → servo+ESC
+//
+//  Liên lạc với PC qua ESP-NOW (KHÔNG router): xe ↔ dongle ESP32-S3 cắm USB.
+//    Xe gửi telemetry → DONGLE_MAC ; nhận control (LED/AUTO) ← dongle.
+//    MAC peer + channel khai báo trong include/peers.h (xem bootstrap ở đó).
 //
 //  ESC ở Running Mode 3 (direct reverse) → throttle map TUYẾN TÍNH:
 //    esc_us = 1000 + (throttle+1)/2 * 1000   (0=lùi hết, neutral=1500, max=2000)
@@ -15,19 +19,9 @@
 // ============================================================
 #include <Arduino.h>
 #include <WiFi.h>
-#include <WiFiUdp.h>
-
-// ============================================================
-//  WiFi
-// ============================================================
-#define WIFI_SSID "Hoang Kim"
-#define WIFI_PASS "0984711873"
-
-static const IPAddress STATIC_IP(192, 168, 1, 23);
-static const IPAddress GATEWAY  (192, 168, 1,  1);
-static const IPAddress SUBNET   (255, 255, 255, 0);
-static const uint16_t  UDP_PORT     = 4210;
-static const uint32_t  UDP_WATCHDOG_MS = 500;   // AUTO: mất gói PC → neutral
+#include <esp_now.h>
+#include <esp_wifi.h>
+#include "peers.h"
 
 // ============================================================
 //  PIN & PWM
@@ -38,6 +32,9 @@ const int IBUS_RX_PIN = 18;          // Serial1 RX ← i-BUS từ RX FlySky
 const int EXT_LED_PIN = 21;          // LED ngoài cho calibrate trễ (nối qua trở 220Ω → GND)
 const int PWM_FREQ    = 50;
 const int PWM_RES     = 14;          // 14-bit @ 50Hz
+
+// AUTO: mất gói control từ PC quá lâu → về neutral
+static const uint32_t CTRL_WATCHDOG_MS = 500;
 
 // ============================================================
 //  GIỚI HẠN (calibrate, xem specs.md)
@@ -85,19 +82,15 @@ struct __attribute__((packed)) Telemetry {
     uint8_t  rec;          // 1 = đang armed ghi (CH10 > 1500)
 };
 
-WiFiUDP    udp;
-IPAddress  telemetryDest;            // PC IP — tự phát hiện từ gói PC gửi tới
-uint16_t   telemetryPort = 0;
-bool       haveDest      = false;
 uint32_t   telemSeq      = 0;
 uint32_t   lastTelemMs   = 0;
 const uint32_t TELEM_INTERVAL_MS = 20;   // 50 Hz
 
-// AUTO control state
-uint8_t  autoSteerB    = 127;
-uint8_t  autoThrotB    = 127;
-uint32_t lastUdpCtrlMs = 0;
-bool     udpCtrlActive = false;
+// AUTO control state — ghi từ ESP-NOW callback (WiFi task), đọc trong loop() → volatile
+volatile uint8_t  autoSteerB    = 127;
+volatile uint8_t  autoThrotB    = 127;
+volatile uint32_t lastCtrlMs    = 0;
+volatile bool     ctrlActive    = false;
 
 // Action hiện tại (để telemetry & debug)
 float curSteerNorm = 0.0f;
@@ -176,44 +169,32 @@ bool ibusAlive() {
 }
 
 // ============================================================
-//  UDP RX (từ PC)
-//    size 2  : AUTO control [steer_b, throttle_b]
-//    size 1  : 0x01=LED on  0x00=LED off  0x02=heartbeat(subscribe)
-//    Bất kỳ gói nào cũng cập nhật telemetryDest (auto-discover IP của PC).
+//  ESP-NOW RX (control từ PC, qua dongle)
+//    len 2  : AUTO control [steer_b, throttle_b]
+//    len 1  : 0x01=LED on  0x00=LED off
+//  Chạy trong ngữ cảnh WiFi task → chỉ set biến volatile / toggle GPIO (nhanh).
 // ============================================================
-void recvUDP() {
-    int pkt = udp.parsePacket();
-    if (pkt <= 0) return;
-
-    uint8_t buf[8] = {0};
-    int n = udp.read(buf, min(pkt, (int)sizeof(buf)));
-
-    telemetryDest = udp.remoteIP();
-    telemetryPort = udp.remotePort();
-    haveDest      = true;
-
-    if (n >= 2) {
-        autoSteerB    = buf[0];
-        autoThrotB    = buf[1];
-        lastUdpCtrlMs = millis();
-        udpCtrlActive = true;
-    } else if (n == 1) {
-        if (buf[0] == 0x01) {        // latency LED on (cả onboard lẫn LED ngoài)
+void onEspNowRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
+    if (len >= 2) {
+        autoSteerB  = data[0];
+        autoThrotB  = data[1];
+        lastCtrlMs  = millis();
+        ctrlActive  = true;
+    } else if (len == 1) {
+        if (data[0] == 0x01) {        // latency LED on (cả onboard lẫn LED ngoài)
             rgbLedWrite(RGB_BUILTIN, 255, 255, 255);
             digitalWrite(EXT_LED_PIN, HIGH);
-        } else if (buf[0] == 0x00) { // off
+        } else if (data[0] == 0x00) { // off
             rgbLedWrite(RGB_BUILTIN, 0, 0, 0);
             digitalWrite(EXT_LED_PIN, LOW);
         }
-        // 0x02 = heartbeat: chỉ cần đăng ký dest (đã làm ở trên)
     }
 }
 
 // ============================================================
-//  TELEMETRY TX (→ PC) @50Hz
+//  TELEMETRY TX (→ dongle) @50Hz
 // ============================================================
 void sendTelemetry() {
-    if (!haveDest) return;
     if (millis() - lastTelemMs < TELEM_INTERVAL_MS) return;
     lastTelemMs = millis();
 
@@ -229,9 +210,7 @@ void sendTelemetry() {
     t.ch_record_us = ibusCh[CH_RECORD];
     t.rec          = (ibusCh[CH_RECORD] > 1500) ? 1 : 0;
 
-    udp.beginPacket(telemetryDest, telemetryPort);
-    udp.write((uint8_t*)&t, sizeof(t));
-    udp.endPacket();
+    esp_now_send(DONGLE_MAC, (const uint8_t*)&t, sizeof(t));
 }
 
 // ============================================================
@@ -246,23 +225,32 @@ Mode computeMode() {
 }
 
 // ============================================================
-//  WiFi
+//  ESP-NOW
 // ============================================================
-void setupWiFi() {
-    Serial.printf("[WiFi] Kết nối \"%s\"...", WIFI_SSID);
+void setupEspNow() {
     WiFi.mode(WIFI_STA);
-    WiFi.config(STATIC_IP, GATEWAY, SUBNET);
-    WiFi.begin(WIFI_SSID, WIFI_PASS);
-    for (int i = 0; i < 20 && WiFi.status() != WL_CONNECTED; i++) {
-        delay(500); Serial.print(".");
+    WiFi.disconnect();               // không associate vào AP nào
+    Serial.printf("[ESP-NOW] MAC con nay: %s\n", WiFi.macAddress().c_str());
+
+    esp_wifi_set_channel(ESPNOW_CHANNEL, WIFI_SECOND_CHAN_NONE);
+
+    if (esp_now_init() != ESP_OK) {
+        Serial.println("[ESP-NOW] init THAT BAI — chi chay RECORD/NEUTRAL qua i-BUS");
+        return;
     }
-    if (WiFi.status() == WL_CONNECTED) {
-        Serial.printf("\n[WiFi] OK — IP %s\n", WiFi.localIP().toString().c_str());
-        udp.begin(UDP_PORT);
-        Serial.printf("[UDP]  Lắng nghe port %d\n", UDP_PORT);
-    } else {
-        Serial.println("\n[WiFi] THẤT BẠI — vẫn chạy được RECORD/NEUTRAL qua i-BUS\n");
+    esp_now_register_recv_cb(onEspNowRecv);
+
+    esp_now_peer_info_t peer = {};
+    memcpy(peer.peer_addr, DONGLE_MAC, 6);
+    peer.channel = ESPNOW_CHANNEL;
+    peer.encrypt = false;
+    if (esp_now_add_peer(&peer) != ESP_OK) {
+        Serial.println("[ESP-NOW] add peer THAT BAI!");
+        return;
     }
+    Serial.printf("[ESP-NOW] OK — peer dongle %02X:%02X:%02X:%02X:%02X:%02X, ch%d\n",
+        DONGLE_MAC[0], DONGLE_MAC[1], DONGLE_MAC[2],
+        DONGLE_MAC[3], DONGLE_MAC[4], DONGLE_MAC[5], ESPNOW_CHANNEL);
 }
 
 // ============================================================
@@ -288,12 +276,12 @@ void setup() {
     for (int i = 3; i > 0; i--) { Serial.printf("      ... %d ...\n", i); delay(1000); }
     Serial.println("[ESC] Arm xong!\n");
 
-    setupWiFi();
+    setupEspNow();
 
     Serial.println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-    Serial.println("  FlySky i-BUS hub");
+    Serial.println("  FlySky i-BUS hub (ESP-NOW)");
     Serial.println("  CH1=lái  CH2=ga  CH9=mode(RECORD/NEUTRAL/AUTO)");
-    Serial.println("  i-BUS @GPIO18 115200  | UDP 4210  | telem 50Hz");
+    Serial.println("  i-BUS @GPIO18 115200  | ESP-NOW → dongle | telem 50Hz");
     Serial.println("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
 }
 
@@ -302,7 +290,6 @@ void setup() {
 // ============================================================
 void loop() {
     readIBus();
-    recvUDP();
 
     currentMode = computeMode();
 
@@ -312,7 +299,7 @@ void loop() {
             break;
 
         case M_AUTO:
-            if (udpCtrlActive && (millis() - lastUdpCtrlMs > UDP_WATCHDOG_MS)) {
+            if (ctrlActive && (millis() - lastCtrlMs > CTRL_WATCHDOG_MS)) {
                 driveNeutral();                       // watchdog: mất gói PC
             } else {
                 driveNorm(autoSteerB / 255.0f * 2.0f - 1.0f,

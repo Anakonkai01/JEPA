@@ -22,8 +22,9 @@ Deadline: 2026-06-15.
                                                                       → latent s_t (1024-dim)
                                                                       → AC Predictor
                                                                       → CEM planner
-                                                                      → UDP 2 bytes
-                                                                    [ESP32-S3 @ 192.168.1.23]
+                                                                      → 2-byte action
+                                                                      → ESP-NOW dongle (PC USB)  ⇅ ch1 unicast
+                                                                    [ESP32-S3 car]
                                                                       → KDS N680 HV servo (steering, GPIO 5)
                                                                       → Hobbywing QuicRun 8BL150 ESC (throttle, GPIO 6)
 ```
@@ -48,7 +49,8 @@ Critical optimization: pre-encode the entire dataset through V-JEPA offline (onc
 | RX radio | RTL8812AU USB adapter as `wlan1`, driver: `88XXau_wfb` (DKMS) |
 | WFB link | ch161 (5805MHz) HT20, link_id=7669206, radio_port=0, key=`~/gs.key` |
 | Compute | Arch Linux, kernel 7.0.3, RTX 5070 Ti |
-| Controller | ESP32-S3 WROOM N16R8 (16MB flash, 8MB PSRAM), IP 192.168.1.23 |
+| Controller (car) | ESP32-S3 WROOM N16R8 (16MB flash, 8MB PSRAM), MAC `E0:72:A1:D5:27:B0` |
+| Telemetry dongle | ESP32-S3 WROOM N16R8 on PC USB (`/dev/ttyACM*`), MAC `E0:72:A1:DB:D7:74` — ESP-NOW↔serial bridge |
 | Servo | KDS N680 HV Metal Gear Digital, 6.0–8.4V, GPIO 5, calibrated 1142–1880µs |
 | ESC | Hobbywing QuicRun WP 8BL150, 150A brushless, GPIO 6, 1000–2000µs |
 | Power | 20V drill battery → ESC; BEC 6V/3A → Servo; ESP32 from separate 5V |
@@ -63,8 +65,8 @@ bash scripts/wfb_up.sh
 ffplay -protocol_whitelist file,rtp,udp -fflags nobuffer -flags low_delay \
        -framedrop -i ~/runcam.sdp
 
-# Terminal 3: data collection
-conda activate ai && cd src && python recorder.py
+# Terminal 3: data collection (plug the ESP-NOW dongle into PC USB first)
+conda activate ai && cd src && python recorder.py auto   # 'auto' = autodetect dongle on /dev/ttyACM*
 
 # Run existing PoC (OpenCV capture test)
 python test.py
@@ -79,15 +81,25 @@ python test.py
 - Encoder output: spatial tokens `(B, T/2, H/16, W/16, 1024)` → mean pool → `(B, 1024)`
 - `torch.hub` loading fails on Colab — use HuggingFace or local checkpoint path.
 
-## ESP32 Control Protocol
+## ESP32 Control Protocol (ESP-NOW via dongle)
 
-2-byte UDP packet to `192.168.1.23:4210`:
-- `byte[0]`: steering (0=full left/1142µs, 127=center/1500µs, 255=full right/1880µs)
-- `byte[1]`: throttle (0=full reverse/1000µs, 127=neutral/1500µs, 255=full forward/2000µs)
+PC ↔ car talk over **ESP-NOW** (2.4GHz peer-to-peer, no router), bridged by a USB **dongle**
+ESP32-S3. PC ↔ dongle is USB serial; each line is **hex + `\n`** (self-resyncing, no COBS).
+The dongle decodes a line → `esp_now_send` to the car, and forwards car telemetry back as hex.
+
+PC → car payloads (raw bytes, hex-encoded on the serial wire):
+- 2 bytes `[steer, throt]` = AUTO control:
+  - `byte[0]` steering (0=full left/1150µs, 127=center/1500µs, 255=full right/1850µs)
+  - `byte[1]` throttle (0=full reverse/1000µs, 127=neutral/1500µs, 255=full forward/2000µs)
+- 1 byte `0x01`/`0x00` = latency LED on/off.
 
 Mapping from float in [-1, 1]: `byte = int((value + 1.0) / 2.0 * 255)`
-Servo PWM: `1142 + byte/255 * 738` µs (calibrated limits, see `firmware/specs.md`)
+Servo PWM: `1150 + byte/255 * 700` µs (safe clamp; calibrated 1142–1880, see `firmware/specs.md`)
 ESC PWM: `1000 + byte/255 * 1000` µs
+
+Telemetry car → PC: 25-byte packed struct `<BBIIffHHHB>` @50Hz (magic `0xAC`, mode, seq,
+esp_ms, steering/throttle floats, 3× ch µs, rec flag) — see `Telemetry` in
+`firmware/src/main.cpp` and `TELEM_FMT` in `src/recorder.py`.
 
 ## Video Capture Pattern
 
@@ -157,19 +169,33 @@ already `enabled: false`) and NOT the `fpv:` plugin (that's low-latency FPV mode
 in `/usr/bin/wifibroadcast`; with no flight controller on `ttyS2` it just renders the waiting
 banner — which would burn into the H.265 stream and pollute training frames. **Disabled by
 commenting the `start_telemetry` call** (line ~160; backup at `/usr/bin/wifibroadcast.jepa-bak`).
-We don't use the WFB telemetry tunnel — our telemetry is the ESP32 UDP path. To re-enable:
+We don't use the WFB telemetry tunnel — our telemetry is the ESP32 ESP-NOW path. To re-enable:
 restore the backup. After editing, kill the running daemon immediately: `kill $(pgrep msposd)`.
 
 ## Firmware (firmware/)
 
 PlatformIO project, Arduino Core 3.x via pioarduino fork. Board: `esp32-s3-devkitc-1`, N16R8.
+**Two firmwares, two envs** (split by `build_src_filter` in `platformio.ini`):
+`env:car` → `src/main.cpp` (i-BUS hub on the car); `env:dongle` → `src/dongle.cpp` (USB
+ESP-NOW↔serial bridge on the PC). Build/flash with the venv pio (see Python Environment):
+
+```bash
+~/.pio-venv/bin/pio run -d firmware -e car    -t upload --upload-port /dev/ttyACM1
+~/.pio-venv/bin/pio run -d firmware -e dongle -t upload --upload-port /dev/ttyACM0
+```
+
+**ESP-NOW link:** unicast, channel 1, LR off. Peer MACs hardcoded in `firmware/include/peers.h`.
+Re-pair new boards: read MAC with `~/.pio-venv/bin/esptool --port /dev/ttyACMx read-mac`
+(= the STA MAC the firmware uses), edit `peers.h`, reflash both. Boards also print their own
+MAC on boot (`[ESP-NOW] MAC con nay: …`). 2.4GHz ESP-NOW does not interfere with the 5.8GHz
+camera (WFB-NG) — different band, different adapter.
 
 Current state (2026-06-03): **FlySky i-BUS hub firmware** (`firmware/src/main.cpp`).
 Reads FS-iA10B i-BUS on `Serial1`/GPIO18 (115200, non-inverted). 3 modes via CH9
 (`<1300` RECORD / `1300–1700` NEUTRAL / `>1700` AUTO). CH10 = record on/off flag.
-Telemetry to PC @50Hz (packed struct: steering/throttle floats + ch µs + rec flag).
-ESC arms on boot (neutral ~3s). Two watchdogs: i-BUS loss >100ms → neutral; AUTO UDP
-loss >500ms → neutral. External LED on GPIO21 (+ onboard RGB) toggled by UDP 0x01/0x00
+Telemetry to dongle @50Hz (packed struct: steering/throttle floats + ch µs + rec flag).
+ESC arms on boot (neutral ~3s). Two watchdogs: i-BUS loss >100ms → neutral; AUTO control
+loss >500ms → neutral. External LED on GPIO21 (+ onboard RGB) toggled by ESP-NOW 0x01/0x00
 for latency calibration. Servo safe clamp **1150–1850µs** (midpoint exactly 1500).
 
 Channel map (FS-i6 modded 10ch): CH1=steering, CH2=throttle, CH9=mode, CH10=record.
@@ -181,9 +207,12 @@ power-on → red LED ×3). Firmware now uses a **direct linear throttle map**
 `esc_us = 1000 + (throttle+1)/2 * 1000` (full reverse↔neutral↔full forward); all the old
 Mode-2 double-tap code (`tickReverse`, `REV_ARM1/2`) is gone. Verified on bench.
 
-**Still pending — `src/controller.py` (AUTO/inference path, Phase 4):** its reverse branch
-still maps `[-1,0)` → byte `[0,63]` (old double-tap). For Mode 3 use the symmetric map
-`byte = int((throttle+1)/2*255)`. Not used during data collection, so deferred to Phase 4.
+**Still pending — `src/controller.py` (AUTO/inference path, Phase 4):** two things to fix
+when Phase 4 starts. (1) Transport: it still targets the old UDP socket — switch to the
+**dongle serial** (write 2-byte control as hex + `\n`, same as `recorder.py`'s `send`).
+(2) Throttle map: its reverse branch still maps `[-1,0)` → byte `[0,63]` (old Mode-2
+double-tap); for Mode 3 use the symmetric `byte = int((throttle+1)/2*255)`. Not used during
+data collection, so deferred.
 
 ### Data collection (FlySky, not WASD)
 
@@ -195,21 +224,19 @@ masked corner of the frame (`tools/set_led_roi.py` sets the bbox; tracker re-mea
 saving so V-JEPA never sees the blinking light. Action recorded = normalized stick [−1,1]
 (remote D/R/EPA shapes it before i-BUS → recorded = actual command, fully synced).
 
-### WiFi reachability
+### ESP-NOW link (replaces old WiFi/UDP telemetry)
 
-Firmware hardcodes `WIFI_SSID "Hoang Kim"`. The ESP32 is only reachable from the PC when
-**both are on the same WiFi/router**. If `ping 192.168.1.23` fails (ARP INCOMPLETE), check
-the PC's current SSID vs the firmware SSID. The camera path (WFB-NG on `wlan1` monitor mode)
-is fully independent of this — different adapter, no IP, does not use the router.
+Telemetry/control no longer use the home router — the car ESP32 and the USB dongle talk
+**ESP-NOW** directly (2.4GHz, channel 1, unicast), so it works anywhere with no SSID/IP.
+If the recorder shows `NO TELEM`: confirm the dongle is plugged in (`ls /dev/ttyACM*`), the
+right port is picked (`python recorder.py auto` autodetects the one emitting valid `0xAC`
+frames), the car is powered, and both boards share channel 1 with matching MACs in `peers.h`.
+The camera path (WFB-NG on `wlan1` monitor mode, 5.8GHz) is fully independent.
 
-**Gotcha — eth0/wlan0 subnet conflict.** The camera-config link (`eth0 @ 192.168.1.100/24`,
-see "SSH to camera" above) and the router LAN (`wlan0`, ESP32 at `.23`) are **both on
-`192.168.1.0/24`**. When eth0 is up, its `proto kernel` route (metric 0) beats wlan0's
-(metric 600), so ARP for `192.168.1.23` goes out eth0 and fails (`dev eth0 INCOMPLETE`) →
-ESP32 unreachable, telemetry shows `NO TELEM`, latency LED never blinks. **Rule: after
-SSHing the camera, flush eth0 before recording** — `sudo ip addr flush dev eth0`. To confirm
-which way packets are going: `ping -I wlan0 192.168.1.23` (forces wlan0) — if that works but
-plain `ping` doesn't, it's this conflict.
+> The old eth0/wlan0 `192.168.1.0/24` subnet conflict that broke ESP32-over-WiFi no longer
+> applies to telemetry (ESP-NOW has no IP). It still matters **only for SSHing the camera**
+> (eth0 @ 192.168.1.100/24, see "SSH to camera"): when eth0 is up its route can shadow wlan0.
+> Flush eth0 when done configuring the camera — `sudo ip addr flush dev eth0`.
 
 **Gotcha — `data/` is gitignored**, so a fresh clone has no `data/led_roi.json`. Without it
 the recorder disables the LatencyTracker → LED never blinks and frames aren't masked. Run
@@ -219,7 +246,7 @@ the recorder disables the LatencyTracker → LED never blinks and frames aren't 
 
 See `PLAN.md` for the full roadmap (deadline 2026-06-15).
 
-- **Phase 1** (Infrastructure): `firmware/` ESP32 WiFi+UDP, `src/capture.py`, `src/encoder.py`, `src/controller.py`
+- **Phase 1** (Infrastructure): `firmware/` ESP32 ESP-NOW (car + dongle), `src/capture.py`, `src/encoder.py`, `src/controller.py`
 - **Phase 2** (Data): `src/recorder.py`, `src/offline_encode.py`
 - **Phase 3** (Training): `src/ac_predictor.py`, `src/train.py`, `src/baselines/`
 - **Phase 4** (Planning): `src/cem_planner.py`, `src/inference_loop.py`

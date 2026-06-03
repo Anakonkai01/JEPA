@@ -3,10 +3,11 @@ Data collection (FlySky i-BUS) — xe do FlySky lái, PC ghi THỤ ĐỘNG,
 latency được đo REALTIME bằng LED gắn cố định trong khung hình.
 
 Luồng:
-  ESP32 (mode RECORD) gửi telemetry UDP @50Hz: action + esp_ms + seq + cờ rec (CH10)
+  ESP32 (mode RECORD) gửi telemetry @50Hz qua ESP-NOW → dongle → serial hex
   RunCam → WFB-NG → ffmpeg → (frame BGR, t_read)  (capture.py)
   recorder:
-    • TelemetryReceiver: nhận telemetry → ring buffer ~1s, gửi heartbeat + lệnh LED
+    • TelemetryReceiver: đọc serial → ring buffer ~1s; gửi lệnh LED/AUTO; đọc RSSI ESP-NOW
+    • WfbStatsReader: tail log wfb_rx → RSSI camera + packet loss
     • LatencyTracker: cứ ~2s nháy LED trong ROI cố định → đo trễ camera realtime
     • Mỗi frame: đo sáng ROI (cho tracker) → TÔ ĐEN ROI → lưu frame sạch
     • Ghép action tại (t_read − latency_hiện_tại); ghi actions.csv + latency.csv
@@ -24,7 +25,7 @@ import csv
 import sys
 import json
 import time
-import socket
+import glob
 import struct
 import statistics
 import threading
@@ -33,6 +34,7 @@ from pathlib import Path
 from datetime import datetime
 
 import cv2
+import serial
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT / "src"))
@@ -45,9 +47,12 @@ LAT_FILE     = ROOT / "data" / "camera_latency.txt"
 JPEG_QUALITY = 90
 SAVE_HZ      = 10
 
-ESP32_HOST   = "192.168.1.23"
-ESP32_PORT   = 4210
-HEARTBEAT_S  = 0.5
+# Dongle ESP-NOW↔serial. Override: argv[1] hoặc env JEPA_SERIAL ("auto" = tự dò ttyACM*).
+SERIAL_PORT  = "/dev/ttyACM0"
+SERIAL_BAUD  = 115200
+
+# Log stats WFB-NG (wfb_up.sh tee stdout của wfb_rx vào đây) → RSSI camera + packet loss.
+WFB_STATS_LOG = "/tmp/jepa_wfb_stats.log"
 
 FLASH_PERIOD = 2.0           # tracker nháy LED mỗi 2s
 LED_ON, LED_OFF = b"\x01", b"\x00"
@@ -58,6 +63,41 @@ TELEM_FMT   = "<BBIIffHHHB"
 TELEM_SIZE  = struct.calcsize(TELEM_FMT)   # 25
 TELEM_MAGIC = 0xAC
 MODE_NAME   = {0: "NEUTRAL", 1: "RECORD", 2: "AUTO"}
+
+
+def autodetect_port(timeout=2.0):
+    """Quét /dev/ttyACM* tìm cổng phát ra frame telemetry hợp lệ (0xAC). None nếu không thấy."""
+    for port in sorted(glob.glob("/dev/ttyACM*")):
+        try:
+            with serial.Serial(port, SERIAL_BAUD, timeout=0.2) as s:
+                buf, t0 = bytearray(), time.time()
+                while time.time() - t0 < timeout:
+                    buf.extend(s.read(s.in_waiting or 1) or b"")
+                    while b"\n" in buf:
+                        nl = buf.find(b"\n")
+                        line = bytes(buf[:nl]).strip(); del buf[:nl + 1]
+                        try:
+                            d = bytes.fromhex(line.decode("ascii"))
+                        except (ValueError, UnicodeDecodeError):
+                            continue
+                        if len(d) >= TELEM_SIZE and d[0] == TELEM_MAGIC:
+                            return port
+        except (OSError, serial.SerialException):
+            continue
+    return None
+
+
+def resolve_port():
+    """Cổng dongle: argv[1] > env JEPA_SERIAL > mặc định. Giá trị 'auto' = tự dò."""
+    port = (sys.argv[1] if len(sys.argv) > 1 else None) or os.environ.get("JEPA_SERIAL") or SERIAL_PORT
+    if port == "auto":
+        found = autodetect_port()
+        if found:
+            print(f"[serial] auto-detect → {found}", flush=True)
+            return found
+        print(f"[serial] auto-detect THẤT BẠI — dùng {SERIAL_PORT}", flush=True)
+        return SERIAL_PORT
+    return port
 
 
 def load_fallback_latency(default=0.19):
@@ -79,19 +119,19 @@ def load_roi():
 #  Telemetry receiver — ring buffer; cũng là cổng gửi PC→ESP32
 # ══════════════════════════════════════════════════════════════
 class TelemetryReceiver:
-    def __init__(self, host=ESP32_HOST, port=ESP32_PORT, buffer_s=1.0):
-        self.addr     = (host, port)
+    def __init__(self, port=SERIAL_PORT, baud=SERIAL_BAUD, buffer_s=1.0):
         self.buffer_s = buffer_s
         self._buf     = deque()            # [(t_recv, steer, throt, seq, esp_ms, mode)]
         self._lock    = threading.Lock()
         self._stop    = threading.Event()
-        self._sock    = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self._sock.settimeout(0.2)
+        self._rxbuf   = bytearray()        # gom byte serial tới '\n'
+        self._ser     = serial.Serial(port, baud, timeout=0.2)
         self.last_t   = 0.0
         self.rec      = 0
         self.mode     = 0
         self.steer    = 0.0
         self.throt    = 0.0
+        self.rssi     = None               # RSSI ESP-NOW (dBm) — dongle gắn vào byte 26
         self._thread  = threading.Thread(target=self._run, daemon=True)
 
     def start(self):
@@ -99,43 +139,61 @@ class TelemetryReceiver:
 
     def stop(self):
         self._stop.set()
-        self._sock.close()
+        try:
+            self._ser.close()
+        except OSError:
+            pass
 
     def send(self, data: bytes):
-        """Gửi PC→ESP32 qua CÙNG socket (để ESP32 luôn gửi telemetry về đây)."""
+        """Gửi PC→xe: hex + newline → dongle giải mã → esp_now_send. (LED/AUTO không đổi phía gọi.)"""
         try:
-            self._sock.sendto(data, self.addr)
-        except OSError:
+            self._ser.write(data.hex().encode("ascii") + b"\n")
+        except (OSError, serial.SerialException):
             pass
 
     def alive(self) -> bool:
         return (time.time() - self.last_t) < 0.5
 
     def _run(self):
-        last_hb = 0.0
         while not self._stop.is_set():
-            now = time.time()
-            if now - last_hb >= HEARTBEAT_S:
-                self.send(b"\x02")                 # heartbeat → ESP32 nhớ IP PC
-                last_hb = now
             try:
-                data, _ = self._sock.recvfrom(64)
-            except (socket.timeout, OSError):
+                chunk = self._ser.read(self._ser.in_waiting or 1)
+            except (OSError, serial.SerialException):
+                break
+            if not chunk:
                 continue
-            if len(data) != TELEM_SIZE:
-                continue
-            (magic, mode, seq, esp_ms, steer, throt,
-             _cs, _ct, _cr, rec) = struct.unpack(TELEM_FMT, data)
-            if magic != TELEM_MAGIC:
-                continue
-            t = time.time()
-            with self._lock:
-                self._buf.append((t, steer, throt, seq, esp_ms, mode))
-                cutoff = t - self.buffer_s
-                while self._buf and self._buf[0][0] < cutoff:
-                    self._buf.popleft()
-                self.last_t, self.rec, self.mode = t, rec, mode
-                self.steer, self.throt = steer, throt
+            self._rxbuf.extend(chunk)
+            while True:
+                nl = self._rxbuf.find(b"\n")
+                if nl < 0:
+                    break
+                line = bytes(self._rxbuf[:nl]).strip()
+                del self._rxbuf[:nl + 1]
+                if not line:
+                    continue
+                try:
+                    data = bytes.fromhex(line.decode("ascii"))
+                except (ValueError, UnicodeDecodeError):
+                    continue                       # dòng debug người-đọc / hỏng → bỏ
+                if len(data) < TELEM_SIZE:
+                    continue
+                (magic, mode, seq, esp_ms, steer, throt,
+                 _cs, _ct, _cr, rec) = struct.unpack(TELEM_FMT, data[:TELEM_SIZE])
+                if magic != TELEM_MAGIC:
+                    continue
+                # byte 26 (nếu có) = RSSI ESP-NOW int8 dBm (dongle gắn vào)
+                rssi = (int.from_bytes(data[TELEM_SIZE:TELEM_SIZE + 1], "little", signed=True)
+                        if len(data) > TELEM_SIZE else None)
+                t = time.time()
+                with self._lock:
+                    self._buf.append((t, steer, throt, seq, esp_ms, mode))
+                    cutoff = t - self.buffer_s
+                    while self._buf and self._buf[0][0] < cutoff:
+                        self._buf.popleft()
+                    self.last_t, self.rec, self.mode = t, rec, mode
+                    self.steer, self.throt = steer, throt
+                    if rssi is not None:
+                        self.rssi = rssi
 
     def lookup(self, t_scene: float):
         """(steer, throt, seq, esp_ms) của sample gần t_scene nhất, None nếu rỗng."""
@@ -144,6 +202,82 @@ class TelemetryReceiver:
                 return None
             b = min(self._buf, key=lambda s: abs(s[0] - t_scene))
         return b[1], b[2], b[3], b[4]
+
+
+# ══════════════════════════════════════════════════════════════
+#  WFB-NG stats — tail log của wfb_rx → RSSI camera + packet loss
+#    Format (mỗi ~1s, wfb_up.sh tee stdout wfb_rx vào WFB_STATS_LOG):
+#      <ts>\tRX_ANT\t<freq:mcs:bw>\t<ant>\t<count:rssi_min:rssi_avg:rssi_max:snr...>
+#      <ts>\tPKT\t<p_all:b_all:dec_err:dec_ok:fec_rec:p_lost:p_bad:...>
+# ══════════════════════════════════════════════════════════════
+class WfbStatsReader:
+    def __init__(self, path=WFB_STATS_LOG):
+        self.path     = path
+        self.rssi     = None     # rssi_avg (dBm)
+        self.rssi_min = None
+        self.recv     = 0        # dec_ok / interval
+        self.lost     = 0        # p_lost / interval
+        self.last_t   = 0.0
+        self._stop    = threading.Event()
+        self._thread  = threading.Thread(target=self._run, daemon=True)
+
+    def start(self):
+        self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+
+    def alive(self) -> bool:
+        return (time.time() - self.last_t) < 3.0
+
+    def _parse(self, line: str):
+        p = line.rstrip("\n").split("\t")
+        if len(p) < 3:
+            return
+        seg = p[-1].split(":")
+        try:
+            if p[1] == "RX_ANT" and len(seg) >= 4:
+                self.rssi_min, self.rssi = int(seg[1]), int(seg[2])
+                self.last_t = time.time()
+            elif p[1] == "PKT" and len(seg) >= 6:
+                self.recv, self.lost = int(seg[3]), int(seg[5])
+                self.last_t = time.time()
+        except (ValueError, IndexError):
+            pass
+
+    def _run(self):
+        while not self._stop.is_set():
+            try:
+                with open(self.path, "r") as f:
+                    f.seek(0, 2)                     # nhảy tới cuối — chỉ đọc dòng mới
+                    while not self._stop.is_set():
+                        line = f.readline()
+                        if not line:
+                            time.sleep(0.2); continue
+                        self._parse(line)
+            except OSError:
+                time.sleep(0.5)                      # file chưa có (camera chưa lên) → thử lại
+
+
+# ══════════════════════════════════════════════════════════════
+#  FPS meter — FPS thực + độ tươi frame (phát hiện camera đứng)
+# ══════════════════════════════════════════════════════════════
+class FpsMeter:
+    def __init__(self, n=30):
+        self._t     = deque(maxlen=n)
+        self.last_t = 0.0
+
+    def tick(self, t):
+        self._t.append(t); self.last_t = t
+
+    def fps(self) -> float:
+        if len(self._t) < 2:
+            return 0.0
+        span = self._t[-1] - self._t[0]
+        return (len(self._t) - 1) / span if span > 0 else 0.0
+
+    def age(self, now) -> float:
+        return now - self.last_t if self.last_t else 999.0
 
 
 # ══════════════════════════════════════════════════════════════
@@ -164,6 +298,7 @@ class LatencyTracker:
         self.next_flash = 0.0
         self.cool_until = 0.0
         self._new   = None                  # mẫu mới (cho log)
+        self.last_measure_t = 0.0           # mốc đo thành công gần nhất (chỉ cho HUD)
 
     def spot(self, frame) -> float:
         g = cv2.cvtColor(frame[self.y:self.y+self.h, self.x:self.x+self.w],
@@ -194,6 +329,7 @@ class LatencyTracker:
                 lat = t_read - self.t0
                 if 0.0 < lat < 1.0:                 # bỏ outlier
                     self._lat.append(lat); self._new = lat
+                    self.last_measure_t = now       # mốc cho HUD (KHÔNG đổi logic đo)
                 self.send(LED_OFF); self.state = "COOL"; self.cool_until = now + 0.4
             elif now - self.t0 > 1.0:               # timeout
                 self.send(LED_OFF); self.state = "COOL"; self.cool_until = now + 0.4
@@ -207,6 +343,17 @@ class LatencyTracker:
     def pop_measurement(self):
         v = self._new; self._new = None
         return v
+
+    def status(self, now, spot):
+        """(nhãn, chi tiết) cho HUD — vì sao latency đang cập nhật được hay không."""
+        if self.thr is None:
+            return ("OFF", "chua calib")
+        if self.last_measure_t == 0:
+            return ("DO", f"chua thay LED  spot{spot:.0f}/thr{self.thr:.0f}")
+        age = now - self.last_measure_t
+        if age > 3 * self.period:               # >~6s không đo được → LED khuất/ngoài ROI
+            return ("STALE", f"{age:.0f}s ko thay LED  spot{spot:.0f}/thr{self.thr:.0f}")
+        return ("LIVE", f"n{len(self._lat)} {age:.0f}s truoc")
 
 
 # ══════════════════════════════════════════════════════════════
@@ -266,24 +413,54 @@ class Session:
 # ══════════════════════════════════════════════════════════════
 #  HUD
 # ══════════════════════════════════════════════════════════════
-def draw_overlay(frame, tele, sess, latency_ms, roi):
-    out  = frame.copy()
-    h, w = out.shape[:2]
-    rec  = sess.active
-    col  = (0, 0, 255) if rec else (200, 200, 200)
-    link = "OK" if tele.alive() else "NO TELEM"
-    for i, txt in enumerate([
-        f"{'● REC' if rec else '○ STANDBY'}  frame:{sess.count}",
-        f"mode:{MODE_NAME.get(tele.mode,'?')}  telem:{link}  lat:{latency_ms:.0f}ms",
-        f"steer:{tele.steer:+.2f}  throt:{tele.throt:+.2f}",
-    ]):
-        cv2.putText(out, txt, (12, 28 + i * 26),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, col, 2)
+GREEN, RED, GRAY, YELLOW, WHITE = (0, 220, 0), (0, 0, 255), (190, 190, 190), (0, 210, 255), (255, 255, 255)
+
+
+def draw_overlay(frame, tele, sess, latency_ms, lat_status, cam, wfb, roi, scale=2):
+    """Phóng to ×scale để chữ to/nét; frame LƯU vẫn là frame gốc (overlay chỉ để hiển thị)."""
+    h0, w0 = frame.shape[:2]
+    out = cv2.resize(frame, (w0 * scale, h0 * scale), interpolation=cv2.INTER_NEAREST)
+    now = time.time()
+
+    def put(txt, row, col, sz=0.6):
+        cv2.putText(out, txt, (12, 32 + row * 30),
+                    cv2.FONT_HERSHEY_SIMPLEX, sz, col, 2, cv2.LINE_AA)
+
+    rec = sess.active
+    put(f"{'[REC]' if rec else '[STANDBY]'}  frame:{sess.count}", 0, RED if rec else GRAY, 0.7)
+
+    # telemetry ESP-NOW + RSSI
+    tok = tele.alive()
+    esp = f"{tele.rssi}dBm" if tele.rssi is not None else "--"
+    put(f"mode:{MODE_NAME.get(tele.mode,'?')}  telem:{'OK' if tok else 'NO TELEM'}  ESP:{esp}",
+        1, GREEN if tok else RED)
+
+    put(f"steer:{tele.steer:+.2f}  throt:{tele.throt:+.2f}", 2, WHITE)
+
+    # latency + trạng thái LED tracker
+    st, detail = lat_status
+    stcol = {"LIVE": GREEN, "DO": YELLOW, "STALE": RED, "OFF": GRAY}.get(st, GRAY)
+    put(f"lat:{latency_ms:.0f}ms  LED:{st} ({detail})", 3, stcol, 0.55)
+
+    # camera: FPS + độ tươi frame (đo phía recorder)
+    fps, age = cam.fps(), cam.age(now)
+    camcol = GREEN if (fps > 0 and age < 0.5) else RED
+    put(f"CAM:{fps:.0f}fps  age:{age*1000:.0f}ms", 4, camcol, 0.55)
+
+    # camera: RSSI + packet loss (từ WFB-NG)
+    if wfb is not None and wfb.alive() and wfb.rssi is not None:
+        tot = wfb.recv + wfb.lost
+        lossp = (100.0 * wfb.lost / tot) if tot else 0.0
+        wcol = GREEN if (wfb.rssi > -80 and lossp < 5) else (YELLOW if lossp < 20 else RED)
+        put(f"WFB:{wfb.rssi}dBm  loss:{wfb.lost} ({lossp:.0f}%)", 5, wcol, 0.55)
+    else:
+        put("WFB: no log (chay wfb_up.sh ban moi)", 5, GRAY, 0.55)
+
     if roi:
-        x, y, ww, hh = roi
+        x, y, ww, hh = (v * scale for v in roi)
         cv2.rectangle(out, (x, y), (x + ww, y + hh), (80, 80, 80), 1)
-    cv2.putText(out, "CH10=record  Q/ESC=thoat",
-                (12, h - 12), cv2.FONT_HERSHEY_SIMPLEX, 0.42, (160, 160, 160), 1)
+    cv2.putText(out, "CH10=record   F=fullscreen   Q/ESC=thoat",
+                (12, out.shape[0] - 14), cv2.FONT_HERSHEY_SIMPLEX, 0.5, GRAY, 1, cv2.LINE_AA)
     return out
 
 
@@ -317,11 +494,22 @@ def main():
     roi      = load_roi()
     fallback = load_fallback_latency()
 
+    port = resolve_port()
+    try:
+        tele = TelemetryReceiver(port=port)
+    except (OSError, serial.SerialException) as e:
+        ports = ", ".join(sorted(glob.glob("/dev/ttyACM*"))) or "(không có)"
+        print(f"✗ Không mở được serial {port}: {e}\n"
+              f"  Cổng đang có: {ports}\n"
+              f"  Cắm dongle chưa? Thử: python recorder.py auto", flush=True)
+        sys.exit(1)
     cap  = FrameCapture()
-    tele = TelemetryReceiver()
+    cam  = FpsMeter()
+    wfb  = WfbStatsReader()
     sess = Session(roi)
     cap.start()
     tele.start()
+    wfb.start()
 
     tracker = None
     if roi is None:
@@ -336,8 +524,11 @@ def main():
                   flush=True)
             tracker = None
 
-    cv2.namedWindow("JEPA Recorder — FlySky", cv2.WINDOW_NORMAL)
-    print("Sẵn sàng. Gạt CH10 để ghi, Q/ESC thoát.", flush=True)
+    WIN = "JEPA Recorder — FlySky"
+    cv2.namedWindow(WIN, cv2.WINDOW_NORMAL)
+    cv2.resizeWindow(WIN, 1280, 760)
+    fullscreen = False
+    print("Sẵn sàng. Gạt CH10 để ghi, F=fullscreen, Q/ESC thoát.", flush=True)
 
     save_interval = 1.0 / SAVE_HZ
     last_save = 0.0
@@ -347,12 +538,17 @@ def main():
         while True:
             frame, t_read = cap.get_frame_ts(timeout=0.05)
             now = time.time()
+            if frame is not None:
+                cam.tick(t_read)
 
-            # latency realtime + đo sáng ROI cho tracker
+            # latency realtime + đo sáng ROI cho tracker (tính spot 1 lần)
             latency = fallback
-            if tracker is not None and frame is not None:
-                tracker.observe(t_read, tracker.spot(frame))
+            spot = 0.0
+            if frame is not None and tracker is not None:
+                spot = tracker.spot(frame)
+                tracker.observe(t_read, spot)
                 latency = tracker.latency()
+            lat_status = tracker.status(now, spot) if tracker is not None else ("OFF", "no tracker")
 
             # start/stop session theo CH10
             rec = tele.rec if tele.alive() else 0
@@ -380,11 +576,16 @@ def main():
                                       latency, seq, esp_ms, tele.mode)
                         last_save = now
 
-                cv2.imshow("JEPA Recorder — FlySky",
-                           draw_overlay(frame, tele, sess, latency * 1000, roi))
+                cv2.imshow(WIN, draw_overlay(frame, tele, sess, latency * 1000,
+                                             lat_status, cam, wfb, roi))
 
-            if (cv2.waitKey(1) & 0xFF) in (ord("q"), 27):
+            key = cv2.waitKey(1) & 0xFF
+            if key in (ord("q"), 27):
                 break
+            if key == ord("f"):
+                fullscreen = not fullscreen
+                cv2.setWindowProperty(WIN, cv2.WND_PROP_FULLSCREEN,
+                                      cv2.WINDOW_FULLSCREEN if fullscreen else cv2.WINDOW_NORMAL)
 
     except KeyboardInterrupt:
         pass
@@ -394,6 +595,7 @@ def main():
         if tracker is not None:
             tele.send(LED_OFF)
         tele.stop()
+        wfb.stop()
         cap.stop()
         cv2.destroyAllWindows()
         print("Done.", flush=True)
