@@ -7,6 +7,7 @@ import subprocess
 import threading
 import queue
 import time
+from typing import Optional
 import numpy as np
 from pathlib import Path
 
@@ -24,8 +25,8 @@ class FrameCapture:
         self.h     = h
         self.fps   = fps
         self._q    = queue.Queue(maxsize=queue_size)
-        self._proc: subprocess.Popen | None = None
-        self._thread: threading.Thread | None = None
+        self._proc: Optional[subprocess.Popen] = None
+        self._thread: Optional[threading.Thread] = None
         self._stop  = threading.Event()
 
     # ------------------------------------------------------------------
@@ -71,7 +72,7 @@ class FrameCapture:
         except queue.Empty:
             return None, 0.0
 
-    def get_frame(self, timeout: float = 1.0) -> np.ndarray | None:
+    def get_frame(self, timeout: float = 1.0) -> Optional[np.ndarray]:
         """Return latest BGR frame (H×W×3 uint8), or None on timeout."""
         return self.get_frame_ts(timeout)[0]
 

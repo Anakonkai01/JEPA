@@ -133,6 +133,33 @@ sshpass -p '12345' scp -O drone.key root@192.168.1.10:/etc/drone.key
 sshpass -p '12345' ssh root@192.168.1.10 '/etc/init.d/S98wifibroadcast stop && sleep 2 && /etc/init.d/S98wifibroadcast start'
 ```
 
+## Camera (OpenIPC majestic + WFB) — config & OSD
+
+Camera is RunCam WiFiLink V3.1 (OpenIPC, `majestic` streamer). Edit settings via SSH (needs
+eth0 link above), apply with `killall -1 majestic`. Read/write keys with `cli -g/-s .a.b.c`.
+
+**Live config = `/etc/majestic.yaml`.** Current project settings (changed from FPV defaults):
+`video0.size 640x360`, `video0.fps 30`, `video0.bitrate 4000`, `video0.codec h265`,
+`rcMode cbr`, `gopSize 1`, `isp.exposure 5`. Rationale: pipeline downscales to 640×360 and
+V-JEPA only needs 256px, so encoding 360p direct + half the bitrate cuts link load/latency
+with no quality loss for the frozen encoder. Don't raise `isp.exposure` (motion blur on a
+moving car) or `contrast`/`saturation` (clips info; V-JEPA normalizes its input anyway).
+
+**Persistence gotcha.** `/usr/bin/wifibroadcast`'s `video_settings()` HARDCODES the FPV
+defaults (`1280x720`, `120fps`, `8192`, `exposure 5`) and would clobber majestic.yaml — BUT
+it's gated by `/etc/system.ok`, which **exists**, so it only runs on first boot or
+`wifibroadcast reset`. So our majestic.yaml edits persist across normal reboots. If video
+ever reverts to 720p/120/8192, it's because `system.ok` was deleted or `reset` was run.
+
+**OSD "Waiting for data on /dev/ttyS2" (red text) = `msposd`**, NOT majestic's `osd:` (that's
+already `enabled: false`) and NOT the `fpv:` plugin (that's low-latency FPV mode, keep it
+`true`). `msposd` is an MSP/MAVLink OSD daemon launched unconditionally by `start_telemetry`
+in `/usr/bin/wifibroadcast`; with no flight controller on `ttyS2` it just renders the waiting
+banner — which would burn into the H.265 stream and pollute training frames. **Disabled by
+commenting the `start_telemetry` call** (line ~160; backup at `/usr/bin/wifibroadcast.jepa-bak`).
+We don't use the WFB telemetry tunnel — our telemetry is the ESP32 UDP path. To re-enable:
+restore the backup. After editing, kill the running daemon immediately: `kill $(pgrep msposd)`.
+
 ## Firmware (firmware/)
 
 PlatformIO project, Arduino Core 3.x via pioarduino fork. Board: `esp32-s3-devkitc-1`, N16R8.
@@ -174,6 +201,19 @@ Firmware hardcodes `WIFI_SSID "Hoang Kim"`. The ESP32 is only reachable from the
 **both are on the same WiFi/router**. If `ping 192.168.1.23` fails (ARP INCOMPLETE), check
 the PC's current SSID vs the firmware SSID. The camera path (WFB-NG on `wlan1` monitor mode)
 is fully independent of this — different adapter, no IP, does not use the router.
+
+**Gotcha — eth0/wlan0 subnet conflict.** The camera-config link (`eth0 @ 192.168.1.100/24`,
+see "SSH to camera" above) and the router LAN (`wlan0`, ESP32 at `.23`) are **both on
+`192.168.1.0/24`**. When eth0 is up, its `proto kernel` route (metric 0) beats wlan0's
+(metric 600), so ARP for `192.168.1.23` goes out eth0 and fails (`dev eth0 INCOMPLETE`) →
+ESP32 unreachable, telemetry shows `NO TELEM`, latency LED never blinks. **Rule: after
+SSHing the camera, flush eth0 before recording** — `sudo ip addr flush dev eth0`. To confirm
+which way packets are going: `ping -I wlan0 192.168.1.23` (forces wlan0) — if that works but
+plain `ping` doesn't, it's this conflict.
+
+**Gotcha — `data/` is gitignored**, so a fresh clone has no `data/led_roi.json`. Without it
+the recorder disables the LatencyTracker → LED never blinks and frames aren't masked. Run
+`python tools/set_led_roi.py` once per machine to recreate it (bbox is in 640×360 space).
 
 ## Development Phases
 
