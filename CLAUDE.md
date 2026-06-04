@@ -220,9 +220,37 @@ Car is driven manually by FlySky during RECORD; `src/recorder.py` is a **passive
 receives telemetry → ring buffer → pairs each frame with the action at `t_read − latency`,
 where `latency` is measured **in realtime** by flashing the GPIO21 LED inside a fixed
 masked corner of the frame (`tools/set_led_roi.py` sets the bbox; tracker re-measures every
-~2s). `data/camera_latency.txt` is a fallback. The masked LED bbox is blacked out before
-saving so V-JEPA never sees the blinking light. Action recorded = normalized stick [−1,1]
-(remote D/R/EPA shapes it before i-BUS → recorded = actual command, fully synced).
+~2s). `data/camera_latency.txt` is a fallback (currently `0.092`, the trustworthy in-shade
+median). The masked LED bbox is blacked out before saving so V-JEPA never sees the blinking
+light. Action recorded = normalized stick [−1,1] (remote D/R/EPA shapes it before i-BUS →
+recorded = actual command, fully synced).
+
+**Latency strategy = fixed-from-shade (authoritative).** L_cam is **light-independent** (camera
+exposure/encode are locked), so the realtime LED tracker is NOT needed outdoors — it fails in
+direct midday sun (sun floods the ROI → bogus sub-40ms latencies; real floor ~88ms). Measure
+L_cam **once in shade** with `tools/measure_latency.py` (LED-flash, median of 15; LED is
+electrically instantaneous → measures **pure** camera latency) → it writes `camera_latency.txt`,
+which the recorder uses as the fixed fallback. **No shrouding needed** — just don't measure in
+sun. The LED stays only as an in-shade *verifier* (and re-measure after changing camera
+settings). The tracker now self-protects: rejects out-of-range latencies (`LAT_MIN`/`LAT_MAX`),
+requires a synchronous relative rise (`RISE_MIN` above the pre-flash baseline), and shows
+`LED:SUN` (red) + falls back to `camera_latency.txt` when saturated. See memory `led-latency-sun`.
+
+Note: a **motion cross-correlation** (optical-flow ↔ steering) cannot replace the LED for
+alignment — its lag is `L_cam + τ_vehicle` (steering→visible-yaw delay, 50–150ms), whereas data
+alignment needs *pure* L_cam (vehicle dynamics is what the predictor must learn, not absorb into
+the offset). Motion-corr is only a coarse sanity check.
+
+**Sync robustness (per-session outputs).** Each session now writes `telemetry.csv` — the full
+**raw 50Hz telemetry stream** (`t_recv`, `seq`, `esp_ms`, steer, throt, mode) — so alignment
+can be **re-done offline with any L_cam** (don't bake a possibly-wrong latency into the data).
+`actions.csv` remains the online best-effort pairing. When telemetry drops (weak/far signal),
+the frame's nearest action sample lands >`MATCH_TOL` (50ms) from `t_scene` → the frame is
+**dropped** (not paired with a stale action); the HUD shows `skip:N` and the end-of-session
+line reports it. A deferred offline `src/sync.py` (Phase-2/3, built with `offline_encode.py`)
+will re-pair each frame at `t_read − L_cam` (recovered as `t_scene + latency`) by **linearly
+interpolating** steer/throt from `telemetry.csv` at the fixed L_cam, dropping telemetry-gap
+frames, and writing `actions_synced.csv` (originals untouched).
 
 ### ESP-NOW link (replaces old WiFi/UDP telemetry)
 

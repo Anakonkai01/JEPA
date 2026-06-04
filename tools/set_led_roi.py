@@ -2,7 +2,7 @@
 Vẽ bbox chứa LED (cho latency tracker) — chạy MỘT LẦN, vẽ lại khi gắn lại LED.
 
 Luồng:
-  • Bật LED (UDP 0x01) để thấy chấm sáng.
+  • Bật LED (0x01 qua dongle ESP-NOW) để thấy chấm sáng.
   • Cửa sổ LIVE: chĩa/căn camera đến khi thấy LED, nhấn SPACE để chốt khung.
   • Kéo chuột khoanh ô quanh chấm LED → ENTER.
   • Lưu {x,y,w,h} vào data/led_roi.json (recorder + tracker tự đọc).
@@ -15,20 +15,21 @@ os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
 
 import json
 import time
-import socket
 import threading
 import subprocess
 from pathlib import Path
 
 import cv2
 import numpy as np
+import serial
+
+from dongle_link import Dongle, resolve_port  # ESP-NOW dongle (helper chung)
 
 ROOT     = Path(__file__).resolve().parent.parent
 SDP_PATH = str(Path.home() / "runcam.sdp")
 OUT_FILE = ROOT / "data" / "led_roi.json"
 
 W, H    = 640, 360                 # khớp capture.py
-ESP32   = ("192.168.1.23", 4210)
 LED_ON  = b"\x01"
 LED_OFF = b"\x00"
 
@@ -73,7 +74,11 @@ class LatestFrame:
 
 def main():
     OUT_FILE.parent.mkdir(parents=True, exist_ok=True)
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        dongle = Dongle(resolve_port())
+    except (OSError, serial.SerialException) as e:
+        print(f"✗ Không mở được dongle serial: {e}\n  Cắm dongle ESP-NOW vào USB chưa?")
+        return
     cam  = LatestFrame()
 
     print("Đang chờ stream camera...", flush=True)
@@ -85,12 +90,15 @@ def main():
         cam.stop(); return
 
     # 1) Ngắm LIVE (LED bật) --------------------------------------------
-    sock.sendto(LED_ON, ESP32)
+    dongle.send(LED_ON)
     print("→ Căn camera đến khi thấy chấm LED. SPACE = chốt, q = thoát.")
     win = "Set LED ROI  (SPACE=chot  q=thoat)"
     cv2.namedWindow(win, cv2.WINDOW_NORMAL)
     snap = None
+    next_on = 0.0
     while True:
+        if time.time() >= next_on:           # gửi lại LED_ON liên tục (ESP-NOW unicast có thể rớt gói)
+            dongle.send(LED_ON); next_on = time.time() + 0.4
         f = cam.get()
         if f is not None:
             snap = f
@@ -102,7 +110,7 @@ def main():
         if k == ord(" ") and snap is not None:
             break
         if k in (ord("q"), 27):
-            cv2.destroyAllWindows(); sock.sendto(LED_OFF, ESP32); cam.stop()
+            cv2.destroyAllWindows(); dongle.send(LED_OFF); dongle.close(); cam.stop()
             print("✗ Thoát."); return
     cv2.destroyAllWindows()
 
@@ -110,7 +118,7 @@ def main():
     print("→ Kéo chuột khoanh ô quanh chấm LED (chừa rộng chút), rồi ENTER.")
     x, y, w, h = cv2.selectROI("Khoanh LED (ENTER de xac nhan)", snap, False, False)
     cv2.destroyAllWindows()
-    sock.sendto(LED_OFF, ESP32)
+    dongle.send(LED_OFF)
     if w == 0 or h == 0:
         print("✗ Chưa khoanh — thoát."); cam.stop(); return
 
@@ -128,6 +136,7 @@ def main():
         cv2.imshow("Preview masked", f)
         cv2.waitKey(0)
         cv2.destroyAllWindows()
+    dongle.close()
     cam.stop()
 
 

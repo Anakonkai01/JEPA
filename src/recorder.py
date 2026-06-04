@@ -57,6 +57,17 @@ WFB_STATS_LOG = "/tmp/jepa_wfb_stats.log"
 FLASH_PERIOD = 2.0           # tracker nháy LED mỗi 2s
 LED_ON, LED_OFF = b"\x01", b"\x00"
 
+# Chống nháy ảo ngoài nắng: latency vật lý của đường truyền (H.265+WFB+decode)
+# không thể < ~40ms — đo trong bóng cho ~88–117ms. Mọi giá trị ngoài [MIN,MAX] = ảo, bỏ.
+LAT_MIN, LAT_MAX = 0.040, 0.600
+# LED phải làm điểm sáng ROI vọt lên ÍT NHẤT chừng này (gray level) so với nền ngay
+# trước khi bật. Nền (nắng) đã sáng tới mức không còn đủ "khoảng trống" → bỏ nháy, báo SUN.
+RISE_MIN = 30.0
+
+# Telemetry @50Hz = 20ms/sample. Khi telemetry rớt (xa/yếu), sample khớp gần t_scene nhất
+# sẽ cách xa hơn nhiều → action ôi. Lệch > ngưỡng này ⇒ BỎ frame (không ghép action sai).
+MATCH_TOL = 0.050            # 50ms ≈ 2.5 sample
+
 # Telemetry struct (khớp firmware, little-endian, packed):
 #   magic B|mode B|seq I|esp_ms I|steering f|throttle f|ch_steer H|ch_throt H|ch_record H|rec B
 TELEM_FMT   = "<BBIIffHHHB"
@@ -132,6 +143,7 @@ class TelemetryReceiver:
         self.steer    = 0.0
         self.throt    = 0.0
         self.rssi     = None               # RSSI ESP-NOW (dBm) — dongle gắn vào byte 26
+        self._raw     = deque()            # stream 50Hz THÔ chờ ghi telemetry.csv (re-align offline)
         self._thread  = threading.Thread(target=self._run, daemon=True)
 
     def start(self):
@@ -157,9 +169,11 @@ class TelemetryReceiver:
     def _run(self):
         while not self._stop.is_set():
             try:
+                if not self._ser.is_open:
+                    break
                 chunk = self._ser.read(self._ser.in_waiting or 1)
-            except (OSError, serial.SerialException):
-                break
+            except (OSError, serial.SerialException, TypeError):
+                break          # stop() đóng cổng giữa lúc đọc → fd=None → TypeError, thoát êm
             if not chunk:
                 continue
             self._rxbuf.extend(chunk)
@@ -190,18 +204,27 @@ class TelemetryReceiver:
                     cutoff = t - self.buffer_s
                     while self._buf and self._buf[0][0] < cutoff:
                         self._buf.popleft()
+                    self._raw.append((t, seq, esp_ms, steer, throt, mode))
                     self.last_t, self.rec, self.mode = t, rec, mode
                     self.steer, self.throt = steer, throt
                     if rssi is not None:
                         self.rssi = rssi
 
     def lookup(self, t_scene: float):
-        """(steer, throt, seq, esp_ms) của sample gần t_scene nhất, None nếu rỗng."""
+        """(steer, throt, seq, esp_ms, t_recv) của sample gần t_scene nhất, None nếu rỗng.
+        t_recv (đồng hồ PC) để bên gọi đo độ lệch ghép cặp → bỏ frame khi telemetry rớt."""
         with self._lock:
             if not self._buf:
                 return None
             b = min(self._buf, key=lambda s: abs(s[0] - t_scene))
-        return b[1], b[2], b[3], b[4]
+        return b[1], b[2], b[3], b[4], b[0]
+
+    def drain_raw(self):
+        """Lấy & xoá toàn bộ sample 50Hz thô tích luỹ (để main loop ghi telemetry.csv)."""
+        with self._lock:
+            out = list(self._raw)
+            self._raw.clear()
+        return out
 
 
 # ══════════════════════════════════════════════════════════════
@@ -295,10 +318,13 @@ class LatencyTracker:
         self._lat   = deque(maxlen=7)       # median trượt
         self.state  = "IDLE"
         self.t0     = 0.0
+        self.pre    = 0.0                   # nền ngay TRƯỚC nháy (baseline đồng bộ)
         self.next_flash = 0.0
         self.cool_until = 0.0
         self._new   = None                  # mẫu mới (cho log)
         self.last_measure_t = 0.0           # mốc đo thành công gần nhất (chỉ cho HUD)
+        self.last_sat_t     = 0.0           # mốc bỏ nháy gần nhất vì nền bão hoà (nắng)
+        self.n_reject       = 0             # số lần bắt được "LED" nhưng latency ngoài [MIN,MAX] (ảo)
 
     def spot(self, frame) -> float:
         g = cv2.cvtColor(frame[self.y:self.y+self.h, self.x:self.x+self.w],
@@ -319,19 +345,32 @@ class LatencyTracker:
             return
         now = time.time()
         if self.state == "IDLE":
-            # LED đang tắt → cập nhật nền + ngưỡng theo ánh sáng môi trường realtime
+            # LED đang tắt → cập nhật nền theo ánh sáng môi trường realtime.
             self.base_ema = 0.95 * self.base_ema + 0.05 * spot
-            self.thr = (self.base_ema + self.on_level) / 2.0
+            headroom = self.on_level - self.base_ema
+            # Ngưỡng = nền + bước nhảy tối thiểu (tương đối, KHÔNG dùng mức tuyệt đối) →
+            # nắng nâng nền lên thì ngưỡng cũng nâng theo, không bắt nhầm.
+            self.thr = self.base_ema + max(RISE_MIN, 0.5 * headroom)
             if now >= self.next_flash:
-                self.send(LED_ON); self.t0 = now; self.state = "WAIT"
+                self.pre = self.base_ema
+                if headroom < RISE_MIN:
+                    # Nền đã sáng sát mức LED (nắng gắt) → LED không thể tách khỏi nền.
+                    # Bỏ nháy này, đánh dấu SUN; latency() sẽ tự rơi về fallback/median cũ.
+                    self.last_sat_t = now
+                    self.next_flash = now + self.period
+                else:
+                    self.send(LED_ON); self.t0 = now; self.state = "WAIT"
         elif self.state == "WAIT":
-            if t_read > self.t0 and spot > self.thr:
+            # Chỉ chấp nhận khi điểm sáng VỌT so với nền-ngay-trước (đồng bộ với lệnh bật).
+            if t_read > self.t0 and spot >= self.thr and spot - self.pre >= RISE_MIN:
                 lat = t_read - self.t0
-                if 0.0 < lat < 1.0:                 # bỏ outlier
+                if LAT_MIN <= lat <= LAT_MAX:            # latency vật lý hợp lệ
                     self._lat.append(lat); self._new = lat
-                    self.last_measure_t = now       # mốc cho HUD (KHÔNG đổi logic đo)
+                    self.last_measure_t = now
+                else:                                    # quá nhanh/chậm = ảo (nắng) → bỏ
+                    self.n_reject += 1
                 self.send(LED_OFF); self.state = "COOL"; self.cool_until = now + 0.4
-            elif now - self.t0 > 1.0:               # timeout
+            elif now - self.t0 > 1.0:                    # timeout (không thấy LED vọt lên)
                 self.send(LED_OFF); self.state = "COOL"; self.cool_until = now + 0.4
         elif self.state == "COOL":
             if now >= self.cool_until:
@@ -348,8 +387,12 @@ class LatencyTracker:
         """(nhãn, chi tiết) cho HUD — vì sao latency đang cập nhật được hay không."""
         if self.thr is None:
             return ("OFF", "chua calib")
+        # Nền bão hoà (nắng) trong ~6s gần đây → LED không tách được, đang dùng fallback.
+        if self.last_sat_t and now - self.last_sat_t < 3 * self.period:
+            return ("SUN", f"nen bao hoa {self.base_ema:.0f}>=on{self.on_level:.0f}-{RISE_MIN:.0f} -> fallback")
         if self.last_measure_t == 0:
-            return ("DO", f"chua thay LED  spot{spot:.0f}/thr{self.thr:.0f}")
+            tail = f"  (bo {self.n_reject} gt ao)" if self.n_reject else ""
+            return ("DO", f"chua thay LED  spot{spot:.0f}/thr{self.thr:.0f}{tail}")
         age = now - self.last_measure_t
         if age > 3 * self.period:               # >~6s không đo được → LED khuất/ngoài ROI
             return ("STALE", f"{age:.0f}s ko thay LED  spot{spot:.0f}/thr{self.thr:.0f}")
@@ -363,9 +406,10 @@ class Session:
     def __init__(self, roi):
         self.roi = roi
         self.dir = None
-        self.csv_file = self.lat_file = None
-        self.csv_writer = self.lat_writer = None
+        self.csv_file = self.lat_file = self.tel_file = None
+        self.csv_writer = self.lat_writer = self.tel_writer = None
         self.count = 0
+        self.skipped = 0           # frame bị bỏ vì telemetry rớt (ghép cặp không tin được)
         self.active = False
 
     def start(self, latency):
@@ -380,12 +424,19 @@ class Session:
         self.lat_file = open(self.dir / "latency.csv", "w", newline="")
         self.lat_writer = csv.writer(self.lat_file)
         self.lat_writer.writerow(["t_pc", "latency_ms"])
+        # Stream telemetry 50Hz THÔ — để re-align offline với L_cam bất kỳ (không phụ thuộc
+        # giá trị latency lúc thu). t_recv = đồng hồ PC; esp_ms = đồng hồ ESP32.
+        self.tel_file = open(self.dir / "telemetry.csv", "w", newline="")
+        self.tel_writer = csv.writer(self.tel_file)
+        self.tel_writer.writerow(["t_recv", "seq", "esp_ms", "steering", "throttle", "mode"])
         (self.dir / "meta.json").write_text(json.dumps({
             "led_roi": {"x": self.roi[0], "y": self.roi[1],
                         "w": self.roi[2], "h": self.roi[3]} if self.roi else None,
             "latency_start": latency, "save_hz": SAVE_HZ, "started": ts,
+            "match_tol": MATCH_TOL,
         }, indent=2))
         self.count = 0
+        self.skipped = 0
         self.active = True
         print(f"[REC] ● Bắt đầu → {self.dir}", flush=True)
 
@@ -401,13 +452,22 @@ class Session:
         if self.lat_writer:
             self.lat_writer.writerow([round(t_pc, 4), round(lat * 1000, 1)])
 
+    def log_telem(self, samples):
+        if not self.tel_writer:
+            return
+        for t_recv, seq, esp_ms, steer, throt, mode in samples:
+            self.tel_writer.writerow([round(t_recv, 4), seq, esp_ms,
+                                      round(steer, 4), round(throt, 4), mode])
+
     def stop(self):
         self.active = False
-        for f in (self.csv_file, self.lat_file):
+        for f in (self.csv_file, self.lat_file, self.tel_file):
             if f:
                 f.close()
-        self.csv_file = self.lat_file = self.csv_writer = self.lat_writer = None
-        print(f"[REC] ○ Kết thúc — {self.count} frames → {self.dir}", flush=True)
+        self.csv_file = self.lat_file = self.tel_file = None
+        self.csv_writer = self.lat_writer = self.tel_writer = None
+        print(f"[REC] ○ Kết thúc — {self.count} frames "
+              f"(bỏ {self.skipped} vì telemetry rớt) → {self.dir}", flush=True)
 
 
 # ══════════════════════════════════════════════════════════════
@@ -427,7 +487,8 @@ def draw_overlay(frame, tele, sess, latency_ms, lat_status, cam, wfb, roi, scale
                     cv2.FONT_HERSHEY_SIMPLEX, sz, col, 2, cv2.LINE_AA)
 
     rec = sess.active
-    put(f"{'[REC]' if rec else '[STANDBY]'}  frame:{sess.count}", 0, RED if rec else GRAY, 0.7)
+    skip = f"  skip:{sess.skipped}" if sess.skipped else ""
+    put(f"{'[REC]' if rec else '[STANDBY]'}  frame:{sess.count}{skip}", 0, RED if rec else GRAY, 0.7)
 
     # telemetry ESP-NOW + RSSI
     tok = tele.alive()
@@ -439,7 +500,7 @@ def draw_overlay(frame, tele, sess, latency_ms, lat_status, cam, wfb, roi, scale
 
     # latency + trạng thái LED tracker
     st, detail = lat_status
-    stcol = {"LIVE": GREEN, "DO": YELLOW, "STALE": RED, "OFF": GRAY}.get(st, GRAY)
+    stcol = {"LIVE": GREEN, "DO": YELLOW, "STALE": RED, "SUN": RED, "OFF": GRAY}.get(st, GRAY)
     put(f"lat:{latency_ms:.0f}ms  LED:{st} ({detail})", 3, stcol, 0.55)
 
     # camera: FPS + độ tươi frame (đo phía recorder)
@@ -558,6 +619,13 @@ def main():
                 sess.stop()
             prev_rec = rec
 
+            # Telemetry raw 50Hz: REC → ghi mọi vòng (kể cả frame None, không thủng stream);
+            # standby → xả-bỏ để session sau không dính backlog.
+            if sess.active:
+                sess.log_telem(tele.drain_raw())
+            else:
+                tele.drain_raw()
+
             if frame is not None:
                 if roi is not None:                       # TÔ ĐEN bbox LED
                     x, y, w, h = roi
@@ -569,11 +637,14 @@ def main():
                         if m is not None:
                             sess.log_latency(now, m)
                     if now - last_save >= save_interval:
-                        act = tele.lookup(t_read - latency)
-                        if act is not None:
-                            steer, throt, seq, esp_ms = act
-                            sess.save(frame, now, t_read - latency, steer, throt,
+                        t_scene = t_read - latency
+                        act = tele.lookup(t_scene)
+                        if act is not None and abs(act[4] - t_scene) <= MATCH_TOL:
+                            steer, throt, seq, esp_ms, _ = act
+                            sess.save(frame, now, t_scene, steer, throt,
                                       latency, seq, esp_ms, tele.mode)
+                        else:                              # telemetry rớt → action ôi, bỏ frame
+                            sess.skipped += 1
                         last_save = now
 
                 cv2.imshow(WIN, draw_overlay(frame, tele, sess, latency * 1000,

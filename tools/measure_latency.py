@@ -2,26 +2,30 @@
 Đo CAMERA_LATENCY (độ trễ glass→PC của đường camera) — chạy MỘT LẦN để calibrate.
 
 Nguyên lý (phương pháp LED):
-  PC gửi UDP bật LED onboard ESP32 + ghi t0
+  PC bật LED qua dongle ESP-NOW + ghi t0
   → camera nhìn thấy LED sáng ở frame nào đó (t_frame)
   → latency = t_frame − t0
   Lặp N lần, lấy trung vị (median) cho ổn định.
 
+LED tức thời về điện → đo đúng L_cam THUẦN (chỉ độ trễ đường camera, không dính động học
+xe). L_cam độc lập ánh sáng → đo MỘT LẦN TRONG BÓNG/RÂM rồi dùng cố định cả ngoài nắng.
+
 Yêu cầu:
-  • ESP32 đã flash firmware (hỗ trợ UDP 0x01=LED on, 0x00=LED off).
+  • Cắm dongle ESP-NOW vào USB + bật xe (firmware hỗ trợ 0x01=LED on, 0x00=LED off).
   • Stream camera đang chạy (bash scripts/wfb_up.sh).
-  • CHĨA CAMERA VÀO LED onboard của ESP32, phòng hơi tối để LED nổi bật.
+  • Dùng **ROI CHUNG** data/led_roi.json (chạy tools/set_led_roi.py trước) = đúng LED gắn cố
+    định mà recorder mask. Đảm bảo LED nằm trong ô + đang TRONG BÓNG/RÂM (đừng đo dưới nắng gắt).
+    Nếu chưa có led_roi.json → tool cho vẽ ROI tạm.
 
-Kết quả ghi vào data/camera_latency.txt → recorder.py tự đọc.
+Kết quả ghi vào data/camera_latency.txt → recorder.py đọc làm fallback cố định.
 
-Chạy:  conda activate ai && python tools/measure_latency.py
+Chạy:  conda activate ai && python tools/measure_latency.py [/dev/ttyACMx | auto]
 """
 
 import os
 os.environ.setdefault("QT_QPA_PLATFORM", "xcb")
 
 import time
-import socket
 import threading
 import subprocess
 import statistics
@@ -29,13 +33,16 @@ from pathlib import Path
 
 import cv2
 import numpy as np
+import serial
+
+from dongle_link import Dongle, resolve_port  # ESP-NOW dongle (helper chung)
+from recorder import load_roi                  # ROI chung: data/led_roi.json (= recorder mask)
 
 ROOT     = Path(__file__).resolve().parent.parent
 SDP_PATH = str(Path.home() / "runcam.sdp")
 OUT_FILE = ROOT / "data" / "camera_latency.txt"
 
 W, H        = 640, 360
-ESP32       = ("192.168.1.23", 4210)
 N_TRIALS    = 15
 LED_ON      = b"\x01"
 LED_OFF     = b"\x00"
@@ -95,45 +102,58 @@ def wait_frame(cam, timeout=5.0):
 
 def main():
     OUT_FILE.parent.mkdir(parents=True, exist_ok=True)
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        dongle = Dongle(resolve_port())
+    except (OSError, serial.SerialException) as e:
+        print(f"✗ Không mở được dongle serial: {e}\n  Cắm dongle ESP-NOW + bật xe chưa?")
+        return
     cam  = LatestFrame()
 
     print("Đang chờ stream camera...", flush=True)
     frame, _ = wait_frame(cam)
     if frame is None:
         print("✗ Không có frame — stream camera chạy chưa? (bash scripts/wfb_up.sh)")
-        cam.stop(); return
+        dongle.close(); cam.stop(); return
 
-    # 1) Ngắm camera vào LED (LIVE) -------------------------------------
-    sock.sendto(LED_ON, ESP32)   # bật LED để ngắm
-    print("→ Chĩa camera vào LED đến khi thấy chấm sáng. SPACE = chốt khung, q = thoát.")
-    aim_win = "Ngam camera vao LED  (SPACE=chot  q=thoat)"
-    cv2.namedWindow(aim_win, cv2.WINDOW_NORMAL)
-    snap = None
-    while True:
-        f, _ = cam.get()
-        if f is not None:
-            snap = f
-            disp = f.copy()
-            cv2.putText(disp, "Chia camera vao LED. SPACE=chot, q=thoat",
-                        (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
-            cv2.imshow(aim_win, disp)
-        k = cv2.waitKey(30) & 0xFF
-        if k == ord(" ") and snap is not None:
-            break
-        if k in (ord("q"), 27):
-            cv2.destroyAllWindows(); sock.sendto(LED_OFF, ESP32); cam.stop()
-            print("✗ Thoát."); return
-    cv2.destroyAllWindows()
-
-    # 2) Khoanh ô quanh chấm LED trên frame vừa chốt --------------------
-    print("→ Kéo chuột khoanh vùng quanh chấm LED, rồi ENTER/SPACE.")
-    x, y, w, h = cv2.selectROI("Chon vung LED (ENTER de xac nhan)", snap, False, False)
-    cv2.destroyAllWindows()
-    sock.sendto(LED_OFF, ESP32)
-    if w == 0 or h == 0:
-        print("✗ Chưa chọn vùng — thoát.")
-        cam.stop(); return
+    # 1) Lấy ROI — ƯU TIÊN ô CHUNG data/led_roi.json (= ô recorder mask + set_led_roi đặt).
+    #    Đo latency bằng đúng LED gắn cố định, đúng ô đó → 1 nguồn ROI duy nhất.
+    roi = load_roi()
+    if roi is not None:
+        x, y, w, h = roi
+        print(f"→ Dùng ROI chung (led_roi.json): {roi}. Đảm bảo LED gắn cố định nằm trong ô "
+              f"và đang TRONG BÓNG/RÂM (đừng đo dưới nắng gắt).")
+    else:
+        # Chưa có ô chung → vẽ tạm (chạy tools/set_led_roi.py trước để đặt ô chung là tốt nhất).
+        print("⚠ Chưa có data/led_roi.json — vẽ ROI tạm. Chĩa camera vào LED.")
+        print("→ SPACE = chốt khung, q = thoát.")
+        aim_win = "Ngam camera vao LED  (SPACE=chot  q=thoat)"
+        cv2.namedWindow(aim_win, cv2.WINDOW_NORMAL)
+        snap = None
+        next_on = 0.0
+        while True:
+            if time.time() >= next_on:           # gửi lại LED_ON (ESP-NOW unicast có thể rớt gói)
+                dongle.send(LED_ON); next_on = time.time() + 0.4
+            f, _ = cam.get()
+            if f is not None:
+                snap = f
+                disp = f.copy()
+                cv2.putText(disp, "Chia camera vao LED. SPACE=chot, q=thoat",
+                            (10, 25), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                cv2.imshow(aim_win, disp)
+            k = cv2.waitKey(30) & 0xFF
+            if k == ord(" ") and snap is not None:
+                break
+            if k in (ord("q"), 27):
+                cv2.destroyAllWindows(); dongle.send(LED_OFF); dongle.close(); cam.stop()
+                print("✗ Thoát."); return
+        cv2.destroyAllWindows()
+        print("→ Kéo chuột khoanh vùng quanh chấm LED, rồi ENTER/SPACE.")
+        x, y, w, h = cv2.selectROI("Chon vung LED (ENTER de xac nhan)", snap, False, False)
+        cv2.destroyAllWindows()
+        dongle.send(LED_OFF)
+        if w == 0 or h == 0:
+            print("✗ Chưa chọn vùng — thoát.")
+            dongle.close(); cam.stop(); return
 
     # Đo theo ĐIỂM SÁNG NHẤT trong ô (blur nhẹ chống nhiễu 1 pixel) —
     # bắt được chấm LED nhỏ kể cả khi nền tối, không bị "pha loãng" như mean.
@@ -143,15 +163,15 @@ def main():
         return float(g.max())
 
     # 3) Auto-calibrate ngưỡng sáng -------------------------------------
-    sock.sendto(LED_OFF, ESP32); time.sleep(0.5)
+    dongle.send(LED_OFF); time.sleep(0.5)
     f_off, _ = wait_frame(cam); base = roi_spot(f_off)
-    sock.sendto(LED_ON, ESP32); time.sleep(0.5)
+    dongle.send(LED_ON); time.sleep(0.5)
     f_on, _ = wait_frame(cam);  lit = roi_spot(f_on)
-    sock.sendto(LED_OFF, ESP32); time.sleep(0.5)
+    dongle.send(LED_OFF); time.sleep(0.5)
     print(f"   ROI điểm sáng nhất: tắt={base:.0f}  bật={lit:.0f}  (chênh {lit-base:.0f})")
     if lit - base < 15:
         print("⚠ Chênh lệch quá nhỏ — khoanh ROI sát chấm LED hơn / đưa LED vào khung rõ hơn.")
-        cam.stop(); return
+        dongle.close(); cam.stop(); return
     thr = (base + lit) / 2.0
 
     # 4) Đo N lần (có cửa sổ xem trực tiếp) ------------------------------
@@ -169,7 +189,7 @@ def main():
 
     latencies = []
     for i in range(N_TRIALS):
-        sock.sendto(LED_OFF, ESP32)
+        dongle.send(LED_OFF)
         t_off = time.time()
         while time.time() - t_off < 0.4:      # chờ LED tắt hẳn + frame ổn định
             f, _ = cam.get()
@@ -179,7 +199,7 @@ def main():
             break
 
         t0 = time.time()
-        sock.sendto(LED_ON, ESP32)
+        dongle.send(LED_ON)
         hit = None
         while time.time() - t0 < 1.0:         # timeout 1s/lần
             f, t = cam.get()
@@ -201,7 +221,8 @@ def main():
         else:
             print(f"   [{i+1:2d}/{N_TRIALS}] (không phát hiện — bỏ qua)")
 
-    sock.sendto(LED_OFF, ESP32)
+    dongle.send(LED_OFF)
+    dongle.close()
     cam.stop()
     cv2.destroyAllWindows()
     if aborted:
