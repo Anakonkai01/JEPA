@@ -49,6 +49,9 @@ static int hexVal(char c) {
 void setupEspNow() {
     WiFi.mode(WIFI_STA);
     WiFi.disconnect();
+    // Long-Range mode — phải khớp với car (xem main.cpp). Lệch LR ↔ thường = mất liên lạc.
+    if (esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_LR) != ESP_OK)
+        Serial.println("[ESP-NOW] set LR protocol THAT BAI");
     Serial.printf("[ESP-NOW] MAC con nay: %s\n", WiFi.macAddress().c_str());
 
     esp_wifi_set_channel(ESPNOW_CHANNEL, WIFI_SECOND_CHAN_NONE);

@@ -8,6 +8,22 @@
 
 ---
 
+## ⚠️ PIVOT (2026-06-04): thu data → điện thoại onboard
+
+Link 5.8GHz WFB chết ở ~50m (vỡ hình, ~3% frame stutter có chỗ mất nhiều giây, latency 92→310ms).
+→ **Chuyển thu data sang điện thoại Android đặt trên xe** (camera ultrawide + đọc ESP32 qua USB
+no-root), app ở `android/` (xem `android/README.md`). Lưu **đúng schema recorder.py** → `sync.py`/
+`offline_encode.py` dùng lại. **Hết bài toán L_cam/LED/WFB** (frame & telemetry cùng đồng hồ điện
+thoại). OpenIPC+WFB+`recorder.py` = rig CŨ, giữ làm fallback/tham chiếu. Inference (Phase 4) vẫn
+cần PC (RTX chạy V-JEPA) → điện thoại TCP-stream frame về PC, nhận 2-byte action. Chi tiết: memory
+`onboard-phone-pivot`.
+
+**Đã làm 2026-06-04 (session này):** ESP-NOW LR (firmware car+dongle, flash+verify); tools chuyển
+UDP→dongle + gom `tools/dongle_link.py` + `measure_latency.py` dùng ROI chung; recorder thêm
+`telemetry.csv` 50Hz + gate bỏ frame telemetry-rớt + chống ảo LED nắng; scaffold app `android/`.
+
+---
+
 ## Current Status (cập nhật 2026-06-03)
 
 ### ✅ Đã xong & validate

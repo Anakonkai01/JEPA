@@ -12,7 +12,27 @@ Novel contribution: first evaluation of V-JEPA 2 family on a mobile robot — Me
 
 Deadline: 2026-06-15.
 
-## System Architecture
+## ⚠️ ARCHITECTURE PIVOT (2026-06-04) — data collection → onboard Android phone
+
+**The 5.8GHz WFB camera link failed at range** (≈50m: image break-up, ~3% frame stutter with
+multi-second dropouts, latency ballooning 92→310ms under packet loss). Decision: **stop fighting
+the wireless video link — put an Android phone ON the car** as camera + recorder + relay.
+
+- **New data-collection rig** = `android/` app (Kotlin/CameraX, see `android/README.md`): phone's
+  **ultrawide camera** captures frames locally; reads ESP32 telemetry over **USB (no-root,
+  usb-serial-for-android)**; saves `frames/*.jpg + actions.csv + telemetry.csv` in the **same schema
+  as `recorder.py`** → reuse `sync.py`/`offline_encode.py` unchanged. Frame timestamp shares the
+  phone clock with telemetry → **the entire L_cam / LED / WFB-latency problem disappears.**
+- Phone (Samsung A42 5G, Android 13) ↔ **dongle** via USB (same hex protocol as `recorder.py`);
+  dongle ↔ car via ESP-NOW <0.3m (now LR). **No firmware change needed.** (Later option: phone↔car
+  ESP32 direct USB, drop the dongle.)
+- **Inference (Phase 4) still needs the PC** (V-JEPA ViT-L runs on the RTX, not the phone): phone
+  will TCP-stream frames to PC, PC computes, returns 2-byte action → phone → ESP32. Slow is OK.
+- **The OpenIPC + WFB + PC-`recorder.py` path below is the PRIOR rig** — kept as fallback/reference
+  and still valid for understanding the protocol/firmware. Status: phone app MVP scaffolded, **not yet
+  built/tested on device**. See memory `onboard-phone-pivot`.
+
+## System Architecture (PRIOR rig — being replaced for data collection; see pivot above)
 
 ```
 [RunCam WiFiLink 2]  --WFB-NG (RTL8812AU, wlan1, ch161, H.265)-->  [PC: RTX 5070 Ti]
@@ -184,7 +204,9 @@ ESP-NOW↔serial bridge on the PC). Build/flash with the venv pio (see Python En
 ~/.pio-venv/bin/pio run -d firmware -e dongle -t upload --upload-port /dev/ttyACM0
 ```
 
-**ESP-NOW link:** unicast, channel 1, LR off. Peer MACs hardcoded in `firmware/include/peers.h`.
+**ESP-NOW link:** unicast, channel 1, **LR on** (`esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_LR)`
+in both `setupEspNow()` — sensitivity to ~−94dBm for range; must match on car+dongle or no link).
+Peer MACs hardcoded in `firmware/include/peers.h`.
 Re-pair new boards: read MAC with `~/.pio-venv/bin/esptool --port /dev/ttyACMx read-mac`
 (= the STA MAC the firmware uses), edit `peers.h`, reflash both. Boards also print their own
 MAC on boot (`[ESP-NOW] MAC con nay: …`). 2.4GHz ESP-NOW does not interfere with the 5.8GHz

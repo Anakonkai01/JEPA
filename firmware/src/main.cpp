@@ -230,6 +230,10 @@ Mode computeMode() {
 void setupEspNow() {
     WiFi.mode(WIFI_STA);
     WiFi.disconnect();               // không associate vào AP nào
+    // Long-Range mode: hạ PHY rate đổi lấy độ nhạy ~−94dBm (xa hơn ~2–4×). Chỉ ESP32↔ESP32;
+    // phải bật ở CẢ car + dongle (lệch là không liên lạc được). Telemetry 25B << payload limit.
+    if (esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_LR) != ESP_OK)
+        Serial.println("[ESP-NOW] set LR protocol THAT BAI");
     Serial.printf("[ESP-NOW] MAC con nay: %s\n", WiFi.macAddress().c_str());
 
     esp_wifi_set_channel(ESPNOW_CHANNEL, WIFI_SECOND_CHAN_NONE);
