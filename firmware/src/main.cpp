@@ -24,6 +24,30 @@
 #include "peers.h"
 
 // ============================================================
+//  USB SERIAL BRIDGE (điện thoại on-car cắm THẲNG vào xe — thay dongle)
+//    Telemetry phun ra hex+'\n' qua USB; control đọc hex+'\n' từ USB.
+//    Giữ song song ESP-NOW (dongle vẫn dùng được làm fallback).
+// ============================================================
+#define DEBUG_SERIAL 0          // 1 = in debug 5Hz ra USB (làm BẨN luồng hex — chỉ bật khi soi bench)
+static const char HEXC[] = "0123456789abcdef";
+
+static void writeHexLine(const uint8_t *buf, int n) {
+    char out[2 * 64 + 1];
+    if (n > 64) n = 64;
+    int p = 0;
+    for (int i = 0; i < n; i++) { out[p++] = HEXC[buf[i] >> 4]; out[p++] = HEXC[buf[i] & 0x0F]; }
+    out[p++] = '\n';
+    Serial.write((const uint8_t*)out, p);
+}
+
+static int hexVal(char c) {
+    if (c >= '0' && c <= '9') return c - '0';
+    if (c >= 'a' && c <= 'f') return c - 'a' + 10;
+    if (c >= 'A' && c <= 'F') return c - 'A' + 10;
+    return -1;
+}
+
+// ============================================================
 //  PIN & PWM
 // ============================================================
 const int SERVO_PIN   = 5;
@@ -174,7 +198,8 @@ bool ibusAlive() {
 //    len 1  : 0x01=LED on  0x00=LED off
 //  Chạy trong ngữ cảnh WiFi task → chỉ set biến volatile / toggle GPIO (nhanh).
 // ============================================================
-void onEspNowRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
+// Áp control (AUTO 2-byte hoặc LED 1-byte) — DÙNG CHUNG cho ESP-NOW lẫn USB serial.
+void applyControl(const uint8_t *data, int len) {
     if (len >= 2) {
         autoSteerB  = data[0];
         autoThrotB  = data[1];
@@ -187,6 +212,36 @@ void onEspNowRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len)
         } else if (data[0] == 0x00) { // off
             rgbLedWrite(RGB_BUILTIN, 0, 0, 0);
             digitalWrite(EXT_LED_PIN, LOW);
+        }
+    }
+}
+
+void onEspNowRecv(const esp_now_recv_info_t *info, const uint8_t *data, int len) {
+    applyControl(data, len);
+}
+
+// Đọc lệnh hex+'\n' từ USB (điện thoại cắm thẳng) → applyControl. Vô hại khi RECORD.
+void readUsbControl() {
+    static char lineBuf[160];
+    static int  lp = 0;
+    while (Serial.available()) {
+        char c = (char)Serial.read();
+        if (c == '\n' || c == '\r') {
+            if (lp > 0 && (lp % 2) == 0) {
+                uint8_t cmd[80];
+                int n = 0; bool ok = true;
+                for (int i = 0; i < lp; i += 2) {
+                    int hi = hexVal(lineBuf[i]), lo = hexVal(lineBuf[i + 1]);
+                    if (hi < 0 || lo < 0) { ok = false; break; }
+                    cmd[n++] = (uint8_t)((hi << 4) | lo);
+                }
+                if (ok && n > 0) applyControl(cmd, n);
+            }
+            lp = 0;                          // reset bất kể hợp lệ hay không (resync)
+        } else if (lp < (int)sizeof(lineBuf)) {
+            lineBuf[lp++] = c;
+        } else {
+            lp = 0;                          // tràn dòng → bỏ, resync ở '\n' kế
         }
     }
 }
@@ -210,7 +265,8 @@ void sendTelemetry() {
     t.ch_record_us = ibusCh[CH_RECORD];
     t.rec          = (ibusCh[CH_RECORD] > 1500) ? 1 : 0;
 
-    esp_now_send(DONGLE_MAC, (const uint8_t*)&t, sizeof(t));
+    esp_now_send(DONGLE_MAC, (const uint8_t*)&t, sizeof(t));   // fallback: dongle ESP-NOW
+    writeHexLine((const uint8_t*)&t, sizeof(t));               // chính: điện thoại cắm thẳng USB
 }
 
 // ============================================================
@@ -318,8 +374,10 @@ void loop() {
     }
 
     sendTelemetry();
+    readUsbControl();        // lệnh hex từ điện thoại (AUTO/LED); vô hại khi RECORD
 
-    // Debug ra USB Serial @5Hz — verify đọc stick trước khi cắm PC
+#if DEBUG_SERIAL
+    // Debug ra USB Serial @5Hz — CHỈ bench (làm bẩn luồng hex telemetry cho điện thoại)
     static uint32_t dbgMs = 0;
     if (millis() - dbgMs > 200) {
         dbgMs = millis();
@@ -329,4 +387,5 @@ void loop() {
             curSteerNorm, curThrotNorm,
             (ibusCh[CH_RECORD] > 1500) ? 1 : 0, ibusAlive() ? "OK" : "LOST");
     }
+#endif
 }

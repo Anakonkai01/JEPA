@@ -22,6 +22,15 @@ cần PC (RTX chạy V-JEPA) → điện thoại TCP-stream frame về PC, nhậ
 UDP→dongle + gom `tools/dongle_link.py` + `measure_latency.py` dùng ROI chung; recorder thêm
 `telemetry.csv` 50Hz + gate bỏ frame telemetry-rớt + chống ảo LED nắng; scaffold app `android/`.
 
+**Đã làm 2026-06-05 (app onboard chạy được):** build + test app `android/` trên A42 OK. Bỏ dongle —
+phone cắm THẲNG ESP32 xe qua USB (`main.cpp` phun telemetry hex + đọc control hex trên USB, giữ
+ESP-NOW làm fallback). Thêm: **auto-REC theo CH10**; khóa shutter chống nhòe; ghi **accel/gyro/rotvec/
+GPS** (`SensorLogger.kt`); fix lỗi locale dấu phẩy (ép `Locale.US`); **live stream 25fps** (`PcLink.kt`
+→ `tools/pc_stream_view.py`) + **auto-upload nguyên session về PC qua Tailscale** (`Uploader.kt` →
+`tools/pc_receiver.py`, bù khi PC tắt bằng marker `.uploaded`). **Đồng bộ đã verify** — 6 luồng chung
+1 đồng hồ `elapsedRealtime`, CSV sạch. Còn lại: `sync.py` (trừ δ camera offline), tắt-hẳn-màn-hình
+(foreground service), inference mode (Phase 4), và **thu buổi data thật ga đa dạng**.
+
 ---
 
 ## Current Status (cập nhật 2026-06-03)

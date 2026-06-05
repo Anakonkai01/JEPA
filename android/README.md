@@ -38,11 +38,19 @@ sửa firmware. (Sau này có thể nối thẳng phone↔car ESP32 USB, bỏ do
 - Serial 115200, mỗi dòng = **hex + `\n`**. Telemetry 25B `<BBIIffHHHB>` LE, magic `0xAC`, byte 26 = RSSI int8.
 - Control gửi ngược: bytes → hex+`\n` (LED `01`/`00`, hoặc `[steer,throt]`). Xem `Telemetry.kt`.
 
-## TODO (chưa làm trong MVP)
+## Đã làm (2026-06-05, đã test A42)
 
-- **Inference mode**: TCP client gửi frame về PC (RTX chạy V-JEPA/CEM), nhận 2-byte action → `serial.send`.
-- **Auto REC theo CH10**: bật/tắt session theo `mode`/`rec` của telemetry (như recorder.py) thay vì nút.
-- **Khoá shutter nhanh + exposure** (Camera2 interop) chống motion blur khi xe chạy/rung.
-- Xác nhận **VID/PID** dongle nếu USB không nhận (đọc `lsusb`/`dmesg`; sửa `res/xml/usb_device_filter.xml`,
-  ESP32-S3 native USB = `0x303A`).
-- Lưu `rotationDegrees`/FOV vào meta nếu cần; cân nhắc preview xoay đúng landscape.
+- **Cắm thẳng ESP32 xe** (bỏ dongle): cắm cổng **"USB Single Serial"** (UART bridge), KHÔNG phải cổng
+  "USB JTAG/serial debug unit". `firmware/src/main.cpp` phun telemetry hex + đọc control hex trên USB.
+- **Auto-REC theo CH10** (cờ `rec`); nút màn = fallback khi mất telem. RTS=false (RTS giữ ESP32 reset).
+- **Khoá shutter nhanh** chống nhòe (Camera2 `CONTROL_AE_TARGET_FPS_RANGE`). Fix locale dấu phẩy CSV.
+- **Cảm biến**: `accel/gyro/rotvec/gps.csv` (`SensorLogger.kt`) — cùng đồng hồ frame.
+- **Live stream** `PcLink.kt` → `tools/pc_stream_view.py` (port 5055). **Auto-upload nguyên session**
+  `Uploader.kt` → `tools/pc_receiver.py` (port 5056) qua Tailscale (`PC_HOST` trong `MainActivity.kt`);
+  bù khi PC tắt bằng marker `.uploaded` quét lúc mở app.
+
+## TODO
+
+- **Inference mode** (Phase 4): tái dùng `PcLink` để gửi frame → PC (V-JEPA/CEM) → nhận 2-byte → `serial.send`.
+- **Tắt hẳn màn hình** khi quay (foreground service type camera) để tiết kiệm pin.
+- (Tùy chọn) chỉ upload khi có WiFi; tự xoá session `.uploaded` cũ; lưu `rotationDegrees`/FOV vào meta.

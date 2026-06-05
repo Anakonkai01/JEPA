@@ -8,6 +8,7 @@ import android.content.IntentFilter
 import android.hardware.usb.UsbManager
 import android.os.Build
 import android.os.SystemClock
+import android.util.Log
 import com.hoho.android.usbserial.driver.CdcAcmSerialDriver
 import com.hoho.android.usbserial.driver.UsbSerialPort
 import com.hoho.android.usbserial.driver.UsbSerialProber
@@ -17,6 +18,9 @@ import com.hoho.android.usbserial.util.SerialInputOutputManager
  * Cầu USB-serial tới ESP32/dongle — KHÔNG cần root (usb-serial-for-android).
  * Đọc dòng hex → Telemetry; gửi control (bytes → hex+'\n').
  * Vai trò = đúng cái recorder.py làm với /dev/ttyACM, nhưng chạy trên Android.
+ *
+ * Telemetry CHỈ ra ở cổng UART (chip cầu, hiện "USB Single Serial"), KHÔNG ra
+ * cổng native ("USB JTAG/serial debug unit"). Log VID/PID để soi bằng `adb logcat`.
  */
 class SerialLink(
     private val ctx: Context,
@@ -30,23 +34,28 @@ class SerialLink(
     @Volatile var connected = false; private set
 
     private val ACTION_PERM = "com.jepa.recorder.USB_PERMISSION"
+    private val TAG = "SerialLink"
 
-    private val permReceiver = object : BroadcastReceiver() {
+    private val receiver = object : BroadcastReceiver() {
         override fun onReceive(c: Context, i: Intent) {
-            if (i.action == ACTION_PERM) openFirstAvailable()
+            when (i.action) {
+                ACTION_PERM, UsbManager.ACTION_USB_DEVICE_ATTACHED -> openFirstAvailable()
+                UsbManager.ACTION_USB_DEVICE_DETACHED -> { close(); status("USB: đã rút thiết bị") }
+            }
         }
     }
 
     fun start() {
-        ContextCompat_registerReceiver()
+        registerReceiver()
         openFirstAvailable()
     }
 
+    /** Gọi từ Activity.onResume — quét lại nếu chưa kết nối (cắm-lại không cần mở lại app). */
+    fun rescan() { if (!connected) openFirstAvailable() }
+
     fun stop() {
-        try { io?.stop() } catch (_: Exception) {}
-        try { port?.close() } catch (_: Exception) {}
-        try { ctx.unregisterReceiver(permReceiver) } catch (_: Exception) {}
-        connected = false
+        close()
+        try { ctx.unregisterReceiver(receiver) } catch (_: Exception) {}
     }
 
     /** Gửi control xuống ESP32 (vd LED 0x01, hoặc [steer,throt]). */
@@ -55,48 +64,74 @@ class SerialLink(
     }
 
     // ── nội bộ ────────────────────────────────────────────────────────
-    private fun ContextCompat_registerReceiver() {
-        val filter = IntentFilter(ACTION_PERM)
+    private fun status(s: String) { Log.i(TAG, s); onStatus(s) }
+
+    private fun close() {
+        try { io?.stop() } catch (_: Exception) {}
+        try { port?.close() } catch (_: Exception) {}
+        io = null; port = null; connected = false
+    }
+
+    private fun registerReceiver() {
+        val filter = IntentFilter(ACTION_PERM).apply {
+            addAction(UsbManager.ACTION_USB_DEVICE_ATTACHED)
+            addAction(UsbManager.ACTION_USB_DEVICE_DETACHED)
+        }
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            ctx.registerReceiver(permReceiver, filter, Context.RECEIVER_NOT_EXPORTED)
+            ctx.registerReceiver(receiver, filter, Context.RECEIVER_NOT_EXPORTED)
         } else {
             @Suppress("UnspecifiedRegisterReceiverFlag")
-            ctx.registerReceiver(permReceiver, filter)
+            ctx.registerReceiver(receiver, filter)
         }
     }
 
     private fun openFirstAvailable() {
+        if (connected) return
         val usb = ctx.getSystemService(Context.USB_SERVICE) as UsbManager
-        // Thử prober mặc định; nếu trống, ép CdcAcmSerialDriver cho mọi device CDC (ESP32-S3 native USB).
+
+        // Soi mọi thiết bị USB nhìn thấy (xem bằng: adb logcat -s SerialLink)
+        val devs = usb.deviceList.values.toList()
+        Log.i(TAG, "USB devices thấy được: ${devs.size}")
+        devs.forEach {
+            Log.i(TAG, "  vid=0x%04X pid=0x%04X %s".format(it.vendorId, it.productId, it.productName ?: "?"))
+        }
+
+        // Prober mặc định (CH34x/CP210x/FTDI/CDC). Trống → ép CdcAcm cho mọi device.
         var drivers = UsbSerialProber.getDefaultProber().findAllDrivers(usb)
         if (drivers.isEmpty()) {
-            drivers = usb.deviceList.values.mapNotNull {
-                try { CdcAcmSerialDriver(it) } catch (_: Exception) { null }
-            }
+            drivers = devs.mapNotNull { try { CdcAcmSerialDriver(it) } catch (_: Exception) { null } }
         }
-        if (drivers.isEmpty()) { onStatus("USB: chưa thấy ESP32 (cắm dongle?)"); return }
+        if (drivers.isEmpty()) {
+            status("USB: chưa thấy serial — cắm cổng 'USB Single Serial' (${devs.size} dev)")
+            return
+        }
 
         val driver = drivers[0]
         val device = driver.device
+        Log.i(TAG, "Chọn ${driver.javaClass.simpleName} cho vid=0x%04X pid=0x%04X"
+            .format(device.vendorId, device.productId))
+
         if (!usb.hasPermission(device)) {
             val flags = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S)
                 PendingIntent.FLAG_MUTABLE else 0
             val pi = PendingIntent.getBroadcast(ctx, 0, Intent(ACTION_PERM).setPackage(ctx.packageName), flags)
             usb.requestPermission(device, pi)
-            onStatus("USB: chờ cấp quyền…")
+            status("USB: chờ cấp quyền…")
             return
         }
-        val conn = usb.openDevice(device) ?: run { onStatus("USB: mở device lỗi"); return }
+        val conn = usb.openDevice(device) ?: run { status("USB: mở device lỗi"); return }
         val p = driver.ports[0]
         try {
             p.open(conn)
             p.setParameters(115200, 8, UsbSerialPort.STOPBITS_1, UsbSerialPort.PARITY_NONE)
-            p.dtr = true; p.rts = true
-        } catch (e: Exception) { onStatus("USB: open lỗi ${e.message}"); return }
+            // KHÔNG ép RTS: trên cổng UART có mạch auto-reset, RTS có thể giữ ESP32 trong reset.
+            try { p.dtr = true } catch (_: Exception) {}
+            try { p.rts = false } catch (_: Exception) {}
+        } catch (e: Exception) { status("USB: open lỗi ${e.message}"); close(); return }
         port = p
         io = SerialInputOutputManager(p, this).also { it.start() }
         connected = true
-        onStatus("USB: kết nối OK")
+        status("USB: kết nối OK (vid=0x%04X)".format(device.vendorId))
     }
 
     override fun onNewData(data: ByteArray) {
@@ -113,7 +148,8 @@ class SerialLink(
     }
 
     override fun onRunError(e: Exception) {
+        Log.w(TAG, "onRunError ${e.message}")
         connected = false
-        onStatus("USB: lỗi đọc ${e.message}")
+        status("USB: lỗi đọc ${e.message}")
     }
 }

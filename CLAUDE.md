@@ -29,8 +29,13 @@ the wireless video link — put an Android phone ON the car** as camera + record
 - **Inference (Phase 4) still needs the PC** (V-JEPA ViT-L runs on the RTX, not the phone): phone
   will TCP-stream frames to PC, PC computes, returns 2-byte action → phone → ESP32. Slow is OK.
 - **The OpenIPC + WFB + PC-`recorder.py` path below is the PRIOR rig** — kept as fallback/reference
-  and still valid for understanding the protocol/firmware. Status: phone app MVP scaffolded, **not yet
-  built/tested on device**. See memory `onboard-phone-pivot`.
+  and still valid for understanding the protocol/firmware.
+- **Status (2026-06-05): app BUILT + tested on A42, working.** Phone plugs **directly into the car
+  ESP32** over USB (dongle dropped — `main.cpp` now emits telemetry hex + reads control hex on USB,
+  ESP-NOW kept as fallback). Features: **auto-REC by CH10**, fast-shutter anti-blur,
+  **accel/gyro/rotvec/GPS** logging, live stream + **full-session auto-upload to PC over Tailscale**
+  (no cable; `tools/pc_receiver.py` / `pc_stream_view.py`). **Cross-stream sync verified** (one phone
+  clock). See memories `onboard-phone-pivot`, `android-usb-link`, `onboard-recorder-state`.
 
 ## System Architecture (PRIOR rig — being replaced for data collection; see pivot above)
 
