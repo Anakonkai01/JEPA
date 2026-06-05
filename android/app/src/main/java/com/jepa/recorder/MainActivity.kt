@@ -5,11 +5,15 @@ import android.content.pm.PackageManager
 import android.graphics.Bitmap
 import android.graphics.Matrix
 import android.hardware.camera2.CameraCharacteristics
+import android.hardware.camera2.CameraMetadata
 import android.hardware.camera2.CaptureRequest
+import android.content.Intent
 import android.os.Bundle
 import android.os.SystemClock
 import android.util.Range
 import android.util.Size
+import android.view.View
+import android.view.WindowManager
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -43,6 +47,8 @@ class MainActivity : AppCompatActivity() {
     private lateinit var uploader: Uploader
 
     @Volatile private var latest: Telemetry? = null
+    // Nguồn timestamp của sensor: true = REALTIME (cùng base elapsedRealtimeNanos), false = UNKNOWN (uptime).
+    @Volatile private var tsRealtime = false
     @Volatile private var usbStatus = "USB: khởi động…"
     @Volatile private var pcStatus = ""
     @Volatile private var upStatus = ""
@@ -85,6 +91,9 @@ class MainActivity : AppCompatActivity() {
         }, onStatus = { s -> usbStatus = s; runOnUiThread { updateHud() } })
 
         ui.recBtn.setOnClickListener { toggleRec() }
+        ui.dimBtn.setOnClickListener { setDim(true) }
+        ui.blackout.setOnClickListener { setDim(false) }
+        ui.sessionsBtn.setOnClickListener { startActivity(Intent(this, SessionListActivity::class.java)) }
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
             == PackageManager.PERMISSION_GRANTED) startCamera()
@@ -135,6 +144,15 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
+    /** Tiết kiệm pin: phủ đen toàn màn + hạ độ sáng về tối thiểu (AMOLED ≈ tắt pixel). Ghi vẫn chạy. */
+    private fun setDim(on: Boolean) {
+        ui.blackout.visibility = if (on) View.VISIBLE else View.GONE
+        val lp = window.attributes
+        lp.screenBrightness = if (on) 0.004f else WindowManager.LayoutParams.BRIGHTNESS_OVERRIDE_NONE
+        window.attributes = lp
+        if (on) toast("Màn tối — chạm màn hình để sáng lại (vẫn đang ghi)")
+    }
+
     @OptIn(ExperimentalCamera2Interop::class)
     private fun startCamera() {
         val future = ProcessCameraProvider.getInstance(this)
@@ -170,7 +188,12 @@ class MainActivity : AppCompatActivity() {
 
             try {
                 provider.unbindAll()
-                provider.bindToLifecycle(this, selector, preview, analysis)
+                val camera = provider.bindToLifecycle(this, selector, preview, analysis)
+                // Xác định nguồn timestamp sensor → biết cách quy mốc phơi sáng về đồng hồ elapsedRealtime.
+                val src = Camera2CameraInfo.from(camera.cameraInfo)
+                    .getCameraCharacteristic(CameraCharacteristics.SENSOR_INFO_TIMESTAMP_SOURCE)
+                tsRealtime = (src == CameraMetadata.SENSOR_INFO_TIMESTAMP_SOURCE_REALTIME)
+                android.util.Log.i("JEPA", "SENSOR_INFO_TIMESTAMP_SOURCE=$src realtime=$tsRealtime")
             } catch (e: Exception) {
                 toast("Camera lỗi: ${e.message}")
             }
@@ -183,12 +206,19 @@ class MainActivity : AppCompatActivity() {
         fpsCount++
         if (now - fpsT >= 1000) { fps = fpsCount * 1000f / (now - fpsT); fpsCount = 0; fpsT = now }
 
+        // δ_cam: độ trễ từ lúc phơi sáng sensor → callback này. Quy mốc phơi sáng về đồng hồ elapsedRealtime
+        // (cùng đồng hồ telemetry) bằng capMs → frame lưu đúng thời điểm cảnh thật, hết lệch action.
+        val sensorNs = image.imageInfo.timestamp
+        val nowSensorNs = if (tsRealtime) SystemClock.elapsedRealtimeNanos() else System.nanoTime()
+        val dcamMs = (nowSensorNs - sensorNs) / 1_000_000.0
+        val capMs = if (dcamMs in 0.0..500.0) now - dcamMs.toLong() else now   // chặn timestamp bất thường
+
         val needSave = writer.active && now - lastSaveMs >= SAVE_INTERVAL
         val needStream = pcLink.connected && now - lastStreamMs >= STREAM_INTERVAL
         if (needSave || needStream) {
             try {
                 val jpeg = imageToJpeg(image)
-                if (needSave) { writer.saveFrame(jpeg, now, latest); lastSaveMs = now }
+                if (needSave) { writer.saveFrame(jpeg, capMs, dcamMs, latest); lastSaveMs = now }
                 if (needStream) { pcLink.offer(jpeg, buildMeta(now)); lastStreamMs = now }
             } catch (_: Exception) {}
         }

@@ -32,7 +32,8 @@ class SessionWriter(private val ctx: Context) {
         val root = File(ctx.getExternalFilesDir(null), "sessions/session_$ts")
         File(root, "frames").mkdirs()
         actions = File(root, "actions.csv").bufferedWriter().apply {
-            write("frame_idx,t_ms,steering,throttle,seq,esp_ms,mode\n")
+            // dcam_ms = độ trễ camera đo được từng frame (callback − phơi sáng sensor); t_ms ĐÃ trừ dcam.
+            write("frame_idx,t_ms,steering,throttle,seq,esp_ms,mode,dcam_ms\n")
         }
         telem = File(root, "telemetry.csv").bufferedWriter().apply {
             write("t_ms,seq,esp_ms,steering,throttle,mode\n")
@@ -48,8 +49,9 @@ class SessionWriter(private val ctx: Context) {
         dir = root
     }
 
-    /** Lưu 1 frame đã encode JPEG + dòng action ghép sẵn. tMs = elapsedRealtime ms. */
-    fun saveFrame(jpeg: ByteArray, tMs: Long, t: Telemetry?) = synchronized(lock) {
+    /** Lưu 1 frame đã encode JPEG + dòng action ghép sẵn. tMs = mốc PHƠI SÁNG sensor (đã trừ δ_cam),
+     *  cùng đồng hồ elapsedRealtime với telemetry. dcamMs = độ trễ camera đo được của frame này. */
+    fun saveFrame(jpeg: ByteArray, tMs: Long, dcamMs: Double, t: Telemetry?) = synchronized(lock) {
         val d = dir ?: return@synchronized
         count++
         File(d, "frames/%06d.jpg".format(count)).writeBytes(jpeg)
@@ -59,7 +61,8 @@ class SessionWriter(private val ctx: Context) {
         val esp = t?.espMs ?: -1L
         val mode = t?.mode ?: -1
         // Locale.US BẮT BUỘC: locale VN format dấu phẩy thập phân → vỡ CSV (0,0020).
-        actions?.write("$count,$tMs,${"%.4f".format(Locale.US, steer)},${"%.4f".format(Locale.US, throt)},$seq,$esp,$mode\n")
+        actions?.write("$count,$tMs,${"%.4f".format(Locale.US, steer)},${"%.4f".format(Locale.US, throt)}," +
+            "$seq,$esp,$mode,${"%.1f".format(Locale.US, dcamMs)}\n")
     }
 
     /** Stream telemetry 50Hz thô (để re-align offline). */

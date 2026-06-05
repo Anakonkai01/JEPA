@@ -33,5 +33,8 @@
                 android:name="android.hardware.usb.action.USB_DEVICE_ATTACHED"
                 android:resource="@xml/usb_device_filter" />
         </activity>
+
+        <activity android:name=".SessionListActivity" android:exported="false" />
+        <activity android:name=".SessionPlayerActivity" android:exported="false" />
     </application>
 </manifest>

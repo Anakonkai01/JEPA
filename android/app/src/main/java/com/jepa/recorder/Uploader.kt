@@ -8,8 +8,6 @@ import java.io.FileInputStream
 import java.net.InetSocketAddress
 import java.net.Socket
 import java.util.concurrent.LinkedBlockingQueue
-import java.util.zip.ZipEntry
-import java.util.zip.ZipOutputStream
 
 /**
  * Gửi NGUYÊN session (frames + mọi CSV: actions/telemetry/accel/gyro/rotvec/gps) về PC qua TCP
@@ -70,7 +68,7 @@ class Uploader(
         if (!dir.exists()) return true
         val zip = File(cacheDir, "${dir.name}.zip")
         try {
-            zipDir(dir, zip)
+            Zips.zipDir(dir, zip)
             Socket().use { sock ->
                 sock.connect(InetSocketAddress(host, port), 4000)
                 sock.soTimeout = 20000
@@ -86,16 +84,6 @@ class Uploader(
             }
         } finally {
             zip.delete()
-        }
-    }
-
-    private fun zipDir(dir: File, zipFile: File) {
-        ZipOutputStream(BufferedOutputStream(zipFile.outputStream())).use { zos ->
-            dir.walkTopDown().filter { it.isFile }.forEach { f ->
-                zos.putNextEntry(ZipEntry(f.relativeTo(dir).path))
-                f.inputStream().use { it.copyTo(zos) }
-                zos.closeEntry()
-            }
         }
     }
 }

@@ -29,4 +29,36 @@
         android:layout_gravity="bottom|center_horizontal"
         android:layout_margin="20dp"
         android:text="● REC" />
+
+    <!-- Thanh nút góc trên-phải: Sessions + Dim. -->
+    <LinearLayout
+        android:id="@+id/topBtns"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:layout_gravity="top|end"
+        android:layout_margin="8dp"
+        android:orientation="horizontal">
+
+        <Button
+            android:id="@+id/sessionsBtn"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="📁 Sessions" />
+
+        <Button
+            android:id="@+id/dimBtn"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:text="🌙" />
+    </LinearLayout>
+
+    <!-- Lớp phủ ĐEN tiết kiệm pin (AMOLED): che toàn màn + hạ độ sáng; chạm để sáng lại. Vẫn ghi bình thường. -->
+    <View
+        android:id="@+id/blackout"
+        android:layout_width="match_parent"
+        android:layout_height="match_parent"
+        android:background="#FF000000"
+        android:clickable="true"
+        android:focusable="true"
+        android:visibility="gone" />
 </FrameLayout>
