@@ -19,8 +19,10 @@ import com.hoho.android.usbserial.util.SerialInputOutputManager
  * Đọc dòng hex → Telemetry; gửi control (bytes → hex+'\n').
  * Vai trò = đúng cái recorder.py làm với /dev/ttyACM, nhưng chạy trên Android.
  *
- * Telemetry CHỈ ra ở cổng UART (chip cầu, hiện "USB Single Serial"), KHÔNG ra
- * cổng native ("USB JTAG/serial debug unit"). Log VID/PID để soi bằng `adb logcat`.
+ * Cắm CỔNG NATIVE của ESP32-S3 ("USB JTAG/serial debug unit", VID 0x303A) — firmware route
+ * telemetry/control ra USB native (flag ARDUINO_USB_CDC_ON_BOOT=1). KHÔNG cắm cổng CH343
+ * "USB Single Serial": cổng đó thiếu trở CC, phone không cấp nguồn qua C-to-C trực tiếp.
+ * Log VID/PID để soi bằng `adb logcat -s SerialLink`.
  */
 class SerialLink(
     private val ctx: Context,

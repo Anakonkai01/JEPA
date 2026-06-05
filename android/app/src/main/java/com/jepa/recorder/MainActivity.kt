@@ -53,8 +53,8 @@ class MainActivity : AppCompatActivity() {
     private val STREAM_INTERVAL = 40L         // stream PC ~25 Hz (mượt, tách khỏi nhịp lưu)
     private val TARGET_W = 640                 // hạ về 640px (V-JEPA chỉ cần 256)
     private val SHUTTER_FPS = 30               // ép phơi sáng ≤ 1/30s chống nhòe (thử 60 nếu cam hỗ trợ)
-    // ĐẶT IP máy PC: cùng LAN dùng `hostname -I`; qua Tailscale (phone 5G) dùng IP 100.x (`tailscale ip -4`).
-    private val PC_HOST = "100.110.165.40"   // Tailscale IP của PC (chạy cả LAN lẫn 5G). LAN-only: "192.168.1.250"
+    // ĐẶT IP máy nhận: cùng LAN dùng `hostname -I`; qua Tailscale (phone 5G) dùng IP 100.x (`tailscale ip -4`).
+    private val PC_HOST = "100.84.196.41"    // Tailscale IP của LAPTOP omarchy (chạy cả LAN lẫn 5G). LAN-only: "192.168.100.41". PC cũ 5070ti = 100.110.165.40
     private val PC_PORT = 5055         // live view (pc_stream_view.py)
     private val UPLOAD_PORT = 5056     // gửi nguyên session (pc_receiver.py)
 

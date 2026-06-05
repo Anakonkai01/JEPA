@@ -10,21 +10,26 @@ L_cam/LED/WFB**. Target máy: Samsung Galaxy A42 5G, Android 13.
 ```
 [camera ultrawide] → CameraX ImageAnalysis(RGBA) → JPEG 640px @10Hz ─┐
                                                                       ├→ SessionWriter (frames/ + actions.csv)
-[ESP32/dongle] → USB CDC → SerialLink → Telemetry 50Hz ──────────────┘   + telemetry.csv (raw, để sync.py)
+[ESP32-S3 xe] → USB CDC native → SerialLink → Telemetry 50Hz ─────────┘   + telemetry.csv (raw, để sync.py)
 ```
-Hub UGREEN (OTG): điện thoại ↔ dongle (USB). Dongle ↔ car qua ESP-NOW <0.3m (đã LR). Không cần
-sửa firmware. (Sau này có thể nối thẳng phone↔car ESP32 USB, bỏ dongle.)
+**Điện thoại cắm THẲNG vào ESP32 xe** qua **cổng USB native** ("USB JTAG/serial debug unit", VID
+`0x303A`) — C-to-C, **không hub, không dongle**. Phone tự cấp nguồn cho ESP32 qua cổng này. ESP-NOW
+chỉ còn là fallback trong firmware.
 
 ## Build & cài
 
 1. Mở thư mục `android/` bằng **Android Studio** (Giraffe+). Nó tự tạo Gradle wrapper jar + sync.
    - CLI: `cd android && gradle wrapper && ./gradlew assembleDebug` (cần Gradle 8.7 cài sẵn).
 2. Cắm A42, bật USB debugging → Run, hoặc `./gradlew installDebug` / `adb install app/build/outputs/apk/debug/app-debug.apk`.
-3. Mở app → cấp **quyền Camera**. Cắm hub + dongle → cấp **quyền USB** (popup).
+   - Cài đè từ máy khác có thể báo *signature mismatch* → phải gỡ app cũ. **`adb pull` session ra trước**
+     (gỡ app XOÁ `Android/data/.../sessions`), rồi `adb uninstall com.jepa.recorder` → cài lại.
+3. Mở app → cấp **quyền Camera**. Cắm **cổng native ESP32 → phone** → cấp **quyền USB** (popup).
 
 ## Dùng
 
-- Cắm dongle (xe bật nguồn) → HUD hiện `telem OK  mode:… steer/throt`. Không thấy → kiểm hub/VID.
+- Cắm **cổng native ESP32 ("USB JTAG/serial debug unit")** vào phone (xe bật nguồn) → HUD hiện
+  `telem OK  mode:… steer/throt`. Không thấy/đèn board không sáng → đang cắm nhầm cổng CH343 ("USB
+  Single Serial"); đổi sang cổng native (xem mục "Đã làm" về trở CC).
 - Nhấn **● REC** để ghi, **■ STOP** để dừng. HUD đếm frame + fps.
 - Kéo data về PC:
   ```bash
@@ -40,8 +45,15 @@ sửa firmware. (Sau này có thể nối thẳng phone↔car ESP32 USB, bỏ do
 
 ## Đã làm (2026-06-05, đã test A42)
 
-- **Cắm thẳng ESP32 xe** (bỏ dongle): cắm cổng **"USB Single Serial"** (UART bridge), KHÔNG phải cổng
-  "USB JTAG/serial debug unit". `firmware/src/main.cpp` phun telemetry hex + đọc control hex trên USB.
+- **Cắm thẳng ESP32 xe** (bỏ dongle + bỏ hub): cắm cổng **NATIVE "USB JTAG/serial debug unit"**
+  (VID `0x303A`), **KHÔNG phải** cổng CH343 "USB Single Serial".
+  - **Vì sao:** cổng CH343 **thiếu trở CC 5.1k** → phone (host USB-C khó tính) không cấp nguồn qua
+    C-to-C trực tiếp (đèn board tắt); cổng native có CC chuẩn → phone bus-power + nhận ngay.
+  - Firmware route `Serial` (telemetry/control) ra USB native bằng flag `ARDUINO_USB_MODE=1` +
+    `ARDUINO_USB_CDC_ON_BOOT=1` (`firmware/platformio.ini` `[env:car]`). **Nạp code vẫn qua cổng
+    CH343** (UART0 download); **chạy/cắm phone qua cổng native.**
+  - **Đừng cấp 5V ngoài vào ESP32 khi đang cắm phone** → back-feed VBUS, Samsung khoá cổng. Trên xe:
+    để phone bus-power ESP32 + chung GND với BEC (servo/ESC lấy nguồn BEC riêng).
 - **Auto-REC theo CH10** (cờ `rec`); nút màn = fallback khi mất telem. RTS=false (RTS giữ ESP32 reset).
 - **Khoá shutter nhanh** chống nhòe (Camera2 `CONTROL_AE_TARGET_FPS_RANGE`). Fix locale dấu phẩy CSV.
 - **Cảm biến**: `accel/gyro/rotvec/gps.csv` (`SensorLogger.kt`) — cùng đồng hồ frame.

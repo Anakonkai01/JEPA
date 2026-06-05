@@ -36,6 +36,16 @@ the wireless video link — put an Android phone ON the car** as camera + record
   **accel/gyro/rotvec/GPS** logging, live stream + **full-session auto-upload to PC over Tailscale**
   (no cable; `tools/pc_receiver.py` / `pc_stream_view.py`). **Cross-stream sync verified** (one phone
   clock). See memories `onboard-phone-pivot`, `android-usb-link`, `onboard-recorder-state`.
+- **⚠️ USB PORT (2026-06-05, fixed): plug the phone into the ESP32-S3 NATIVE port** ("USB JTAG/serial
+  debug unit", VID `0x303A`) — **NOT** the CH343 "USB Single Serial" port. The CH343 USB-C port lacks
+  proper CC resistors, so a phone (strict USB-C host) won't power it over a direct C-to-C cable (board
+  LED stays off); the native port has correct CC → phone bus-powers + enumerates it directly, **no hub
+  needed**. Firmware now routes `Serial` (telemetry+control) to the native USB via build flags
+  `ARDUINO_USB_MODE=1` + `ARDUINO_USB_CDC_ON_BOOT=1` (`firmware/platformio.ini` `[env:car]`). **Flash
+  still via the CH343 port** (UART0 download); **run/connect-to-phone via the native port.**
+  **Power on the car:** bus-power the ESP32 from the phone (native port) + common GND with the BEC —
+  do NOT feed external 5V into the ESP32 while it's cabled to the phone (back-feeds the phone's VBUS →
+  Samsung locks the port). See memory `usb-native-port-cc`.
 
 ## System Architecture (PRIOR rig — being replaced for data collection; see pivot above)
 
