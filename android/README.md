@@ -2,8 +2,9 @@
 
 Thay OpenIPC cam + WFB 5.8G bằng **camera điện thoại đặt trên xe**. App bắt frame (CameraX,
 ultrawide) + đọc telemetry ESP32 qua **USB (no-root, usb-serial-for-android)**, lưu cục bộ.
-Frame timestamp = `elapsedRealtime` (cùng đồng hồ telemetry) → **ghép chính xác, hết bài toán
-L_cam/LED/WFB**. Target máy: Samsung Galaxy A42 5G, Android 13.
+Frame timestamp = **mốc phơi sáng sensor** (app trừ độ trễ camera, cùng đồng hồ telemetry) → ghép chính
+xác. Camera có **δ_cam ≈ 100ms** (đo được trên A42), app ghi `dcam_ms` mỗi frame + `src/sync.py` bù —
+hết bài toán LED/WFB của rig cũ. Target máy: Samsung Galaxy A42 5G, Android 13.
 
 ## Kiến trúc
 
@@ -19,7 +20,8 @@ chỉ còn là fallback trong firmware.
 ## Build & cài
 
 1. Mở thư mục `android/` bằng **Android Studio** (Giraffe+). Nó tự tạo Gradle wrapper jar + sync.
-   - CLI: `cd android && gradle wrapper && ./gradlew assembleDebug` (cần Gradle 8.7 cài sẵn).
+   - CLI: cần **Gradle 8.13** (AGP 8.13.2) + JDK 17+. Repo KHÔNG có `gradlew`; dùng gradle cài sẵn:
+     `<gradle-8.13>/bin/gradle -p android assembleDebug` (vd `JAVA_HOME=/snap/android-studio/current/jbr`).
 2. Cắm A42, bật USB debugging → Run, hoặc `./gradlew installDebug` / `adb install app/build/outputs/apk/debug/app-debug.apk`.
    - Cài đè từ máy khác có thể báo *signature mismatch* → phải gỡ app cũ. **`adb pull` session ra trước**
      (gỡ app XOÁ `Android/data/.../sessions`), rồi `adb uninstall com.jepa.recorder` → cài lại.
@@ -35,8 +37,10 @@ chỉ còn là fallback trong firmware.
   ```bash
   adb pull /sdcard/Android/data/com.jepa.recorder/files/sessions ./data/raw/
   ```
-  Mỗi session: `frames/*.jpg`, `actions.csv` (frame_idx,t_ms,steering,throttle,seq,esp_ms,mode),
-  `telemetry.csv` (50Hz thô), `meta.json` — **cùng schema recorder.py** → dùng thẳng `sync.py`/`offline_encode.py`.
+  Mỗi session: `frames/*.jpg`, `actions.csv` (frame_idx,t_ms,steering,throttle,seq,esp_ms,mode,**dcam_ms**),
+  `telemetry.csv` (50Hz thô), `accel/gyro/rotvec/gps.csv`, `meta.json`. Chạy `python src/sync.py` →
+  **`actions_synced.csv` + `imu_synced.csv`** (đã căn theo thời điểm cảnh thật — DÙNG cái này để train,
+  không dùng `actions.csv` gốc).
 
 ## Khớp protocol (giống recorder.py)
 
@@ -61,8 +65,23 @@ chỉ còn là fallback trong firmware.
   `Uploader.kt` → `tools/pc_receiver.py` (port 5056) qua Tailscale (`PC_HOST` trong `MainActivity.kt`);
   bù khi PC tắt bằng marker `.uploaded` quét lúc mở app.
 
+## Đã làm (2026-06-06) — app đầy đủ + build/cài verify trên A42
+
+- **Fix δ_cam**: frame `t_ms` giờ = **mốc phơi sáng** (`callback − dcam`, đọc `image.imageInfo.timestamp`,
+  A42 `TIMESTAMP_SOURCE=REALTIME`) + thêm cột **`dcam_ms`** (`MainActivity.onFrame` + `SessionWriter`).
+  Đo được δ_cam **≈ 100ms** ổn định → data mới hết lệch; data cũ `sync.py` trừ 100ms.
+- **Quản lý + xem lại session** (`SessionListActivity`/`SessionPlayerActivity`/`SessionStore`/`SessionAdapter`):
+  nút **📁 Sessions** → list (frame/thời lượng/nhãn) + **playback** (overlay steer/throttle) + **xoá /
+  đổi nhãn (meta.json) / xem info**.
+- **Upload Google Drive** (`DriveUploader.kt`): GoogleSignIn scope `drive.file` + OkHttp **resumable**
+  upload (folder "JEPA", marker `.drive_uploaded`, song song với Tailscale). Setup OAuth 1 lần →
+  **`android/DRIVE_SETUP.md`** (đã ghi sẵn SHA-1 debug). Nút "Đăng nhập"/"⬆ Drive" trong màn Sessions.
+- **🌙 Dim**: phủ đen + hạ độ sáng (AMOLED ≈ tắt pixel), **vẫn ghi** — tiết kiệm pin.
+- Deps thêm: `play-services-auth`, `okhttp`, `recyclerview`. **Build = JDK17+ + Gradle 8.13 (AGP 8.13.2)**;
+  APK ~7.8MB. Cài lại từ máy khác → signature mismatch (xem mục Build).
+
 ## TODO
 
 - **Inference mode** (Phase 4): tái dùng `PcLink` để gửi frame → PC (V-JEPA/CEM) → nhận 2-byte → `serial.send`.
-- **Tắt hẳn màn hình** khi quay (foreground service type camera) để tiết kiệm pin.
-- (Tùy chọn) chỉ upload khi có WiFi; tự xoá session `.uploaded` cũ; lưu `rotationDegrees`/FOV vào meta.
+- **Tắt HẲN màn hình** khi quay (foreground service type camera) — Dim hiện chỉ làm tối, chưa tắt hẳn.
+- (Tùy chọn) chỉ upload khi có WiFi; tự xoá session `.uploaded`/`.drive_uploaded` cũ; lưu `rotationDegrees`/FOV vào meta.

@@ -2,6 +2,35 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## 🧭 Rules for Claude — READ FIRST (added 2026-06-06)
+
+**Session start — read in this order:**
+1. **`HANDOFF.md`** — the LIVE status (what's done, what's next, gotchas). Source of truth; trust it
+   over older prose here when they disagree.
+2. This `CLAUDE.md` (stable project facts/protocol) + `PLAN.md` (roadmap).
+3. App work: `android/README.md`; Drive setup: `android/DRIVE_SETUP.md`.
+
+**Updating context — write to the REPO, not local memory:**
+- This repo is worked on from **multiple machines**. Machine-local Claude memory does NOT travel →
+  **put durable status/decisions in the repo** (`HANDOFF.md` first; `CLAUDE.md`/`PLAN.md` for stable
+  facts) and **commit + push**. When you finish meaningful work, update `HANDOFF.md` and commit — don't
+  leave the only record in local memory.
+
+**Avoid hallucination — verify before you claim:**
+- Don't invent file paths, function names, build flags, hardware pins, or numbers. **grep/read the
+  actual code/data first**; if you haven't verified something, say so explicitly.
+- **Two rigs coexist in this repo.** The **NEW onboard-phone rig** (`android/`) is current for data
+  collection. The **OLD WFB + PC `recorder.py` rig** (the "System Architecture" diagram, `scripts/`,
+  old Hardware tables, the dated Roadmap in `PLAN.md`) is **stale for data collection — kept only as
+  reference** for the protocol/firmware. Don't mix them up or quote the old rig as current.
+- Recorded data lives in `data/` (**gitignored** → synced via Drive: `rclone copy data/raw
+  gdrive:JEPA/raw`, remote `gdrive:`). For training use **`actions_synced.csv` + `imu_synced.csv`**
+  (output of `src/sync.py`), NOT the online `actions.csv`.
+- Don't restate retired assumptions as fact. Notably: the onboard rig still has a **camera capture
+  latency δ_cam ≈ 100 ms** (measured on the A42) — it is NOT zero; the app records it per-frame
+  (`dcam_ms`) and `src/sync.py` corrects it. (The earlier "L_cam problem fully disappears" was only
+  about *clock sync*, not capture latency.)
+
 ## Project
 
 **Action-Conditioned World Model for RC Car Navigation based on V-JEPA 2.1**
@@ -21,8 +50,10 @@ the wireless video link — put an Android phone ON the car** as camera + record
 - **New data-collection rig** = `android/` app (Kotlin/CameraX, see `android/README.md`): phone's
   **ultrawide camera** captures frames locally; reads ESP32 telemetry over **USB (no-root,
   usb-serial-for-android)**; saves `frames/*.jpg + actions.csv + telemetry.csv` in the **same schema
-  as `recorder.py`** → reuse `sync.py`/`offline_encode.py` unchanged. Frame timestamp shares the
-  phone clock with telemetry → **the entire L_cam / LED / WFB-latency problem disappears.**
+  as `recorder.py`** → reuse `sync.py`/`offline_encode.py` unchanged. Frame & telemetry share one
+  phone clock → the **WFB-latency / LED / clock-sync problems disappear**. (A residual **camera capture
+  latency δ_cam ≈ 100 ms** remains — sensor→callback — now measured per-frame as `dcam_ms` and corrected
+  in `src/sync.py`; see Rules above.)
 - Phone (Samsung A42 5G, Android 13) ↔ **dongle** via USB (same hex protocol as `recorder.py`);
   dongle ↔ car via ESP-NOW <0.3m (now LR). **No firmware change needed.** (Later option: phone↔car
   ESP32 direct USB, drop the dongle.)
@@ -36,6 +67,16 @@ the wireless video link — put an Android phone ON the car** as camera + record
   **accel/gyro/rotvec/GPS** logging, live stream + **full-session auto-upload to PC over Tailscale**
   (no cable; `tools/pc_receiver.py` / `pc_stream_view.py`). **Cross-stream sync verified** (one phone
   clock). See memories `onboard-phone-pivot`, `android-usb-link`, `onboard-recorder-state`.
+- **Status (2026-06-06): big app pass + data pipeline done.** App adds: **δ_cam fix** (frame `t_ms` =
+  sensor exposure time + `dcam_ms` column; **δ_cam measured ≈ 100 ms**, `TIMESTAMP_SOURCE=REALTIME`),
+  **session manager** (`SessionListActivity`/`SessionPlayerActivity`/`SessionStore`/`SessionAdapter`:
+  list, playback w/ steer-throttle overlay, delete/label/info), **Google Drive upload** (`DriveUploader`,
+  GoogleSignIn `drive.file` + OkHttp resumable — setup in `android/DRIVE_SETUP.md`), **dim-to-black**
+  (AMOLED battery save). **`src/sync.py` done** → re-pairs frames from `telemetry.csv` at scene time
+  (old data −100 ms, new data offset 0) → writes **`actions_synced.csv` + `imu_synced.csv`** per session;
+  **29 usable sessions / 55,633 frames**. Tools: `tools/make_video.py` (overlay MP4), `tools/pull_drive.py`
+  (rclone). Build = JDK21 (`/snap/android-studio/current/jbr`) + gradle-8.13; install via
+  `~/Android/Sdk/platform-tools/adb`. **Full live status: `HANDOFF.md`.**
 - **⚠️ USB PORT (2026-06-05, fixed): plug the phone into the ESP32-S3 NATIVE port** ("USB JTAG/serial
   debug unit", VID `0x303A`) — **NOT** the CH343 "USB Single Serial" port. The CH343 USB-C port lacks
   proper CC resistors, so a phone (strict USB-C host) won't power it over a direct C-to-C cable (board

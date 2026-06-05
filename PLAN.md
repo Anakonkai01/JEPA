@@ -31,6 +31,19 @@ GPS** (`SensorLogger.kt`); fix lỗi locale dấu phẩy (ép `Locale.US`); **li
 1 đồng hồ `elapsedRealtime`, CSV sạch. Còn lại: `sync.py` (trừ δ camera offline), tắt-hẳn-màn-hình
 (foreground service), inference mode (Phase 4), và **thu buổi data thật ga đa dạng**.
 
+**Đã làm 2026-06-06 (app pass lớn + data pipeline xong):** app `android/` thêm: **fix δ_cam** (frame
+`t_ms` = mốc phơi sáng sensor + cột `dcam_ms`; **đo được δ_cam ≈ 100ms** trên A42, `TIMESTAMP_SOURCE=
+REALTIME`, ổn định cả trong/ngoài nhà); **quản lý + xem lại session** (`SessionListActivity`/`Player`/
+`SessionStore`/`Adapter`: list, playback overlay steer/throttle, xoá/nhãn/info); **upload Google Drive**
+(`DriveUploader` GoogleSignIn `drive.file` + OkHttp resumable — setup ở `android/DRIVE_SETUP.md`); **dim
+AMOLED**. Build (JDK21 snap + gradle-8.13) + cài adb + chạy verify trên A42. **Data pipeline:** `src/
+sync.py` XONG — re-pair frame từ `telemetry.csv` 50Hz tại thời điểm cảnh thật (data cũ trừ 100ms, data
+mới offset 0 vì có `dcam_ms`), xuất **`actions_synced.csv` + `imu_synced.csv`** (gyro/accel/rotvec nội
+suy, 1:1); `tools/make_video.py` (MP4 overlay), `tools/pull_drive.py` (rclone). **Dataset hiện có: 29
+session usable / 55,633 frame** (steering đủ dải −1..1; **throttle vẫn ~hằng → còn cần mẻ ga biến thiên**).
+Backup `rclone copy data/raw gdrive:JEPA/raw`. **Còn lại:** `offline_encode.py` + tải weights V-JEPA →
+Phase 3 (+ baseline vision-only vs vision+IMU, đã có `imu_synced`). Chi tiết: `HANDOFF.md`.
+
 ---
 
 ## Current Status (cập nhật 2026-06-03)
