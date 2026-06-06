@@ -1,0 +1,33 @@
+# LeWorldModel (LeWM) — end-to-end pixel JEPA (faithful port of github.com/lucas-maes/le-wm).
+# Trained from scratch: random-init ViT-Tiny encoder + AdaLN predictor + SIGReg. No V-JEPA.
+model:
+  name: leworldmodel
+  action_dim: 2
+  emb_dim: 256          # latent dim D (paper: above the ~184 collapse threshold)
+  num_frames: 4         # max sub-trajectory length (= data.seq_len)
+  history_size: 3       # causal context the predictor rolls out from
+  # encoder (ViT-Tiny)
+  enc_image_size: 224
+  enc_patch_size: 14
+  enc_hidden: 192
+  enc_layers: 12
+  enc_heads: 3
+  # predictor (~ViT-S, causal, AdaLN-zero action conditioning)
+  pred_depth: 6
+  pred_heads: 16
+  pred_dim_head: 24
+  pred_hidden: 384
+  pred_dropout: 0.1
+  action_smoothed_dim: 16
+
+data:
+  seq_len: 4            # frames per sub-trajectory (must equal model.num_frames)
+  frame_skip: 1         # stride between frames within a window (data is ~10 fps)
+  stride: 2             # step between window starts
+  image_size: 224
+
+# SIGReg anti-collapse regularizer
+sigreg:
+  lambd: 0.1            # the ONLY effective hyperparameter (paper: robust in [0.01, 0.2])
+  knots: 17
+  num_proj: 1024

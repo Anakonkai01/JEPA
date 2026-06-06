@@ -1,14 +1,13 @@
-# Core ML
+# ML / training (the jepa_wm package). Install editable: pip install -e .
 torch
 torchvision
-
-# Vision / video
-opencv-python
 numpy
-
-# Keyboard input (recorder.py)
-pynput
-
-# Utilities
+opencv-python
+pyyaml          # config loading (jepa_wm.utils.config)
 tqdm
 tensorboard
+
+# Robotics / data-collection rig (robot/). Optional on a pure-training box;
+# also installable via:  pip install -e .[robot]
+pyserial        # ESP32 serial (robot/capture/recorder.py, robot/tools/*)
+pynput          # keyboard input (legacy WASD recorder path)

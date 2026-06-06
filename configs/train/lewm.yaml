@@ -1,0 +1,28 @@
+# LeWM training schedule. Use together with the model config:
+#   python scripts/train_lewm.py --config configs/train/lewm.yaml configs/model/leworldmodel.yaml
+device: cuda
+seed: 0
+
+data:
+  raw_dir: data/raw
+  val_frac: 0.2
+
+train:
+  epochs: 200            # high ceiling; early stopping decides the real length
+  batch_size: 96
+  lr: 3.0e-4
+  weight_decay: 0.05
+  warmup_frac: 0.05
+  grad_clip: 1.0
+  num_workers: 8
+  amp: true              # bf16 autocast on the 5070 Ti
+  out_dir: checkpoints
+  log_dir: runs
+  # early stopping on val prediction loss
+  patience: 15           # stop if no val improvement for this many epochs
+  min_delta: 1.0e-4
+
+eval:
+  enabled: true          # offline rollout MSE + collapse check after each epoch
+  seq_len: 12            # longer windows for multi-step rollout evaluation
+  max_batches: 20

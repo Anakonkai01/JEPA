@@ -5,10 +5,31 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## 🧭 Rules for Claude — READ FIRST (added 2026-06-06)
 
 **Session start — read in this order:**
-1. **`HANDOFF.md`** — the LIVE status (what's done, what's next, gotchas). Source of truth; trust it
-   over older prose here when they disagree.
-2. This `CLAUDE.md` (stable project facts/protocol) + `PLAN.md` (roadmap).
-3. App work: `android/README.md`; Drive setup: `android/DRIVE_SETUP.md`.
+1. **`docs/HANDOFF.md`** — the LIVE status (what's done, what's next, gotchas). Source of truth; trust
+   it over older prose here when they disagree.
+2. This `CLAUDE.md` (stable project facts/protocol) + `docs/PLAN.md` (roadmap).
+3. App work: `robot/android/README.md`; Drive setup: `robot/android/DRIVE_SETUP.md`.
+
+**⚠️ REPO REORGANIZED 2026-06-07 — two subsystems, paths moved.** The repo is now split into
+the **ML research** package (`src/jepa_wm/`, installable via `pip install -e .`) and the
+**robot rig** (`robot/`, data-collection + embedded). If older prose below references a path
+that no longer exists, map it with this table (and prefer `README.md` for the live layout):
+
+| Old path | New path |
+|----------|----------|
+| `src/recorder.py` `src/capture.py` `src/controller.py` | `robot/capture/…` |
+| `src/sync.py` | `src/jepa_wm/data/sync.py` (run: `python scripts/sync_dataset.py`) |
+| `src/encoder.py` `offline_encode.py` `ac_predictor.py` `train.py` `cem_planner.py` | `src/jepa_wm/{models,engine,planning}/…` (see `README.md`) |
+| `tools/*.py` | `robot/tools/*.py` |
+| `firmware/` `android/` `keys/` `setup/` | `robot/firmware/` `robot/android/` `robot/keys/` `robot/setup/` |
+| `scripts/wfb_up.sh` | `robot/scripts/wfb_up.sh` |
+| `docs/*` (hardware) | `robot/docs/*` |
+| `PLAN.md` `HANDOFF.md` `DATA_COLLECTION.md` | `docs/*` |
+| `runcam.sdp` `test.py` | `robot/runcam.sdp` `robot/test.py` |
+
+ML entrypoints live in `scripts/` (`sync_dataset.py`, `encode_dataset.py`, `train.py`,
+`evaluate.py`); configs in `configs/`. Run training scripts from the repo root after
+`pip install -e .`.
 
 **Updating context — write to the REPO, not local memory:**
 - This repo is worked on from **multiple machines**. Machine-local Claude memory does NOT travel →
@@ -135,17 +156,17 @@ Critical optimization: pre-encode the entire dataset through V-JEPA offline (onc
 
 ```bash
 # Terminal 1: bring up WiFi adapter + start WFB-NG
-bash scripts/wfb_up.sh
+bash robot/scripts/wfb_up.sh
 
 # Terminal 2: verify stream works
 ffplay -protocol_whitelist file,rtp,udp -fflags nobuffer -flags low_delay \
        -framedrop -i ~/runcam.sdp
 
 # Terminal 3: data collection (plug the ESP-NOW dongle into PC USB first)
-conda activate ai && cd src && python recorder.py auto   # 'auto' = autodetect dongle on /dev/ttyACM*
+conda activate ai && python robot/capture/recorder.py auto   # 'auto' = autodetect dongle on /dev/ttyACM*
 
 # Run existing PoC (OpenCV capture test)
-python test.py
+python robot/test.py
 ```
 
 ## V-JEPA 2.1 Notes
@@ -256,8 +277,8 @@ PlatformIO project, Arduino Core 3.x via pioarduino fork. Board: `esp32-s3-devki
 ESP-NOW↔serial bridge on the PC). Build/flash with the venv pio (see Python Environment):
 
 ```bash
-~/.pio-venv/bin/pio run -d firmware -e car    -t upload --upload-port /dev/ttyACM1
-~/.pio-venv/bin/pio run -d firmware -e dongle -t upload --upload-port /dev/ttyACM0
+~/.pio-venv/bin/pio run -d robot/firmware -e car    -t upload --upload-port /dev/ttyACM1
+~/.pio-venv/bin/pio run -d robot/firmware -e dongle -t upload --upload-port /dev/ttyACM0
 ```
 
 **ESP-NOW link:** unicast, channel 1, **LR on** (`esp_wifi_set_protocol(WIFI_IF_STA, WIFI_PROTOCOL_LR)`
@@ -346,13 +367,13 @@ The camera path (WFB-NG on `wlan1` monitor mode, 5.8GHz) is fully independent.
 
 **Gotcha — `data/` is gitignored**, so a fresh clone has no `data/led_roi.json`. Without it
 the recorder disables the LatencyTracker → LED never blinks and frames aren't masked. Run
-`python tools/set_led_roi.py` once per machine to recreate it (bbox is in 640×360 space).
+`python robot/tools/set_led_roi.py` once per machine to recreate it (bbox is in 640×360 space).
 
 ## Development Phases
 
-See `PLAN.md` for the full roadmap (deadline 2026-06-15).
+See `docs/PLAN.md` for the full roadmap (deadline 2026-06-15).
 
-- **Phase 1** (Infrastructure): `firmware/` ESP32 ESP-NOW (car + dongle), `src/capture.py`, `src/encoder.py`, `src/controller.py`
-- **Phase 2** (Data): `src/recorder.py`, `src/offline_encode.py`
-- **Phase 3** (Training): `src/ac_predictor.py`, `src/train.py`, `src/baselines/`
-- **Phase 4** (Planning): `src/cem_planner.py`, `src/inference_loop.py`
+- **Phase 1** (Infrastructure): `robot/firmware/` ESP32 ESP-NOW (car + dongle), `robot/capture/capture.py`, `src/jepa_wm/models/encoders/vjepa.py`, `robot/capture/controller.py`
+- **Phase 2** (Data): `robot/capture/recorder.py`, `src/jepa_wm/data/sync.py`, `src/jepa_wm/engine/encode.py`
+- **Phase 3** (Training): `src/jepa_wm/models/{ac_predictor,leworldmodel}.py`, `src/jepa_wm/engine/train.py`, `src/jepa_wm/models/baselines/`
+- **Phase 4** (Planning): `src/jepa_wm/planning/cem.py`, `scripts/evaluate.py` (online loop)

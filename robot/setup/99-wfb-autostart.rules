@@ -1,0 +1,7 @@
+# udev rule: auto-start wfb_rx when RTL8812AU (0bda:8812) is plugged in
+# Install: sudo cp setup/99-wfb-autostart.rules /etc/udev/rules.d/
+#          sudo udevadm control --reload-rules
+
+ACTION=="add", SUBSYSTEM=="usb", \
+    ATTRS{idVendor}=="0bda", ATTRS{idProduct}=="8812", \
+    RUN+="/bin/bash /home/anakonkai/Work/JEPA/setup/wfb-start.sh"

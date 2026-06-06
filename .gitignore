@@ -6,11 +6,16 @@ data/
 !data/.gitkeep
 checkpoints/
 !checkpoints/.gitkeep
+runs/                    # TensorBoard logs
 
-# Python cache
+# Python cache / build
 __pycache__/
 *.pyc
 *.pyo
+*.egg-info/
+build/
+dist/
+.eggs/
 
 # Media
 *.mp4

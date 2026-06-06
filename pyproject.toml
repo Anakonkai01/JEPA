@@ -1,0 +1,29 @@
+[build-system]
+requires = ["setuptools>=64"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "jepa-wm"
+version = "0.1.0"
+description = "Action-Conditioned World Model for RC-car navigation on V-JEPA 2.1"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "torch",
+    "torchvision",
+    "numpy",
+    "opencv-python",
+    "pyyaml",
+    "tqdm",
+    "tensorboard",
+]
+
+[project.optional-dependencies]
+# Robotics / data-collection rig (robot/). Not needed for training on a GPU box.
+robot = ["pyserial", "pynput"]
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-dir]
+"" = "src"
