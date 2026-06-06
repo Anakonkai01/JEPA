@@ -29,6 +29,13 @@
 //    Giữ song song ESP-NOW (dongle vẫn dùng được làm fallback).
 // ============================================================
 #define DEBUG_SERIAL 0          // 1 = in debug 5Hz ra USB (làm BẨN luồng hex — chỉ bật khi soi bench)
+
+// Telemetry transport: điện thoại cắm THẲNG USB native là đường CHÍNH (writeHexLine). ESP-NOW
+// telemetry tới dongle giờ chỉ là tuỳ chọn — mặc định TẮT để khỏi phát LR 2.4GHz thừa mỗi 20ms
+// (dongle không ACK → MAC retransmit) khi đã bỏ dongle. RX ESP-NOW vẫn bật (control fallback).
+// Bật lại =1 nếu dùng lại dongle.
+#define TELEM_VIA_ESPNOW 0
+
 static const char HEXC[] = "0123456789abcdef";
 
 static void writeHexLine(const uint8_t *buf, int n) {
@@ -37,6 +44,10 @@ static void writeHexLine(const uint8_t *buf, int n) {
     int p = 0;
     for (int i = 0; i < n; i++) { out[p++] = HEXC[buf[i] >> 4]; out[p++] = HEXC[buf[i] & 0x0F]; }
     out[p++] = '\n';
+    // Gửi telemetry hex ra USB native cho điện thoại.
+    // (Đã THỬ rồi BỎ chặn bằng availableForWrite(): HWCDC báo =0 khi chưa coi là "connected" với
+    //  driver usb-serial-for-android → chặn NHẦM telemetry = NO TELEM. Thủ phạm giật servo là
+    //  servo cũ, không phải block này, nên không cần chặn.)
     Serial.write((const uint8_t*)out, p);
 }
 
@@ -265,7 +276,9 @@ void sendTelemetry() {
     t.ch_record_us = ibusCh[CH_RECORD];
     t.rec          = (ibusCh[CH_RECORD] > 1500) ? 1 : 0;
 
-    esp_now_send(DONGLE_MAC, (const uint8_t*)&t, sizeof(t));   // fallback: dongle ESP-NOW
+#if TELEM_VIA_ESPNOW
+    esp_now_send(DONGLE_MAC, (const uint8_t*)&t, sizeof(t));   // tuỳ chọn: telemetry qua dongle ESP-NOW
+#endif
     writeHexLine((const uint8_t*)&t, sizeof(t));               // chính: điện thoại cắm thẳng USB
 }
 

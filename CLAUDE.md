@@ -101,7 +101,7 @@ the wireless video link — put an Android phone ON the car** as camera + record
                                                                       → 2-byte action
                                                                       → ESP-NOW dongle (PC USB)  ⇅ ch1 unicast
                                                                     [ESP32-S3 car]
-                                                                      → KDS N680 HV servo (steering, GPIO 5)
+                                                                      → TowerPro MG946R servo (steering, GPIO 5)
                                                                       → Hobbywing QuicRun 8BL150 ESC (throttle, GPIO 6)
 ```
 
@@ -127,9 +127,9 @@ Critical optimization: pre-encode the entire dataset through V-JEPA offline (onc
 | Compute | Arch Linux, kernel 7.0.3, RTX 5070 Ti |
 | Controller (car) | ESP32-S3 WROOM N16R8 (16MB flash, 8MB PSRAM), MAC `E0:72:A1:D5:27:B0` |
 | Telemetry dongle | ESP32-S3 WROOM N16R8 on PC USB (`/dev/ttyACM*`), MAC `E0:72:A1:DB:D7:74` — ESP-NOW↔serial bridge |
-| Servo | KDS N680 HV Metal Gear Digital, 6.0–8.4V, GPIO 5, calibrated 1142–1880µs |
-| ESC | Hobbywing QuicRun WP 8BL150, 150A brushless, GPIO 6, 1000–2000µs |
-| Power | 20V drill battery → ESC; BEC 6V/3A → Servo; ESP32 from separate 5V |
+| Servo | TowerPro MG946R Metal Gear (analog), 4.8–6.0V (⚠️ KHÔNG HV, tối đa ~6.6V), GPIO 5, clamp 1150–1850µs (calib 2026-06-06: cơ khí L1120/R≥2000/C1500). Cũ: KDS N680 HV (đã thay vì yếu/lỗi). |
+| ESC | Hobbywing QuicRun 8BL150 (bản thường, không WP), 150A brushless, GPIO 6, 1000–2000µs |
+| Power | 20V drill battery → ESC; BEC 6V/3A → Servo (⚠️ giữ ≤6V — MG946R không HV); ESP32 from separate 5V |
 
 ## Daily Startup Commands
 
@@ -170,7 +170,7 @@ PC → car payloads (raw bytes, hex-encoded on the serial wire):
 - 1 byte `0x01`/`0x00` = latency LED on/off.
 
 Mapping from float in [-1, 1]: `byte = int((value + 1.0) / 2.0 * 255)`
-Servo PWM: `1150 + byte/255 * 700` µs (safe clamp; calibrated 1142–1880, see `firmware/specs.md`)
+Servo PWM: `1150 + byte/255 * 700` µs (safe clamp 1150–1850; servo MG946R, calib 2026-06-06, see `firmware/specs.md`)
 ESC PWM: `1000 + byte/255 * 1000` µs
 
 Telemetry car → PC: 25-byte packed struct `<BBIIffHHHB>` @50Hz (magic `0xAC`, mode, seq,

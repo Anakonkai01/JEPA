@@ -14,6 +14,30 @@ Predictor ~5M, CEM planning). Thu data bằng **điện thoại Android đặt t
 - **Phase 3 (training):** ⏳ chưa (`ac_predictor.py`, `train.py`, baselines).
 - **Phase 4 (planning):** ⏳ chưa (`cem_planner.py`, `inference_loop.py`; `controller.py` còn UDP cũ).
 
+## Việc phiên này (2026-06-06, đợt 2) — servo + firmware + protocol thu data
+**Phần cứng / lái:**
+- **Đổi servo lái: KDS N680 HV → TowerPro MG946R** (analog, **≤6V — KHÔNG HV**). Servo cũ yếu/lỗi → giật/khựng
+  khi đánh lái có tải; thay là hết. ⚠️ BEC phải **≤6V** cho MG946R (đừng 7.4/8.4V như lúc test con cũ → cháy).
+- Vụ giật còn hé lộ **breadboard không tải nổi dòng đỉnh servo** — MG946R dòng thấp hơn nên *che* được, nhưng
+  vẫn nên đưa **nguồn servo OFF breadboard + star-ground**.
+- **Đi dây nguồn (đã chốt):** receiver FS-iA10B **chung nguồn BEC 6V** + **GND chung qua receiver** = OK (chuẩn RC,
+  MG946R 6V không HV). Đường dòng-lớn (BEC↔servo) đi đầu-cắm/PCB chứ KHÔNG breadboard; **GND của ESP32 phải chạm
+  mass chung** (qua dây GND cáp i-BUS). Bonus: receiver ăn BEC → ESP32 khỏi cấp 5V → hết lo back-feed VBUS phone.
+- **Calibrate servo mới** (tool JOG: `firmware/src/servo_calibrate.cpp` + `env:servocal`): cơ khí
+  **L1120 / R≥2000 / C1500 (thẳng, lệch +0)** → clamp firmware **`[1150,1850]` GIỮ NGUYÊN** (nằm gọn trong biên,
+  khớp 29 session cũ). Chi tiết `firmware/specs.md`. ESC đính chính = **QuicRun 8BL150 bản thường (không WP)**.
+
+**Firmware (`firmware/src/main.cpp`, build OK):**
+- Gate ESP-NOW telemetry sau `TELEM_VIA_ESPNOW` (mặc định 0 — bỏ phát thừa tới dongle đã rút). Đường phone USB không đổi.
+- ⚠️ **Bài học:** đã thử thêm guard `availableForWrite()` quanh `Serial.write` → **gây NO TELEM trên phone**
+  (HWCDC trả availableForWrite=0 tới khi "connected"; usb-serial-for-android mở cổng không bắt tay DTR → guard bỏ
+  qua mọi write). **Đã revert — ĐỪNG thêm lại.**
+
+**Thu data:**
+- **Dual rate throttle 7-8% → 14-15%** (mở dải ga trên sàn stall ~6%). KHÔNG phá data cũ (action→ESC độc lập
+  dual rate, chỉ mở rộng tầm). **Cố định trim/EPA/dual-rate từ giờ.**
+- **`DATA_COLLECTION.md` (mới)** — 5 kịch bản thu data ga-biến-thiên + decorrelation + tiêu chí dừng (histogram).
+
 ## Việc phiên này (2026-06-06) — app pass lớn + data pipeline
 **App Android nâng cấp mạnh (build + cài + chạy OK trên A42):**
 - **Fix δ_cam** ([MainActivity.kt](android/app/src/main/java/com/jepa/recorder/MainActivity.kt)+[SessionWriter.kt](android/app/src/main/java/com/jepa/recorder/SessionWriter.kt)):
@@ -40,8 +64,8 @@ Predictor ~5M, CEM planning). Thu data bằng **điện thoại Android đặt t
 - Mỗi session usable có: `frames/*.jpg` (640×360), `telemetry.csv` (50Hz), **`actions_synced.csv`** (DÙNG cái
   này: frame_idx,t_scene_ms,steering,throttle,mode), **`imu_synced.csv`** (gx,gy,gz,ax,ay,az,rx,ry,rz),
   + IMU thô + gps + meta.json. **`actions.csv` là gốc lệch giờ — bỏ.**
-- **Steering** đủ dải −1..1 (tốt); **throttle ~hằng** (giới hạn EPA) → world model hiện ≈ steering-only.
-  → **việc thu tiếp: mẻ data GA BIẾN THIÊN**.
+- **Steering** đủ dải −1..1 (tốt); **throttle ~hằng** (29 session cũ pinned ~7.5%) → world model hiện ≈ steering-only.
+  → **việc thu tiếp: mẻ data GA BIẾN THIÊN** theo **`DATA_COLLECTION.md`** (dual rate giờ 14-15%, servo mới đã calib).
 - Backup Drive: `rclone copy data/raw gdrive:JEPA/raw` (remote `gdrive:` đã cấu hình; folder nhiều file nhỏ
   nên up chậm/vài giờ, resumable). Bạn của user đang thử data này.
 
@@ -62,10 +86,12 @@ rclone copy data/raw gdrive:JEPA/raw -P            # đẩy lên Drive
   → `INSTALL_FAILED_UPDATE_INCOMPATIBLE` → phải `adb pull` hết session **TRƯỚC** rồi `adb uninstall` + cài lại
   (gỡ app XOÁ `Android/data/.../sessions`). Đã backup đủ 34 session về `data/raw/` rồi.
 - **Cắm phone vào ESP32 = cổng NATIVE (303A); nạp firmware = cổng CH343.** Đừng cấp 5V ngoài khi đang cắm phone.
+- **Servo = MG946R (analog, ≤6V — KHÔNG HV).** BEC phải ≤6V (đừng 7.4/8.4V → cháy). Clamp [1150,1850], calib `firmware/specs.md`.
+- **NO TELEM nhưng "USB OK"** = thường do firmware không phát ra cổng native (đang chạy `env:servocal`?) hoặc guard chặn write — KHÔNG dùng `availableForWrite()` chặn `Serial.write` (xem đợt 2).
 - `data/` + `android/app/build/` đều gitignored.
 
 ## Bước tiếp theo gợi ý
-1. **Thu mẻ data ga biến thiên** (app đã sẵn sàng, δ_cam tự khử).
+1. **Thu mẻ data ga biến thiên** theo **`DATA_COLLECTION.md`** (servo mới đã calib, dual rate 14-15%, app sẵn sàng, δ_cam tự khử).
 2. `src/offline_encode.py`: tải **weights V-JEPA ViT-L** (`checkpoints/` rỗng; env `ai` có torch 2.10+cu128
    trên RTX 5070 Ti, transformers 5.5) → encode latent (cân nhắc crop ~35% đáy bỏ thân xe) → `data/latents/*.pt`.
 3. Phase 3: `src/ac_predictor.py` + `src/train.py` (+ baseline vision-only vs vision+IMU — data đã có `imu_synced`).
