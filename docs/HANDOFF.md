@@ -145,8 +145,14 @@ tensorboard --logdir runs                           # http://localhost:6006
 - **NO TELEM nhưng "USB OK"** = thường do firmware không phát ra cổng native (đang chạy `env:servocal`?) hoặc guard chặn write — KHÔNG dùng `availableForWrite()` chặn `Serial.write` (xem đợt 2).
 - `data/` + `android/app/build/` đều gitignored.
 
-## Bước tiếp theo gợi ý
-1. **Thu mẻ data ga biến thiên** theo **`DATA_COLLECTION.md`** (servo mới đã calib, dual rate 14-15%, app sẵn sàng, δ_cam tự khử).
-2. `src/offline_encode.py`: tải **weights V-JEPA ViT-L** (`checkpoints/` rỗng; env `ai` có torch 2.10+cu128
-   trên RTX 5070 Ti, transformers 5.5) → encode latent (cân nhắc crop ~35% đáy bỏ thân xe) → `data/latents/*.pt`.
-3. Phase 3: `src/ac_predictor.py` + `src/train.py` (+ baseline vision-only vs vision+IMU — data đã có `imu_synced`).
+## Bước tiếp theo gợi ý (cập nhật 2026-06-07)
+1. **🎯 ĐANG LÀM: thu mẻ data mới trong CÔNG VIÊN** theo **`docs/DATA_COLLECTION.md`** (đã viết lại cụ thể:
+   số đo gap throttle, ràng buộc công viên, 5 kịch bản, kế hoạch ~16–20 session, tiêu chí dừng). Trọng tâm:
+   **biến thiên ga/tốc độ + đa dạng cảnh** (steering đã đủ; eff_rank ~8 chứng tỏ data đơn điệu là bottleneck).
+2. **Sau khi thu:** `scripts/sync_dataset.py` → `scripts/encode_dataset.py` (chỉ encode buổi mới) →
+   train lại `scripts/train.py` (vjepa_ac) + `scripts/train_lewm.py`. Kiểm coverage bằng phần report trong
+   `scripts/eval_lewm.py`. Kỳ vọng: eff_rank ↑, rollout1_ratio ↓.
+3. **Phase 4 — planning (mới là "tự lái"):** `src/jepa_wm/planning/cem.py` (CEM đã có stub) + closed-loop
+   trên xe (phone TCP-stream frame → PC chạy vjepa_ac+CEM → 2-byte action → ESP32). `robot/capture/controller.py`
+   còn map UDP cũ → sửa sang dongle/native serial + throttle Mode-3 linear (xem CLAUDE.md mục controller).
+4. (Tùy chọn) chuẩn hóa action per-dim theo biên thực; cân scale throttle cho cân với steering.
