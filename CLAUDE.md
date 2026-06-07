@@ -148,7 +148,7 @@ Critical optimization: pre-encode the entire dataset through V-JEPA offline (onc
 | Compute | Arch Linux, kernel 7.0.3, RTX 5070 Ti |
 | Controller (car) | ESP32-S3 WROOM N16R8 (16MB flash, 8MB PSRAM), MAC `E0:72:A1:D5:27:B0` |
 | Telemetry dongle | ESP32-S3 WROOM N16R8 on PC USB (`/dev/ttyACM*`), MAC `E0:72:A1:DB:D7:74` — ESP-NOW↔serial bridge |
-| Servo | TowerPro MG946R Metal Gear (analog), 4.8–6.0V (⚠️ KHÔNG HV, tối đa ~6.6V), GPIO 5, clamp 1150–1850µs (calib 2026-06-06: cơ khí L1120/R≥2000/C1500). Cũ: KDS N680 HV (đã thay vì yếu/lỗi). |
+| Servo | TowerPro MG946R Metal Gear (analog), 4.8–6.0V (⚠️ KHÔNG HV, tối đa ~6.6V), GPIO 5. **Recalib 2026-06-07: full range `SERVO_MIN/CENTER/MAX = 1000/1560/2000µs`** (driveNorm pivot quanh CENTER → góc lái cơ khí đối xứng, neutral=steer=0=1560). ⚠️ action→góc KHÔNG khớp data cũ KDS (C1500, dải 1150–1850) → 2 domain khác cho phần AC, xem `firmware/specs.md`. Cũ: KDS N680 HV (đã thay vì yếu/lỗi). |
 | ESC | Hobbywing QuicRun 8BL150 (bản thường, không WP), 150A brushless, GPIO 6, 1000–2000µs |
 | Power | 20V drill battery → ESC; BEC 6V/3A → Servo (⚠️ giữ ≤6V — MG946R không HV); ESP32 from separate 5V |
 
@@ -191,7 +191,7 @@ PC → car payloads (raw bytes, hex-encoded on the serial wire):
 - 1 byte `0x01`/`0x00` = latency LED on/off.
 
 Mapping from float in [-1, 1]: `byte = int((value + 1.0) / 2.0 * 255)`
-Servo PWM: `1150 + byte/255 * 700` µs (safe clamp 1150–1850; servo MG946R, calib 2026-06-06, see `firmware/specs.md`)
+Servo PWM (recalib 2026-06-07, **pivot quanh tâm 1560**): `steer∈[-1,0] → 1560 + steer*560` (=[1000,1560]); `steer∈[0,1] → 1560 + steer*440` (=[1560,2000]). Full range 1000–2000, servo MG946R, see `firmware/specs.md`.
 ESC PWM: `1000 + byte/255 * 1000` µs
 
 Telemetry car → PC: 25-byte packed struct `<BBIIffHHHB>` @50Hz (magic `0xAC`, mode, seq,
@@ -295,7 +295,7 @@ Reads FS-iA10B i-BUS on `Serial1`/GPIO18 (115200, non-inverted). 3 modes via CH9
 Telemetry to dongle @50Hz (packed struct: steering/throttle floats + ch µs + rec flag).
 ESC arms on boot (neutral ~3s). Two watchdogs: i-BUS loss >100ms → neutral; AUTO control
 loss >500ms → neutral. External LED on GPIO21 (+ onboard RGB) toggled by ESP-NOW 0x01/0x00
-for latency calibration. Servo safe clamp **1150–1850µs** (midpoint exactly 1500).
+for latency calibration. Servo range **1000–2000µs**, tâm 1560 (recalib 2026-06-07, pivot quanh tâm).
 
 Channel map (FS-i6 modded 10ch): CH1=steering, CH2=throttle, CH9=mode, CH10=record.
 

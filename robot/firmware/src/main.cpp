@@ -74,9 +74,9 @@ static const uint32_t CTRL_WATCHDOG_MS = 500;
 // ============================================================
 //  GIỚI HẠN (calibrate, xem specs.md)
 // ============================================================
-const int SERVO_MIN     = 1150;      // full left  (chốt an toàn, trong giới hạn calibrate 1142)
-const int SERVO_CENTER  = 1500;      // = trung điểm (1150+1850)/2 → cần giữa ra đúng 1500
-const int SERVO_MAX     = 1850;      // full right (chốt an toàn, trong giới hạn calibrate 1880)
+const int SERVO_MIN     = 1000;      // full left  = hết cữ cơ khí (calib 2026-06-07 L1000)
+const int SERVO_CENTER  = 1560;      // tâm calib 2026-06-07 (+60 so với 1500; driveNorm pivot quanh tâm này)
+const int SERVO_MAX     = 2000;      // full right = hết cữ cơ khí (calib 2026-06-07 R2000)
 const int ESC_MIN       = 1000;      // full reverse (Mode 3)
 const int ESC_NEUTRAL   = 1500;
 const int ESC_MAX       = 2000;      // full forward
@@ -152,7 +152,11 @@ void setESC(int us) {
 void driveNorm(float steer, float throt) {
     steer = constrain(steer, -1.0f, 1.0f);
     throt = constrain(throt, -1.0f, 1.0f);
-    setServo((int)(SERVO_MIN + (steer + 1.0f) * 0.5f * (SERVO_MAX - SERVO_MIN)));
+    // pivot quanh SERVO_CENTER (1550): trái 1150↔1550, phải 1550↔1850 — neutral khớp steer=0
+    int servo_us = (steer <= 0.0f)
+        ? (int)(SERVO_CENTER + steer * (SERVO_CENTER - SERVO_MIN))   // steer∈[-1,0] → [MIN, CENTER]
+        : (int)(SERVO_CENTER + steer * (SERVO_MAX - SERVO_CENTER));  // steer∈[0,1]  → [CENTER, MAX]
+    setServo(servo_us);
     setESC  ((int)(ESC_MIN   + (throt + 1.0f) * 0.5f * (ESC_MAX   - ESC_MIN)));
     curSteerNorm = steer;
     curThrotNorm = throt;
