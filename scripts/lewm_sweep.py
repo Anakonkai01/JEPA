@@ -18,15 +18,16 @@ from jepa_wm.utils import load_config
 
 OUT = "/tmp/lewm_sweep_results.json"
 
-# Each experiment = (name, override dict). Base = fs5, emb256, lambda0.1.
+# Each experiment = (name, override dict). Base = TowerPro fs5 block-mean,
+# emb256, lambda0.1, steering/throttle scaled to comparable model units.
 EXPERIMENTS = [
-    ("base_fs5_emb256_l0.1", {}),
-    ("emb128",               {"model.emb_dim": 128}),
-    ("emb64",                {"model.emb_dim": 64}),
-    ("lambda0.05",           {"sigreg.lambd": 0.05}),
-    ("lambda0.2",            {"sigreg.lambd": 0.2}),
-    ("fs3",                  {"data.frame_skip": 3}),
-    ("fs10",                 {"data.frame_skip": 10}),
+    ("towerpro_fs5_emb256_l0.1", {}),
+    ("towerpro_emb128",          {"model.emb_dim": 128}),
+    ("towerpro_emb64",           {"model.emb_dim": 64}),
+    ("towerpro_lambda0.05",      {"sigreg.lambd": 0.05}),
+    ("towerpro_lambda0.2",       {"sigreg.lambd": 0.2}),
+    ("towerpro_fs3",             {"data.frame_skip": 3}),
+    ("towerpro_fs10",            {"data.frame_skip": 10}),
 ]
 
 
@@ -44,7 +45,10 @@ def main():
     base["kfold"] = 0
     base["train"]["epochs"] = 70
     base["train"]["patience"] = 12
+    base["data"]["raw_dir"] = "data/raw_towerpro"
     base["data"]["frame_skip"] = 5            # base frame skip (overridden per exp)
+    base["data"]["action_aggregation"] = "block_mean"
+    base["data"]["action_scale"] = [1.0, 6.67]
     base.setdefault("wandb", {})["group"] = "lewm_sweep"
 
     results = []

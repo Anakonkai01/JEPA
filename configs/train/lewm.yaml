@@ -4,15 +4,15 @@ device: cuda
 seed: 0
 
 wandb:
-  enabled: true
+  enabled: false
   project: lewm-rccar
   entity: null          # null = your default wandb entity
   group: null           # auto-set per experiment (e.g. lewm_fs5_kfold)
 
-kfold: 5                # 0/1 = single split; >=2 = k-fold CV by session
+kfold: 0                # 0/1 = single split; >=2 = k-fold CV by session
 
 data:
-  raw_dir: data/raw
+  raw_dir: data/raw_towerpro
   val_frac: 0.2         # used only when kfold < 2
 
 train:

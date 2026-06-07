@@ -1,0 +1,15 @@
+# Dataset / encoding config (shared across models).
+data:
+  raw_dir: data/raw            # recorded sessions (frames + *_synced.csv)
+  latents_dir: data/latents    # output of scripts/encode_dataset.py
+  horizon: 1                   # action steps per sample (override per model)
+  use_imu: false               # also feed IMU channels from imu_synced.csv
+  action_keys: [steering, throttle]
+  # Session-level split (fill explicit lists, or leave null for an auto 80/20 split).
+  train_sessions: null
+  val_sessions: null
+
+encoder:
+  hf_id: facebook/vjepa2-vitl-fpc64-256
+  checkpoint: null             # local .pth path (preferred over HF when set)
+  batch_size: 32

@@ -9,6 +9,7 @@ See docs/LeWorldModel.md.
 """
 from __future__ import annotations
 
+import json
 import math
 import time
 from pathlib import Path
@@ -29,11 +30,20 @@ except Exception:  # pragma: no cover
 
 
 # ─────────────────────────────────────────────────────────── data ───────────
+def _data_source(cfg):
+    d = cfg["data"]
+    return d.get("raw_dirs") or d.get("raw_dir")
+
+
 def _mk_ds(cfg, sessions, seq_len):
     d = cfg["data"]
     return FrameSequenceDataset(
-        d["raw_dir"], sessions=sessions, seq_len=seq_len, frame_skip=d.get("frame_skip", 1),
-        stride=d.get("stride", 2), image_size=d.get("image_size", 224))
+        _data_source(cfg), sessions=sessions, seq_len=seq_len, frame_skip=d.get("frame_skip", 1),
+        stride=d.get("stride", 2), image_size=d.get("image_size", 224),
+        action_keys=tuple(d.get("action_keys", ("steering", "throttle"))),
+        action_scale=d.get("action_scale"),
+        action_aggregation=d.get("action_aggregation", "sample"),
+        domain_token=d.get("domain_token", "none"))
 
 
 def _loaders(cfg, train_s, val_s):
@@ -54,6 +64,18 @@ def _cosine_warmup(step, total, warmup, base_lr):
         return base_lr * (step + 1) / max(1, warmup)
     prog = (step - warmup) / max(1, total - warmup)
     return 0.5 * base_lr * (1 + math.cos(math.pi * min(1.0, prog)))
+
+
+def _json_safe(x):
+    if isinstance(x, dict):
+        return {str(k): _json_safe(v) for k, v in x.items()}
+    if isinstance(x, (list, tuple)):
+        return [_json_safe(v) for v in x]
+    if isinstance(x, (np.floating, np.integer)):
+        return x.item()
+    if isinstance(x, Path):
+        return str(x)
+    return x
 
 
 # ─────────────────────────────────────────────────────── final eval ─────────
@@ -87,7 +109,8 @@ def final_eval(model, eval_dl, device, history, emb_dim, max_batches=40):
     px = batch["pixels"].to(device); ac = batch["actions"].to(device)
     z = model.encode(px).float()
     base = model.predict(z[:, :history], model.action_encoder(ac[:, :history])).float()[:, -1]
-    ac_flip = ac.clone() * torch.tensor([-1., 1.], device=device)
+    ac_flip = ac.clone()
+    ac_flip[..., 0] *= -1.0
     flip = model.predict(z[:, :history], model.action_encoder(ac_flip[:, :history])).float()[:, -1]
     steer_sens = F.mse_loss(flip, base).item()
     h1 = max(model_mse)
@@ -107,14 +130,28 @@ def train(cfg: dict, train_s=None, val_s=None, fold: int | None = None) -> dict:
     tcfg, scfg = cfg["train"], cfg.get("sigreg", {})
     if train_s is None:
         from ..data import split_sessions
-        sess = list_sessions(cfg["data"]["raw_dir"])
-        train_s, val_s = split_sessions(sess, val_frac=cfg["data"].get("val_frac", 0.2), seed=cfg.get("seed", 0))
+        dcfg = cfg["data"]
+        if dcfg.get("train_sessions") and dcfg.get("val_sessions"):
+            train_s, val_s = dcfg["train_sessions"], dcfg["val_sessions"]
+        else:
+            sess = list_sessions(_data_source(cfg))
+            train_s, val_s = split_sessions(sess, val_frac=dcfg.get("val_frac", 0.2), seed=cfg.get("seed", 0))
 
     tag = f"fold{fold}" if fold is not None else "full"
     train_dl, val_dl, eval_dl = _loaders(cfg, train_s, val_s)
     print(f"[{tag}] train {len(train_s)}s/{len(train_dl.dataset)}w | val {len(val_s)}s/{len(val_dl.dataset)}w")
 
     model = LeWorldModel(**{k: v for k, v in cfg["model"].items() if k != "name"}).to(device)
+    init_from = tcfg.get("init_from")
+    if init_from:
+        blob = torch.load(init_from, map_location=device, weights_only=False)
+        state = blob.get("model", blob)
+        strict = bool(tcfg.get("init_strict", True))
+        loaded = model.load_state_dict(state, strict=strict)
+        if not strict:
+            print(f"[{tag}] init_from {init_from} | missing={loaded.missing_keys} unexpected={loaded.unexpected_keys}")
+        else:
+            print(f"[{tag}] init_from {init_from}")
     sigreg = SIGReg(knots=scfg.get("knots", 17), num_proj=scfg.get("num_proj", 1024)).to(device)
     lambd = scfg.get("lambd", 0.1)
     opt = torch.optim.AdamW(model.parameters(), lr=tcfg["lr"], weight_decay=tcfg.get("weight_decay", 0.05))
@@ -124,6 +161,9 @@ def train(cfg: dict, train_s=None, val_s=None, fold: int | None = None) -> dict:
 
     out_dir = Path(tcfg["out_dir"]) / "leworldmodel" / (tag if fold is not None else "")
     out_dir.mkdir(parents=True, exist_ok=True)
+    metrics_path = out_dir / "metrics.jsonl"
+    if metrics_path.exists():
+        metrics_path.unlink()
 
     wcfg = cfg.get("wandb", {})
     run = None
@@ -167,6 +207,12 @@ def train(cfg: dict, train_s=None, val_s=None, fold: int | None = None) -> dict:
         nvb = max(1, len(val_dl)); vpred /= nvb; vsig /= nvb
         if run:
             run.log({"val/pred": vpred, "val/sigreg": vsig, "epoch": epoch}, step=gstep)
+        with open(metrics_path, "a") as f:
+            f.write(json.dumps(_json_safe({
+                "epoch": epoch, "step": gstep, "lr": lr, "train_total": run_l["total"] / nb,
+                "train_pred": run_l["pred"] / nb, "train_sigreg": run_l["sig"] / nb,
+                "val_pred": vpred, "val_sigreg": vsig, "seconds": time.time() - t0,
+            })) + "\n")
         print(f"[{tag}] ep {epoch:3d} | train {run_l['total']/nb:.4f} "
               f"(pred {run_l['pred']/nb:.4f} sig {run_l['sig']/nb:.2f}) | val pred {vpred:.4f} | {time.time()-t0:.0f}s",
               flush=True)
@@ -187,6 +233,8 @@ def train(cfg: dict, train_s=None, val_s=None, fold: int | None = None) -> dict:
     fe = final_eval(model, eval_dl, device, cfg["model"]["history_size"], cfg["model"]["emb_dim"],
                     max_batches=cfg.get("eval", {}).get("max_batches", 40)) if eval_dl else {}
     summary = {"fold": tag, "best_val_pred": best_val, "best_epoch": best_epoch, **fe}
+    with open(out_dir / "summary.json", "w") as f:
+        json.dump(_json_safe(summary), f, indent=2)
     print(f"[{tag}] DONE best_val {best_val:.4f} | rollout@1 {fe.get('rollout1', float('nan')):.4f} "
           f"(×identity {fe.get('rollout1_ratio', float('nan')):.2f}) | eff_rank {fe.get('eff_rank', float('nan')):.1f} "
           f"| steer_sens {fe.get('act_steer_sens', float('nan')):.4f}", flush=True)
@@ -207,7 +255,7 @@ def _make_folds(sessions, k, seed):
 
 def kfold(cfg: dict) -> None:
     k = cfg.get("kfold", 5)
-    sessions = list_sessions(cfg["data"]["raw_dir"])
+    sessions = list_sessions(_data_source(cfg))
     folds = _make_folds(sessions, k, cfg.get("seed", 0))
     cfg.setdefault("wandb", {}).setdefault("group", f"lewm_fs{cfg['data'].get('frame_skip',1)}_kfold{k}")
     print(f"[kfold] {len(sessions)} sessions -> {k} folds (sizes {[len(f) for f in folds]})")

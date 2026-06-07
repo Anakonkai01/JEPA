@@ -2,13 +2,13 @@
 .vscode/
 
 # Data & model weights (quá lớn cho git)
-data/
-!data/.gitkeep
-checkpoints/
-!checkpoints/.gitkeep
+/data/*
+!/data/.gitkeep
+/checkpoints/*
+!/checkpoints/.gitkeep
 # TensorBoard logs + wandb local run cache
-runs/
-wandb/
+/runs/
+/wandb/
 
 # Python cache / build
 __pycache__/

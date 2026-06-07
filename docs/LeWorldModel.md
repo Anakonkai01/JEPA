@@ -106,8 +106,8 @@ Trajectory optimization in latent space (model fixed):
 | Paper | Ours (`configs/model/leworldmodel.yaml`, `data/`) |
 |-------|----|
 | frames 224×224 | 224×224 (resized from 640×360 phone frames) |
-| frame-skip 5 (high-rate sim) | `frame_skip=1` — our synced data is already ~10 fps |
-| sub-traj 4 frames + action blocks | `seq_len=4`, **one** action per frame (action_dim=2: steering, throttle) |
+| frame-skip 5 (high-rate sim) | overnight LeWM sweeps use `frame_skip=5`; default single run can use `frame_skip=1` |
+| sub-traj 4 frames + action blocks | `seq_len=4`, `action_aggregation=block_mean` for skipped-frame action blocks |
 | batch 128 | 96 (fits the RTX 5070 Ti with headroom) |
 | 10 epochs (their data) | high ceiling (200) + **early stopping** on val pred loss |
 | M=1024, λ=0.1, knots=17 | same |
@@ -121,6 +121,18 @@ gym envs + HDF5 + planning we don't need yet). Only the core model + objective a
 plus **collapse metrics** — per-dim std (≈1 means SIGReg is shaping N(0,I)) and entropy-based
 **effective rank** of the latent covariance (≈ emb_dim means no collapse).
 
+## Current TowerPro pipeline
+
+The current focus is the TowerPro dataset (`data/raw_towerpro`), with old KDS
+data used only for comparison, mixed-domain ablations, or KDS-pretrain then
+TowerPro-finetune. See `docs/LEWM_OVERNIGHT.md` for the full overnight queue.
+
+Important data semantics:
+- train from `actions_synced.csv`, not raw `actions.csv`
+- new Android sessions include `dcam_ms`, so sync uses offset 0 ms
+- sync is still needed to interpolate telemetry exactly at each frame scene time
+- for `frame_skip > 1`, use `action_aggregation=block_mean`
+
 ## Run it
 
 ```bash
@@ -128,4 +140,10 @@ PYTHONPATH=src python scripts/train_lewm.py \
     --config configs/train/lewm.yaml configs/model/leworldmodel.yaml
 # overrides: --set sigreg.lambd=0.05 train.batch_size=64
 # checkpoints -> checkpoints/leworldmodel/{best,last}.pt ; logs -> runs/lewm_*
+```
+
+Overnight queue:
+
+```bash
+PYTHONPATH=src python scripts/lewm_overnight.py
 ```

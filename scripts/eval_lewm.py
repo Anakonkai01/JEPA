@@ -27,7 +27,7 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-from jepa_wm.data import FrameSequenceDataset, list_sessions, split_sessions
+from jepa_wm.data import FrameSequenceDataset, list_sessions, normalize_roots, split_sessions
 from jepa_wm.models.leworldmodel import LeWorldModel
 
 
@@ -89,11 +89,19 @@ def action_sensitivity(model, dl, device, history):
     px = batch["pixels"].to(device); ac = batch["actions"].to(device)
     z = model.encode(px).float()
     base = model.predict(z[:, :history], model.action_encoder(ac[:, :history])).float()[:, -1]
+    variants = {}
+    ac2 = ac.clone()
+    ac2[..., 0] *= -1.0
+    variants["steer_flip"] = ac2
+    ac2 = ac.clone()
+    ac2[..., 0] = 0.0
+    variants["steer_zero"] = ac2
+    if ac.size(-1) >= 2:
+        ac2 = ac.clone()
+        ac2[..., 1] += 0.5
+        variants["throttle_+0.5"] = ac2
     out = {}
-    for name, fn in [("steer_flip", lambda a: a * torch.tensor([-1., 1.], device=a.device)),
-                     ("steer_zero", lambda a: a * torch.tensor([0., 1.], device=a.device)),
-                     ("throttle_+0.5", lambda a: a + torch.tensor([0., 0.5], device=a.device))]:
-        ac2 = fn(ac.clone())
+    for name, ac2 in variants.items():
         p2 = model.predict(z[:, :history], model.action_encoder(ac2[:, :history])).float()[:, -1]
         out[name] = F.mse_loss(p2, base).item()
     return out
@@ -102,11 +110,12 @@ def action_sensitivity(model, dl, device, history):
 def data_report(raw_dir, action_keys=("steering", "throttle")):
     rows = []
     per_sess = {}
-    for f in sorted(glob.glob(os.path.join(raw_dir, "*/actions_synced.csv"))):
-        s = os.path.basename(os.path.dirname(f))
-        with open(f) as fh:
-            r = [(float(x["steering"]), float(x["throttle"])) for x in csv.DictReader(fh)]
-        per_sess[s] = len(r); rows += r
+    for root in normalize_roots(raw_dir):
+        for f in sorted(glob.glob(os.path.join(root.path, "*/actions_synced.csv"))):
+            s = f"{root.domain}:{os.path.basename(os.path.dirname(f))}"
+            with open(f) as fh:
+                r = [(float(x["steering"]), float(x["throttle"])) for x in csv.DictReader(fh)]
+            per_sess[s] = len(r); rows += r
     a = np.array(rows); st, th = a[:, 0], a[:, 1]
     return {
         "n_frames": len(a), "n_sessions": len(per_sess),
@@ -130,7 +139,8 @@ def main():
     ap.add_argument("--seq-len", type=int, default=16)
     ap.add_argument("--batch-size", type=int, default=32)
     ap.add_argument("--max-batches", type=int, default=40)
-    ap.add_argument("--raw-dir", default="data/raw")
+    ap.add_argument("--num-workers", type=int, default=0)
+    ap.add_argument("--raw-dir", nargs="+", default=None)
     args = ap.parse_args()
     device = "cuda" if torch.cuda.is_available() else "cpu"
 
@@ -140,15 +150,23 @@ def main():
     model.load_state_dict(ckpt["model"])
     print(f"loaded {args.checkpoint} | epoch {ckpt.get('epoch')} | val_pred {ckpt.get('val_pred'):.4f}")
 
-    sessions = list_sessions(args.raw_dir)
+    dcfg = cfg.get("data", {})
+    source = args.raw_dir if args.raw_dir else (dcfg.get("raw_dirs") or dcfg.get("raw_dir", "data/raw"))
+    if isinstance(source, list) and len(source) == 1 and isinstance(source[0], str):
+        source = source[0]
+    sessions = list_sessions(source)
     _, val_s = split_sessions(sessions, val_frac=cfg["data"].get("val_frac", 0.2), seed=cfg.get("seed", 0))
-    ds = FrameSequenceDataset(args.raw_dir, sessions=val_s, seq_len=args.seq_len,
+    ds = FrameSequenceDataset(source, sessions=val_s, seq_len=args.seq_len,
                               frame_skip=cfg["data"].get("frame_skip", 1),
-                              stride=4, image_size=cfg["data"].get("image_size", 224))
+                              stride=4, image_size=cfg["data"].get("image_size", 224),
+                              action_keys=tuple(cfg["data"].get("action_keys", ("steering", "throttle"))),
+                              action_scale=cfg["data"].get("action_scale"),
+                              action_aggregation=cfg["data"].get("action_aggregation", "sample"),
+                              domain_token=cfg["data"].get("domain_token", "none"))
     # cap batches
     from torch.utils.data import Subset
     idx = list(range(min(len(ds), args.max_batches * args.batch_size)))
-    dl = DataLoader(Subset(ds, idx), batch_size=args.batch_size, shuffle=False, num_workers=8)
+    dl = DataLoader(Subset(ds, idx), batch_size=args.batch_size, shuffle=False, num_workers=args.num_workers)
 
     print(f"\nval sessions: {val_s}\nwindows used: {len(idx)} (seq_len {args.seq_len})")
 
@@ -173,7 +191,7 @@ def main():
     print(f"  (compare to model rollout@1 ≈ {m['model'].get(1, float('nan')):.4f}; "
           f"if these are ≪ that, the predictor barely uses actions)")
 
-    d = data_report(args.raw_dir)
+    d = data_report(source)
     print("\n================ DATA COVERAGE REPORT ================")
     print(f"{d['n_sessions']} sessions, {d['n_frames']} synced frames "
           f"(per-session min/med/max = {d['sess_min']}/{d['sess_med']}/{d['sess_max']})")

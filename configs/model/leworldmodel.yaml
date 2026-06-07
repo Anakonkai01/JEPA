@@ -25,6 +25,10 @@ data:
   frame_skip: 1         # stride between frames within a window (data is ~10 fps)
   stride: 2             # step between window starts
   image_size: 224
+  action_keys: [steering, throttle]
+  action_scale: [1.0, 1.0]
+  action_aggregation: block_mean  # sample | block_mean; block_mean preserves skipped commands
+  domain_token: none           # none | scalar | onehot; scalar appends old/new servo domain
 
 # SIGReg anti-collapse regularizer
 sigreg:
