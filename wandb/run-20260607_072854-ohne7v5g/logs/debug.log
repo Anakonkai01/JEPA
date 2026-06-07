@@ -17,3 +17,8 @@ config: {'device': 'cuda', 'seed': 0, 'wandb': {'enabled': True, 'project': 'lew
 2026-06-07 07:28:55,312 INFO    MainThread:356397 [wandb_run.py:_redirect():2472] Wrapping output streams.
 2026-06-07 07:28:55,312 INFO    MainThread:356397 [wandb_run.py:_redirect():2495] Redirects installed.
 2026-06-07 07:28:55,316 INFO    MainThread:356397 [wandb_init.py:init():1094] run started, returning control to user process
+2026-06-07 07:49:05,037 INFO    MainThread:356397 [wandb_run.py:_finish():2321] finishing run nguyentranhoangnhan18-ton-duc-thang-university/lewm-rccar/ohne7v5g
+2026-06-07 07:49:05,038 INFO    MainThread:356397 [wandb_run.py:_atexit_cleanup():2520] got exitcode: 0
+2026-06-07 07:49:05,038 INFO    MainThread:356397 [wandb_run.py:_restore():2502] restore
+2026-06-07 07:49:05,038 INFO    MainThread:356397 [wandb_run.py:_restore():2508] restore done
+2026-06-07 07:49:06,865 INFO    MainThread:356397 [wandb_run.py:_footer_sync_info():3889] logging synced files

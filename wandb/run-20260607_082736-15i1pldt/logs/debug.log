@@ -1,0 +1,24 @@
+2026-06-07 08:27:36,188 INFO    MainThread:396383 [wandb_setup.py:_flush():81] Current SDK version is 0.26.1
+2026-06-07 08:27:36,188 INFO    MainThread:396383 [wandb_setup.py:_flush():81] Configure stats pid to 396383
+2026-06-07 08:27:36,188 INFO    MainThread:396383 [wandb_setup.py:_flush():81] Loading settings from environment variables
+2026-06-07 08:27:36,188 INFO    MainThread:396383 [wandb_init.py:setup_run_log_directory():723] Logging user logs to /home/pc5070ti/workspace/JEPA/wandb/run-20260607_082736-15i1pldt/logs/debug.log
+2026-06-07 08:27:36,188 INFO    MainThread:396383 [wandb_init.py:setup_run_log_directory():724] Logging internal logs to /home/pc5070ti/workspace/JEPA/wandb/run-20260607_082736-15i1pldt/logs/debug-internal.log
+2026-06-07 08:27:36,188 INFO    MainThread:396383 [wandb_init.py:init():850] calling init triggers
+2026-06-07 08:27:36,188 INFO    MainThread:396383 [wandb_init.py:init():855] wandb.init called with sweep_config: {}
+config: {'device': 'cuda', 'seed': 0, 'wandb': {'enabled': True, 'project': 'lewm-rccar', 'entity': None, 'group': 'vjepa_ac'}, 'data': {'raw_dir': 'data/raw', 'latents_dir': 'data/latents', 'val_frac': 0.2, 'horizon': 1}, 'train': {'epochs': 120, 'batch_size': 512, 'lr': 0.0003, 'weight_decay': 0.0001, 'warmup_frac': 0.05, 'cos_weight': 0.5, 'num_workers': 6, 'patience': 15, 'min_delta': 0.0001, 'out_dir': 'checkpoints'}, 'eval': {'horizon': 10}, 'model': {'name': 'vjepa_ac', 'latent_dim': 1024, 'action_dim': 2, 'hidden_dim': 512, 'n_layers': 2, 'n_heads': 8, 'dropout': 0.0, 'predict_residual': True}, '_wandb': {}}
+2026-06-07 08:27:36,188 INFO    MainThread:396383 [wandb_init.py:init():898] starting backend
+2026-06-07 08:27:36,413 INFO    MainThread:396383 [wandb_init.py:init():913] sending inform_init request
+2026-06-07 08:27:37,012 INFO    MainThread:396383 [wandb_init.py:init():918] backend started and connected
+2026-06-07 08:27:37,013 INFO    MainThread:396383 [wandb_init.py:init():988] updated telemetry
+2026-06-07 08:27:37,015 INFO    MainThread:396383 [wandb_init.py:init():1011] communicating run to backend with 90.0 second timeout
+2026-06-07 08:27:37,432 INFO    MainThread:396383 [wandb_init.py:init():1056] starting run threads in backend
+2026-06-07 08:27:37,527 INFO    MainThread:396383 [wandb_run.py:_console_start():2554] atexit reg
+2026-06-07 08:27:37,527 INFO    MainThread:396383 [wandb_run.py:_redirect():2403] redirect: wrap_raw
+2026-06-07 08:27:37,527 INFO    MainThread:396383 [wandb_run.py:_redirect():2472] Wrapping output streams.
+2026-06-07 08:27:37,527 INFO    MainThread:396383 [wandb_run.py:_redirect():2495] Redirects installed.
+2026-06-07 08:27:37,531 INFO    MainThread:396383 [wandb_init.py:init():1094] run started, returning control to user process
+2026-06-07 08:28:22,196 INFO    MainThread:396383 [wandb_run.py:_finish():2321] finishing run nguyentranhoangnhan18-ton-duc-thang-university/lewm-rccar/15i1pldt
+2026-06-07 08:28:22,196 INFO    MainThread:396383 [wandb_run.py:_atexit_cleanup():2520] got exitcode: 0
+2026-06-07 08:28:22,197 INFO    MainThread:396383 [wandb_run.py:_restore():2502] restore
+2026-06-07 08:28:22,197 INFO    MainThread:396383 [wandb_run.py:_restore():2508] restore done
+2026-06-07 08:28:24,506 INFO    MainThread:396383 [wandb_run.py:_footer_sync_info():3889] logging synced files
