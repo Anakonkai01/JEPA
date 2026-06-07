@@ -1,0 +1,51 @@
+{
+  "os":  "Linux-7.0.0-22-generic-x86_64-with-glibc2.43",
+  "python":  "CPython 3.12.13",
+  "startedAt":  "2026-06-07T00:28:54.090447Z",
+  "args":  [
+    "--config",
+    "configs/train/lewm.yaml",
+    "configs/model/leworldmodel.yaml",
+    "--set",
+    "data.frame_skip=5",
+    "model.emb_dim=64",
+    "kfold=3",
+    "train.out_dir=checkpoints/emb64",
+    "wandb.group=lewm_emb64_kfold3"
+  ],
+  "program":  "/home/pc5070ti/workspace/JEPA/scripts/train_lewm.py",
+  "codePath":  "scripts/train_lewm.py",
+  "codePathLocal":  "scripts/train_lewm.py",
+  "git":  {
+    "remote":  "git@github.com:Anakonkai01/JEPA.git",
+    "commit":  "b6f699c8a5d74a2e8bf505c4f5f4934d553559f7"
+  },
+  "email":  "nguyentranhoangnhan18@gmail.com",
+  "root":  "/home/pc5070ti/workspace/JEPA",
+  "host":  "5070ti",
+  "executable":  "/home/pc5070ti/miniforge3/envs/ai/bin/python",
+  "cpu_count":  20,
+  "cpu_count_logical":  28,
+  "gpu":  "NVIDIA GeForce RTX 5070 Ti",
+  "gpu_count":  1,
+  "disk":  {
+    "/":  {
+      "total":  "501809635328",
+      "used":  "169860157440"
+    }
+  },
+  "memory":  {
+    "total":  "32848093184"
+  },
+  "gpu_nvidia":  [
+    {
+      "name":  "NVIDIA GeForce RTX 5070 Ti",
+      "memoryTotal":  "17094934528",
+      "cudaCores":  8960,
+      "architecture":  "Blackwell",
+      "uuid":  "GPU-64187d93-f2bb-d43f-6c63-2547df16a9a4"
+    }
+  ],
+  "cudaVersion":  "13.2",
+  "writerId":  "p0qmnzhanqngjb3d9uws071xbsohzjp8"
+}

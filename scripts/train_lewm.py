@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """Train LeWorldModel (end-to-end pixel JEPA) on recorded RC-car sessions.
 
-    python scripts/train_lewm.py --config configs/train/lewm.yaml configs/model/leworldmodel.yaml
+Single split:
+    python scripts/train_lewm.py --config configs/train/lewm.yaml configs/model/leworldmodel.yaml --set kfold=0
+K-fold CV by session (default, kfold>=2 in config) + wandb:
     python scripts/train_lewm.py --config configs/train/lewm.yaml configs/model/leworldmodel.yaml \
-                                 --set train.batch_size=32 sigreg.lambd=0.05
+                                 --set data.frame_skip=5
 """
 import argparse
 
-from jepa_wm.engine.train_lewm import train
+from jepa_wm.engine.train_lewm import kfold, train
 from jepa_wm.utils import load_config, merge_overrides
 
 
@@ -17,7 +19,10 @@ def main() -> None:
     ap.add_argument("--set", nargs="*", default=[])
     args = ap.parse_args()
     cfg = merge_overrides(load_config(*args.config), args.set)
-    train(cfg)
+    if cfg.get("kfold", 0) and cfg["kfold"] >= 2:
+        kfold(cfg)
+    else:
+        train(cfg)
 
 
 if __name__ == "__main__":

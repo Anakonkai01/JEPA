@@ -1,0 +1,32 @@
+[full] ep   0 | train 1.0947 (pred 0.6304 sig 4.64) | val pred 0.3257 | 46s
+[full] ep   1 | train 0.5599 (pred 0.1689 sig 3.91) | val pred 0.1473 | 46s
+[full] ep   2 | train 0.4811 (pred 0.1205 sig 3.61) | val pred 0.1367 | 46s
+[full] ep   3 | train 0.4507 (pred 0.0980 sig 3.53) | val pred 0.0807 | 46s
+[full] ep   4 | train 0.4205 (pred 0.0851 sig 3.35) | val pred 0.0816 | 45s
+[full] ep   5 | train 0.3882 (pred 0.0730 sig 3.15) | val pred 0.0742 | 45s
+[full] ep   6 | train 0.3765 (pred 0.0660 sig 3.10) | val pred 0.0688 | 45s
+[full] ep   7 | train 0.3678 (pred 0.0615 sig 3.06) | val pred 0.0728 | 45s
+[full] ep   8 | train 0.3637 (pred 0.0584 sig 3.05) | val pred 0.0789 | 45s
+[full] ep   9 | train 0.3559 (pred 0.0544 sig 3.02) | val pred 0.0694 | 45s
+[full] ep  10 | train 0.3517 (pred 0.0520 sig 3.00) | val pred 0.0916 | 45s
+[full] ep  11 | train 0.3405 (pred 0.0513 sig 2.89) | val pred 0.0740 | 45s
+[full] ep  12 | train 0.3313 (pred 0.0491 sig 2.82) | val pred 0.0691 | 45s
+[full] ep  13 | train 0.3237 (pred 0.0460 sig 2.78) | val pred 0.0627 | 46s
+[full] ep  14 | train 0.3213 (pred 0.0443 sig 2.77) | val pred 0.0613 | 45s
+[full] ep  15 | train 0.3159 (pred 0.0415 sig 2.74) | val pred 0.0684 | 46s
+[full] ep  16 | train 0.3135 (pred 0.0407 sig 2.73) | val pred 0.0663 | 45s
+[full] ep  17 | train 0.3111 (pred 0.0393 sig 2.72) | val pred 0.0490 | 45s
+[full] ep  18 | train 0.2981 (pred 0.0397 sig 2.58) | val pred 0.0522 | 45s
+[full] ep  19 | train 0.2932 (pred 0.0383 sig 2.55) | val pred 0.0575 | 45s
+[full] ep  20 | train 0.2887 (pred 0.0358 sig 2.53) | val pred 0.0534 | 45s
+[full] ep  21 | train 0.2860 (pred 0.0349 sig 2.51) | val pred 0.0780 | 45s
+[full] ep  22 | train 0.2802 (pred 0.0348 sig 2.45) | val pred 0.0590 | 45s
+[full] ep  23 | train 0.2751 (pred 0.0334 sig 2.42) | val pred 0.0719 | 45s
+[full] ep  24 | train 0.2649 (pred 0.0327 sig 2.32) | val pred 0.0560 | 45s
+[full] ep  25 | train 0.2610 (pred 0.0317 sig 2.29) | val pred 0.0824 | 46s
+[full] ep  26 | train 0.2564 (pred 0.0307 sig 2.26) | val pred 0.0663 | 46s
+[full] ep  27 | train 0.2481 (pred 0.0295 sig 2.19) | val pred 0.0680 | 46s
+[full] ep  28 | train 0.2433 (pred 0.0276 sig 2.16) | val pred 0.0617 | 45s
+[full] ep  29 | train 0.2413 (pred 0.0276 sig 2.14) | val pred 0.0700 | 46s
+[full] early-stop (best 0.0490 @ ep 17)
+[full] DONE best_val 0.0490 | rollout@1 0.0336 (×identity 1.04) | eff_rank 6.2 | steer_sens 0.0137

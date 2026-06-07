@@ -1,0 +1,30 @@
+# Training schedule for the frozen-V-JEPA AC predictor (vjepa_ac).
+#   python scripts/train.py --config configs/train/vjepa_ac.yaml configs/model/vjepa_ac.yaml
+device: cuda
+seed: 0
+
+wandb:
+  enabled: true
+  project: lewm-rccar
+  entity: null
+  group: vjepa_ac
+
+data:
+  raw_dir: data/raw
+  latents_dir: data/latents      # output of scripts/encode_dataset.py (V-JEPA 2.1)
+  val_frac: 0.2
+
+train:
+  epochs: 120
+  batch_size: 512                # latents are tiny -> big batches are fine/fast
+  lr: 3.0e-4
+  weight_decay: 1.0e-4
+  warmup_frac: 0.05
+  cos_weight: 0.5                # weight of (1 - cosine) term in ac_loss
+  num_workers: 6
+  patience: 15
+  min_delta: 1.0e-4
+  out_dir: checkpoints
+
+eval:
+  horizon: 10                    # multi-step rollout horizon for offline eval

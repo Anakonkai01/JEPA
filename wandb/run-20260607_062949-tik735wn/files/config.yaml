@@ -1,0 +1,129 @@
+_wandb:
+    value:
+        cli_version: 0.26.1
+        e:
+            s2ae6ks5ij1spb9ay9qlf1u4g2cmv1uk:
+                codePath: scripts/lewm_sweep.py
+                codePathLocal: scripts/lewm_sweep.py
+                cpu_count: 20
+                cpu_count_logical: 28
+                cudaVersion: "13.2"
+                disk:
+                    /:
+                        total: "501809635328"
+                        used: "169505144832"
+                email: nguyentranhoangnhan18@gmail.com
+                executable: /home/pc5070ti/miniforge3/envs/ai/bin/python
+                git:
+                    commit: b6f699c8a5d74a2e8bf505c4f5f4934d553559f7
+                    remote: git@github.com:Anakonkai01/JEPA.git
+                gpu: NVIDIA GeForce RTX 5070 Ti
+                gpu_count: 1
+                gpu_nvidia:
+                    - architecture: Blackwell
+                      cudaCores: 8960
+                      memoryTotal: "17094934528"
+                      name: NVIDIA GeForce RTX 5070 Ti
+                      uuid: GPU-64187d93-f2bb-d43f-6c63-2547df16a9a4
+                host: 5070ti
+                memory:
+                    total: "32848093184"
+                os: Linux-7.0.0-22-generic-x86_64-with-glibc2.43
+                program: /home/pc5070ti/workspace/JEPA/scripts/lewm_sweep.py
+                python: CPython 3.12.13
+                root: /home/pc5070ti/workspace/JEPA
+                startedAt: "2026-06-06T23:29:49.808855Z"
+                writerId: s2ae6ks5ij1spb9ay9qlf1u4g2cmv1uk
+        m: []
+        python_version: 3.12.13
+        t:
+            "1":
+                - 1
+                - 5
+                - 11
+                - 41
+                - 49
+                - 53
+                - 71
+            "2":
+                - 1
+                - 5
+                - 11
+                - 41
+                - 49
+                - 53
+                - 71
+            "3":
+                - 2
+                - 13
+                - 16
+                - 61
+                - 62
+            "4": 3.12.13
+            "5": 0.26.1
+            "6": 5.5.0
+            "12": 0.26.1
+            "13": linux-x86_64
+data:
+    value:
+        frame_skip: 3
+        image_size: 224
+        raw_dir: data/raw
+        seq_len: 4
+        stride: 2
+        val_frac: 0.2
+device:
+    value: cuda
+eval:
+    value:
+        enabled: true
+        max_batches: 20
+        seq_len: 12
+kfold:
+    value: 0
+model:
+    value:
+        action_dim: 2
+        action_smoothed_dim: 16
+        emb_dim: 256
+        enc_heads: 3
+        enc_hidden: 192
+        enc_image_size: 224
+        enc_layers: 12
+        enc_patch_size: 14
+        history_size: 3
+        name: leworldmodel
+        num_frames: 4
+        pred_depth: 6
+        pred_dim_head: 24
+        pred_dropout: 0.1
+        pred_heads: 16
+        pred_hidden: 384
+seed:
+    value: 0
+sigreg:
+    value:
+        knots: 17
+        lambd: 0.1
+        num_proj: 1024
+train:
+    value:
+        amp: true
+        batch_size: 96
+        epochs: 70
+        grad_clip: 1
+        log_dir: runs
+        lr: 0.0003
+        min_delta: 0.0001
+        num_workers: 8
+        out_dir: checkpoints/sweep/fs3
+        patience: 12
+        warmup_frac: 0.05
+        weight_decay: 0.05
+wandb:
+    value:
+        enabled: true
+        entity: null
+        group: lewm_sweep
+        name_override: fs3
+        project: lewm-rccar

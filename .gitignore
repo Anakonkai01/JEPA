@@ -7,6 +7,7 @@ data/
 checkpoints/
 !checkpoints/.gitkeep
 runs/                    # TensorBoard logs
+wandb/                   # wandb local run cache
 
 # Python cache / build
 __pycache__/
