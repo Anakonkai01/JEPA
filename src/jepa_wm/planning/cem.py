@@ -13,6 +13,84 @@ import torch
 import torch.nn.functional as F
 
 
+class CEMPlannerLatent:
+    """CEM for a *latent* world model exposing ``rollout(s0, actions)`` directly
+    (the frozen-encoder ``vjepa_ac`` / ``ACPredictor``: state is one latent ``(B,D)``,
+    no history/action-encoder, unlike ``LeWorldModel`` which ``CEMPlanner`` targets).
+
+    Latents are assumed already standardized the way the model was trained — the
+    caller z-scores ``context``/``goal`` with the checkpoint's ``lat_mean/lat_std``.
+    ``action_low``/``action_high`` may be per-dim (e.g. throttle clamped to the
+    car's safe envelope ``[-0.16, 0.15]``).
+    """
+
+    def __init__(self, model, horizon: int = 8, n_samples: int = 256, n_elite: int = 32,
+                 n_iter: int = 4, action_dim: int = 2, action_low=-1.0, action_high=1.0,
+                 init_std: float = 0.5, min_std: float = 0.05, action_penalty: float = 0.0,
+                 smooth_penalty: float = 0.0, device: str = "cuda"):
+        self.model = model
+        self.horizon = horizon
+        self.n_samples = n_samples
+        self.n_elite = n_elite
+        self.n_iter = n_iter
+        self.action_dim = action_dim
+        self.action_low = torch.as_tensor(action_low, dtype=torch.float32, device=device).expand(action_dim)
+        self.action_high = torch.as_tensor(action_high, dtype=torch.float32, device=device).expand(action_dim)
+        self.init_std = init_std
+        self.min_std = min_std
+        self.action_penalty = action_penalty
+        self.smooth_penalty = smooth_penalty
+        self.device = device
+
+    @torch.no_grad()
+    def score(self, s0: torch.Tensor, goal: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
+        """Final-latent MSE to goal for each action sequence.
+
+        Args: ``s0`` ``(B,D)`` or ``(D,)``; ``goal`` ``(D,)``; ``actions`` ``(B,H,A)``.
+        """
+        if s0.dim() == 1:
+            s0 = s0.unsqueeze(0)
+        if s0.size(0) == 1 and actions.size(0) > 1:
+            s0 = s0.expand(actions.size(0), -1)
+        preds = self.model.rollout(s0.to(self.device).float(), actions.to(self.device).float())  # (B,H,D)
+        g = goal.view(1, -1).to(self.device).float().expand(preds.size(0), -1)
+        score = F.mse_loss(preds[:, -1], g, reduction="none").mean(dim=1)
+        if self.action_penalty:
+            score = score + self.action_penalty * actions.square().mean(dim=(1, 2))
+        if self.smooth_penalty and actions.size(1) > 1:
+            score = score + self.smooth_penalty * (actions[:, 1:] - actions[:, :-1]).square().mean(dim=(1, 2))
+        return score
+
+    @torch.no_grad()
+    def plan(self, context_latent: torch.Tensor, goal_latent: torch.Tensor, return_info: bool = False):
+        """Plan toward ``goal_latent`` (z-scored); return the first optimized action."""
+        self.model.eval()
+        s0 = context_latent.view(-1).to(self.device).float()
+        goal = goal_latent.view(-1).to(self.device).float()
+
+        mu = torch.zeros(self.horizon, self.action_dim, device=self.device)
+        sigma = torch.full_like(mu, self.init_std)
+        best_score = None
+        best_seq = None
+        for _ in range(self.n_iter):
+            eps = torch.randn(self.n_samples, self.horizon, self.action_dim, device=self.device)
+            samples = torch.max(torch.min(mu + sigma * eps, self.action_high), self.action_low)
+            score = self.score(s0, goal, samples)
+            elite_idx = torch.topk(score, self.n_elite, largest=False).indices
+            elites = samples[elite_idx]
+            mu = elites.mean(dim=0)
+            sigma = elites.std(dim=0).clamp_min(self.min_std)
+            if best_score is None or score[elite_idx[0]] < best_score:
+                best_score = score[elite_idx[0]]
+                best_seq = samples[elite_idx[0]]
+        assert best_seq is not None
+        first = best_seq[0].detach().cpu()
+        if not return_info:
+            return first
+        return first, {"score": float(best_score.detach().cpu()),
+                       "sequence": best_seq.detach().cpu()}
+
+
 class CEMPlanner:
     def __init__(self, model, horizon: int = 8, n_samples: int = 500, n_elite: int = 50,
                  n_iter: int = 4, action_dim: int = 2, action_low=-1.0, action_high=1.0,

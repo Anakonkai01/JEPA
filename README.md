@@ -21,10 +21,12 @@ Two world models are trained and compared on the same frozen-latent dataset:
 │   ├── data/           # dataset.py, sync.py  (frame↔action re-pairing, δ_cam-corrected)
 │   ├── models/         # encoders/vjepa.py (frozen), ac_predictor.py, leworldmodel.py, baselines/
 │   ├── engine/         # encode.py (offline latents), train.py, losses.py
-│   ├── planning/       # cem.py  (Phase 4)
+│   ├── planning/       # cem.py: CEMPlanner (LeWM) + CEMPlannerLatent (vjepa_ac)
+│   ├── nav/            # graph.py: TopoGraph — visual subgoal navigation (place+GPS, action-agnostic)
 │   └── utils/          # config.py (YAML + CLI overrides)
 ├── configs/            # YAML experiment configs (data/ model/ train/)
-├── scripts/            # CLI entrypoints: sync_dataset, encode_dataset, train, evaluate
+├── scripts/            # CLI: sync_dataset, encode_dataset, train, evaluate,
+│                       #   build_graph, eval_navigation, eval_goal_reaching, viz_route
 ├── robot/              # data-collection + embedded rig (see robot/README is docs/)
 │   ├── firmware/       # ESP32-S3 PlatformIO (car + dongle)
 │   ├── android/        # onboard phone app (CameraX + USB telemetry recorder)

@@ -1,0 +1,34 @@
+# vjepa_ac on the CURRENT-servo (TowerPro) data — the control model that matches
+# the car as it is now. The shipped checkpoint was KDS-only (old broken servo).
+#   1) python scripts/encode_dataset.py --raw-dir data/raw_towerpro --out-dir data/latents_towerpro
+#   2) python scripts/train.py --config configs/train/vjepa_ac_towerpro.yaml configs/model/vjepa_ac.yaml
+device: cuda
+seed: 0
+
+wandb:
+  enabled: false
+  project: lewm-rccar
+  entity: null
+  group: vjepa_ac_towerpro
+
+data:
+  raw_dir: data/raw_towerpro
+  latents_dir: data/latents_towerpro    # output of encode_dataset.py on TowerPro
+  val_frac: 0.2
+  action_scale: [1.0, 6.67]             # normalize throttle (~[-0.15,0.15]) to ~[-1,1] like steering
+                                        # (LeWM already does this; raw vjepa_ac under-weighted throttle)
+
+train:
+  epochs: 120
+  batch_size: 512
+  lr: 3.0e-4
+  weight_decay: 1.0e-4
+  warmup_frac: 0.05
+  cos_weight: 0.5
+  num_workers: 6
+  patience: 15
+  min_delta: 1.0e-4
+  out_dir: checkpoints/vjepa_ac_towerpro
+
+eval:
+  horizon: 10

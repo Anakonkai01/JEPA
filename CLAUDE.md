@@ -62,6 +62,12 @@ Novel contribution: first evaluation of V-JEPA 2 family on a mobile robot — Me
 
 Deadline: 2026-06-15.
 
+**Bài toán "tự lái" đã chốt (2026-06-08) = visual goal-reaching cục bộ + topological graph ảnh
+subgoal** (kiểu ViNG/ViKiNG): goal khuất tầm nhìn → xâu chuỗi các goal-nhìn-thấy-được, mỗi cái CEM
+lái tới. KHÔNG né vật cản, KHÔNG SLAM. Hai tầng tách bạch: **navigation** (`src/jepa_wm/nav/graph.py`
+`TopoGraph`, action-agnostic = visual place + GPS) + **control** (`vjepa_ac` + CEM `CEMPlannerLatent`,
+servo-specific). Trạng thái/kết quả/việc-tiếp: xem `docs/HANDOFF.md` (source of truth).
+
 ## ⚠️ ARCHITECTURE PIVOT (2026-06-04) — data collection → onboard Android phone
 
 **The 5.8GHz WFB camera link failed at range** (≈50m: image break-up, ~3% frame stutter with

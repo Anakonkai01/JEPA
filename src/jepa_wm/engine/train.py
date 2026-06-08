@@ -77,9 +77,10 @@ def train(cfg: dict) -> dict:
     train_s, val_s = split_sessions(sessions, val_frac=d.get("val_frac", 0.2), seed=cfg.get("seed", 0))
     print(f"[vjepa_ac] {len(sessions)} sessions -> {len(train_s)} train / {len(val_s)} val")
 
-    train_ds = LatentTransitionDataset(lat_dir, d["raw_dir"], sessions=train_s, horizon=1)
-    val_ds = LatentTransitionDataset(lat_dir, d["raw_dir"], sessions=val_s, horizon=1)
-    eval_ds = LatentTransitionDataset(lat_dir, d["raw_dir"], sessions=val_s,
+    ascale = d.get("action_scale")
+    train_ds = LatentTransitionDataset(lat_dir, d["raw_dir"], sessions=train_s, horizon=1, action_scale=ascale)
+    val_ds = LatentTransitionDataset(lat_dir, d["raw_dir"], sessions=val_s, horizon=1, action_scale=ascale)
+    eval_ds = LatentTransitionDataset(lat_dir, d["raw_dir"], sessions=val_s, action_scale=ascale,
                                       horizon=cfg.get("eval", {}).get("horizon", 10))
     mean, std = _standardizer(train_ds, device)
 

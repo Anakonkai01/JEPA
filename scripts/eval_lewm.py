@@ -141,8 +141,13 @@ def main():
     ap.add_argument("--max-batches", type=int, default=40)
     ap.add_argument("--num-workers", type=int, default=0)
     ap.add_argument("--raw-dir", nargs="+", default=None)
+    ap.add_argument("--domains", nargs="*", default=None,
+                    help="keep only val sessions from these domains (e.g. towerpro) — "
+                         "reproduces the training split then filters, so it's the honest "
+                         "held-out subset for that deployment domain (no re-split leakage).")
+    ap.add_argument("--device", default="auto", choices=["auto", "cuda", "cpu"])
     args = ap.parse_args()
-    device = "cuda" if torch.cuda.is_available() else "cpu"
+    device = args.device if args.device != "auto" else ("cuda" if torch.cuda.is_available() else "cpu")
 
     ckpt = torch.load(args.checkpoint, map_location=device, weights_only=False)
     cfg = ckpt["cfg"]; mcfg = cfg["model"]
@@ -156,6 +161,11 @@ def main():
         source = source[0]
     sessions = list_sessions(source)
     _, val_s = split_sessions(sessions, val_frac=cfg["data"].get("val_frac", 0.2), seed=cfg.get("seed", 0))
+    if args.domains:
+        val_s = [s for s in val_s if (":" in s and s.split(":")[0] in args.domains)]
+        if not val_s:
+            raise SystemExit(f"No val sessions in domains {args.domains}. "
+                             "(Need a multi-domain checkpoint; single-root ids have no domain prefix.)")
     ds = FrameSequenceDataset(source, sessions=val_s, seq_len=args.seq_len,
                               frame_skip=cfg["data"].get("frame_skip", 1),
                               stride=4, image_size=cfg["data"].get("image_size", 224),

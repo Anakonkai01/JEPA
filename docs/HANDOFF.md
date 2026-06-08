@@ -1,9 +1,79 @@
 # HANDOFF — đọc cái này trước khi tiếp tục
 
-> Tóm tắt tình hình cho phiên sau. Cập nhật: **2026-06-07**.
+> Tóm tắt tình hình cho phiên sau. Cập nhật: **2026-06-08**.
 > Nền đầy đủ: [../CLAUDE.md](../CLAUDE.md) · [../README.md](../README.md) · [PLAN.md](PLAN.md) ·
 > [LeWorldModel.md](LeWorldModel.md) · [../robot/android/README.md](../robot/android/README.md) ·
 > [../robot/android/DRIVE_SETUP.md](../robot/android/DRIVE_SETUP.md). Cập nhật file này mỗi khi trạng thái đổi.
+
+## 🧭 2026-06-08 — VISUAL NAVIGATION (graph subgoal) + control trên servo hiện tại
+
+**Bài toán đã chốt với user:** "tự lái" = **visual goal-reaching cục bộ + topological graph ảnh
+subgoal** (kiểu ViNG/ViKiNG). KHÔNG né vật cản, KHÔNG SLAM. Goal khuất tầm nhìn → giải bằng
+**chuỗi ảnh subgoal** xâu các goal-nhìn-thấy-được (mỗi cái CEM cục bộ lái tới). Né vật cản: hoãn/bỏ
+nếu kẹt deadline (đã bàn: cần collision-cost từ IMU spike + reactive override; ~160 event va-chạm→lùi
+trong data TowerPro có thể auto-label sau).
+
+### Kiến trúc 2 TẦNG (tách bạch — quan trọng)
+- **Navigation (action-agnostic = chỉ visual place + GPS):** `src/jepa_wm/nav/graph.py` (`TopoGraph`).
+  Node = frame(latent V-JEPA **single-frame** + GPS mét + heading). Cạnh **temporal** (người đã lái =
+  chắc đi được) + **loop-closure** (kNN cosine latent cross-session, **GPS-gate <8m** chống aliasing).
+  `localize()` (có GPS-prior), `plan_route()` (Dijkstra), `extract_subgoals()` (chuỗi ảnh). Build:
+  `scripts/build_graph.py`; eval: `scripts/eval_navigation.py`; viz PNG: `scripts/viz_route.py`.
+- **Control (servo-specific):** `vjepa_ac` (V-JEPA 2.1 frozen + ACPredictor 7.4M) + CEM. **MỚI**
+  `CEMPlannerLatent` trong `planning/cem.py` (interface `ACPredictor.rollout(s0,actions)`; `CEMPlanner`
+  cũ là cho LeWM). Eval: `scripts/eval_goal_reaching.py` (CEM vs random vs teacher + quét độ-xa-goal
+  + action-recovery Δsteer/Δthrot).
+
+### Kết quả (verify OFFLINE, không cần phone)
+- **Graph 92-session** (28 KDS + 64 TowerPro = 29,699 node): **1 component 100%**, localize LOSO
+  **median 2.1m** (<8m 88%), routing **100%**, route bám tuyến người thật **median 2.3m**. Lọc 2
+  session GPS-drift (extent>160m hoặc vmax>12 m/s). Artifact: `data/graph/topograph.pt`, `route_viz_92.png`.
+- **vjepa_ac trên TowerPro** (encode 98,751 frame → `data/latents_towerpro`, 387MB): rollout@1 ×identity
+  = **0.92 (TowerPro-only) / 0.87 (mixed)**. eval_goal_reaching: **CEM/rnd_mean 0.46–0.70**, Δsteer 0.16,
+  **Δthrot 0.04**. Checkpoint: `checkpoints/vjepa_ac_{towerpro,mixed}/vjepa_ac/best.pt`.
+- **FIX throttle normalization:** `LatentTransitionDataset` thêm `action_scale`; config vjepa_ac dùng
+  **[1.0, 6.67]** (như LeWM, đưa throttle ~[-0.15,0.15]→~[-1,1]). Trước đó vjepa_ac coi nhẹ throttle
+  (raw nhỏ hơn steering 6.67×) → Δthrot **0.12→0.04**.
+- **Codex concern GIẢI QUYẾT (tốt):** mixed-LeWM eval trên **TowerPro-only held-out** = rollout@1 **0.65**
+  (vs TowerPro-only model **1.073** = tệ hơn đứng yên!). → **train chéo-domain-servo GIÚP ÍCH**, KDS
+  (giàu steering) transfer sang TowerPro. `eval_lewm.py` thêm `--domains <kds680hv|towerpro>` + `--device`.
+
+### ⚠️ VẤN ĐỀ SÂU chưa fix — encode SINGLE-FRAME (xác nhận bằng test)
+- `vjepa2_1_vit_large_384` là model **VIDEO**: tubelet_size=2, num_frames=64. Mình feed **T=1** →
+  output (576,1024) hợp lệ NHƯNG **latent không có vận tốc**. (Test: T=1→576 tok; T=2→576 = 1 tubelet
+  CÓ motion; T=16→4608.) → **lý do sâu của throttle yếu**: frame tĩnh không biết tốc độ; normalization
+  chỉ giúp một phần.
+- **Multi-frame clip** (feed T=4/8) = nâng cấp chính cho CONTROL (latent có motion). MẠNH hơn đổi ViT-G
+  (encoder không phải bottleneck — place-rec đã sát đáy GPS). **Split latent:** giữ single-frame cho NAV
+  (motion sẽ HẠI place-rec), dùng multi-frame cho CONTROL.
+
+### Việc tiếp (ưu tiên cho phiên sau / Codex)
+1. **Closed-loop N4 (cần phone A42 — user chưa mang theo):** viết `src/.../inference_loop.py` (chưa có):
+   phone TCP frame → PC encode V-JEPA → `TopoGraph.localize`+`plan_route`+`extract_subgoals` → CEM
+   (`CEMPlannerLatent`) lái tới subgoal → 2-byte action. Sửa `robot/capture/controller.py` (còn UDP cũ →
+   serial native; throttle Mode-3 linear; **clamp cứng [-0.16, 0.15]** = giới hạn an toàn của xe).
+2. **Prototype multi-frame clip cho control:** encode T=4 (sửa `engine/encode.py` unsqueeze→clip) → đo
+   throttle-conditioning (eval_goal_reaching Δthrot) vs T=1. Nếu cải thiện → encode lại control latents.
+3. **Data chiều 2026-06-08 (user đang thu):** approach 1 mốc từ 5-10 hướng (=ảnh goal cố định) +
+   test-route A→B. Khi về: `scripts/sync_dataset.py` → `encode_dataset.py --raw-dir <batch>` → rebuild
+   graph + retrain vjepa_ac.
+4. (tùy chọn, rẻ) predictor to/optimize hơn — thứ yếu, encoding mới là bottleneck.
+
+### Tái tạo artifacts (⚠️ `data/` + `checkpoints/` GITIGNORED → phải chạy lại)
+```bash
+pip install -e .   # 1 lần
+# encode TowerPro (nếu thiếu data/latents_towerpro) — phần CHẬM (~10' GPU), V-JEPA 2.1 ViT-L 384
+PYTHONPATH=src python scripts/encode_dataset.py --raw-dir data/raw_towerpro --out-dir data/latents_towerpro
+# graph 92-session (multi-root, không cần merged dir)
+PYTHONPATH=src python scripts/build_graph.py --root data/latents:data/raw:kds \
+  --root data/latents_towerpro:data/raw_towerpro:towerpro --out data/graph/topograph.pt
+PYTHONPATH=src python scripts/eval_navigation.py --graph data/graph/topograph.pt
+PYTHONPATH=src python scripts/viz_route.py --graph data/graph/topograph.pt --out data/graph/route_viz_92.png
+# vjepa_ac mixed cần MERGED symlink dirs (tên session unique theo ngày → không đụng):
+#   data/raw_mixed = data/raw/session_* + data/raw_towerpro/session_* ; data/latents_mixed tương tự
+PYTHONPATH=src python scripts/train.py --config configs/train/vjepa_ac_towerpro.yaml configs/model/vjepa_ac.yaml
+PYTHONPATH=src python scripts/eval_goal_reaching.py --checkpoint checkpoints/vjepa_ac_towerpro/vjepa_ac/best.pt
+```
 
 ## 🌙 Đêm tự động 2026-06-07 — kết quả train cả 2 model (LeWM + V-JEPA-2.1-AC)
 

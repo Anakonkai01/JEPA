@@ -247,11 +247,16 @@ class LatentTransitionDataset(Dataset):
     """
 
     def __init__(self, latents_dir, raw_dir="data/raw", sessions=None, horizon=1,
-                 action_keys=("steering", "throttle"), max_gap=2):
+                 action_keys=("steering", "throttle"), action_scale=None, max_gap=2):
         self.latents_dir = Path(latents_dir)
         self.raw = Path(raw_dir)
         self.horizon = horizon
-        self.action_keys = action_keys
+        self.action_keys = tuple(action_keys)
+        # per-dim multiplier so e.g. throttle (~[-0.16,0.15]) gets the same voice
+        # as steering (~[-1,1]); raw throttle is ~6.67x smaller and gets under-weighted.
+        self.action_scale = np.asarray(action_scale or [1.0] * len(self.action_keys), dtype=np.float32)
+        if len(self.action_scale) != len(self.action_keys):
+            raise ValueError("action_scale length must match action_keys")
         if sessions is None:
             sessions = sorted(p.stem for p in self.latents_dir.glob("*.pt"))
         self._lat: dict[str, torch.Tensor] = {}
@@ -281,7 +286,10 @@ class LatentTransitionDataset(Dataset):
             for row in csv.DictReader(f):
                 fidx.append(int(row["frame_idx"]))
                 acts.append([float(row[k]) for k in self.action_keys])
-        return np.asarray(acts, dtype=np.float32), fidx
+        arr = np.asarray(acts, dtype=np.float32)
+        if len(arr):
+            arr *= self.action_scale[None, :]
+        return arr, fidx
 
     def __len__(self):
         return len(self._index)
