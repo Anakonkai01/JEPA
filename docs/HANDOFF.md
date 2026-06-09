@@ -5,6 +5,29 @@
 > [LeWorldModel.md](LeWorldModel.md) · [../robot/android/README.md](../robot/android/README.md) ·
 > [../robot/android/DRIVE_SETUP.md](../robot/android/DRIVE_SETUP.md). Cập nhật file này mỗi khi trạng thái đổi.
 
+## ▶️ VIỆC NGAY (2026-06-09 tối) — THỰC THI RETRAIN 384/P2 (đã chuẩn bị xong, CHƯA chạy)
+**Data recovery (lạng→lùi→chỉnh) ĐÃ UP DRIVE đầy đủ.** Toàn bộ CODE retrain-prep đã commit+push
+(`b4bb9e4`, đã smoke-test): 384px control, num_tokens 576, prev-action state (state_dim 12),
+depth 12, inference gộp nav+control 1 encode, CEM `prev_action_idx`. Plan đầy đủ: `~/.claude/plans/oke-t-i-v-i-b-n-curious-breeze.md`.
+**Chạy theo thứ tự (verify từng bước):**
+```bash
+# 1) PULL data recovery từ Drive → data/raw_towerpro/ (xem robot/tools/pull_drive.py / rclone gdrive:JEPA).
+#    Verify: ls -d data/raw_towerpro/session_* | wc -l  (phải > 100, thêm session recovery mới)
+# 2) sync (actions_synced + imu_synced cho session mới):
+PYTHONPATH=src python scripts/sync_dataset.py
+# 3) XOÁ cache 256 (62GB, regen được) rồi encode 384 TOÀN BỘ (~3 GPU-h, ra (N,576,1024)):
+rm -rf data/latents_towerpro_patch
+PYTHONPATH=src python scripts/encode_patch.py --raw-dir data/raw_towerpro --out-dir data/latents_towerpro_patch_384 --image-size 384
+# 4) TRAIN (~15-25h; configs đã set 576/state12/depth12/batch24/patch_dir _384/state_columns +prev). Nếu OOM → batch 16:
+PYTHONPATH=src python scripts/train_ac_car.py --config configs/train/vjepa_ac_car.yaml configs/model/vjepa_ac_car.yaml
+# 5) eval + rebuild graph (thêm session recovery; nav vẫn 384):
+PYTHONPATH=src python scripts/eval_goal_reaching_ac.py --checkpoint checkpoints/vjepa_ac_car/vjepa_ac_car/best.pt
+PYTHONPATH=src python scripts/build_graph.py --root data/latents:data/raw:kds --root data/latents_towerpro:data/raw_towerpro:towerpro --out data/graph/topograph.pt
+```
+- **Ablate prev-action (nếu kịp):** train lần 2 bỏ `prev_steer, prev_throttle` khỏi `state_columns` (+ state_dim 10) → so Δsteer/dao-động. prev-action là MỞ RỘNG (không phải đúng-Meta) → cần kiểm có giúp không.
+- **Sau khi có model mới:** chạy thật ở **bãi THOÁNG** (xe KHÔNG né vật cản) + `inference_loop --reach-m 6` + cài APK **v0.4-safe** (chưa cài: `adb install -r robot/android/app/build/outputs/apk/debug/app-debug.apk`).
+- Đòn bẩy LỚN NHẤT = data recovery, không phải 384/depth.
+
 ## 🏁 2026-06-09 (đợt 3) — CHẠY THẬT NGOÀI CÔNG VIÊN + rà soát + P0/P1 fixes
 
 **Cột mốc:** xe **TỰ LÁI ~26m** ngoài công viên (full-nav qua Tailscale, gps 31m→**4.9m sát đích**),
