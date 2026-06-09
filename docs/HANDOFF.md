@@ -9,6 +9,15 @@
 **Data recovery (lạng→lùi→chỉnh) ĐÃ UP DRIVE đầy đủ.** Toàn bộ CODE retrain-prep đã commit+push
 (`b4bb9e4`, đã smoke-test): 384px control, num_tokens 576, prev-action state (state_dim 12),
 depth 12, inference gộp nav+control 1 encode, CEM `prev_action_idx`. Plan đầy đủ: `~/.claude/plans/oke-t-i-v-i-b-n-curious-breeze.md`.
+
+**✅ ĐÃ KIỂM TRA + DỌN (2026-06-09 tối, phiên này):**
+- Data đã pull + sync xong: `data/raw_towerpro/` = **181 session** (cũ 64 +117 recovery), TẤT CẢ có `actions_synced.csv`+`imu_synced.csv`. Recovery có ga biến thiên thật (throttle std~0.07, reverse 9–14%, range −0.16..0.15).
+- **⚠️ ĐỔI TÊN DIR:** `data/raw`→`data/raw_kds` (30 ss), `data/latents`→`data/latents_kds`. `data/raw_mixed` = 211 symlink (OK).
+- **⚠️ POOLED LATENTS + GRAPH ĐÃ BỊ XOÁ HẾT:** `data/latents_kds`, `data/latents_towerpro`, `data/latents_mixed`, `data/graph/` đều RỖNG. → ngoài encode *patch 384*, phải **encode lại POOLED (encode_dataset 384)** cho kds+towerpro rồi **rebuild graph từ đầu** (không còn "chỉ thêm session"). Xem step 4b dưới.
+- wandb project đổi `lewm-rccar`→**`rc-car-jepa`** (8 config). Dọn dead/one-off vào `archive/` (xem `archive/README.md`); giữ baseline LeWM + pooled cho bảng kết quả. Config path stale đã sửa (`raw_kds`/`latents_kds`).
+- Config xe (`vjepa_ac_car.yaml`) đã đúng ViT-L 2.1 384 / 576 tok / state12 / depth12 — user chốt **GIỮ ViT-L**, không đổi ViT-G.
+- **Split TÁI LẬP ĐƯỢC:** train ghi `<out_dir>/vjepa_ac_car/split.json` (train/val lần đầu, seed 0, session-level 80/20 = 145/36); các lần sau (cả `eval_goal_reaching_ac.py`) **đọc lại y nguyên** → val set cố định kể cả khi thêm data (session mới bị loại + cảnh báo; xoá split.json để tạo lại). Helper `jepa_wm.data.frozen_split`. ⚠️ split.json nằm cạnh checkpoint (gitignored) → copy ra repo nếu muốn version-control.
+
 **Chạy theo thứ tự (verify từng bước):**
 ```bash
 # 1) PULL data recovery từ Drive → data/raw_towerpro/ (xem robot/tools/pull_drive.py / rclone gdrive:JEPA).
@@ -20,9 +29,12 @@ rm -rf data/latents_towerpro_patch
 PYTHONPATH=src python scripts/encode_patch.py --raw-dir data/raw_towerpro --out-dir data/latents_towerpro_patch_384 --image-size 384
 # 4) TRAIN (~15-25h; configs đã set 576/state12/depth12/batch24/patch_dir _384/state_columns +prev). Nếu OOM → batch 16:
 PYTHONPATH=src python scripts/train_ac_car.py --config configs/train/vjepa_ac_car.yaml configs/model/vjepa_ac_car.yaml
-# 5) eval + rebuild graph (thêm session recovery; nav vẫn 384):
+# 4b) POOLED latents + graph đã bị xoá → encode lại pooled 384 (cho NAV graph) rồi rebuild:
+PYTHONPATH=src python scripts/encode_dataset.py --raw-dir data/raw_kds       --out-dir data/latents_kds       --image-size 384
+PYTHONPATH=src python scripts/encode_dataset.py --raw-dir data/raw_towerpro  --out-dir data/latents_towerpro  --image-size 384
+# 5) eval + rebuild graph (path ĐÃ ĐỔI TÊN: latents_kds/raw_kds; nav vẫn 384):
 PYTHONPATH=src python scripts/eval_goal_reaching_ac.py --checkpoint checkpoints/vjepa_ac_car/vjepa_ac_car/best.pt
-PYTHONPATH=src python scripts/build_graph.py --root data/latents:data/raw:kds --root data/latents_towerpro:data/raw_towerpro:towerpro --out data/graph/topograph.pt
+PYTHONPATH=src python scripts/build_graph.py --root data/latents_kds:data/raw_kds:kds --root data/latents_towerpro:data/raw_towerpro:towerpro --out data/graph/topograph.pt
 ```
 - **Ablate prev-action (nếu kịp):** train lần 2 bỏ `prev_steer, prev_throttle` khỏi `state_columns` (+ state_dim 10) → so Δsteer/dao-động. prev-action là MỞ RỘNG (không phải đúng-Meta) → cần kiểm có giúp không.
 - **Sau khi có model mới:** chạy thật ở **bãi THOÁNG** (xe KHÔNG né vật cản) + `inference_loop --reach-m 6` + cài APK **v0.4-safe** (chưa cài: `adb install -r robot/android/app/build/outputs/apk/debug/app-debug.apk`).

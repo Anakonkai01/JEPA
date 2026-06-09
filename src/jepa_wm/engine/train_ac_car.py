@@ -19,7 +19,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from ..data.ac_clip import ACClipDataset, SessionBatchSampler
-from ..data.dataset import split_sessions
+from ..data.dataset import frozen_split
 from ..data.state import load_state
 from ..models import build_model
 
@@ -29,14 +29,20 @@ except Exception:  # pragma: no cover
     wandb = None
 
 
-def _state_stats(raw_dir, sessions, cols):
+def _state_stats(roots, cols):
+    """Compute state mean/std from train sessions across all roots.
+
+    roots: list of {'raw_dir': str, 'sessions': list[str]}
+    """
     xs = []
-    for s in sessions:
-        try:
-            st, _ = load_state(Path(raw_dir) / s, cols)
-            xs.append(torch.from_numpy(st))
-        except Exception:
-            pass
+    for rc in roots:
+        r_dir = Path(rc["raw_dir"])
+        for s in rc.get("sessions", []):
+            try:
+                st, _ = load_state(r_dir / s, cols)
+                xs.append(torch.from_numpy(st))
+            except Exception:
+                pass
     x = torch.cat(xs).float()
     return x.mean(0), x.std(0).clamp_min(1e-6)
 
@@ -88,22 +94,69 @@ def train(cfg: dict) -> dict:
     device = cfg.get("device", "cuda" if torch.cuda.is_available() else "cpu")
     torch.manual_seed(cfg.get("seed", 0))
     d, tcfg = cfg["data"], cfg["train"]
-    patch_dir, raw_dir = d["patch_dir"], d["raw_dir"]
     cols = tuple(d.get("state_columns", ["speed", "gx", "gy", "gz", "ax", "ay", "az", "rx", "ry", "rz"]))
     T, stride = d.get("horizon", 4), d.get("frame_stride", 2)
     ascale = tuple(d.get("action_scale", [1.0, 6.67]))
 
-    sessions = sorted(p.stem for p in Path(patch_dir).glob("*.npy"))
-    if not sessions:
-        raise RuntimeError(f"No patch latents in {patch_dir}. Run scripts/encode_patch.py first.")
-    train_s, val_s = split_sessions(sessions, val_frac=d.get("val_frac", 0.2), seed=cfg.get("seed", 0))
-    print(f"[ac_car] {len(sessions)} sessions -> {len(train_s)} train / {len(val_s)} val")
+    out_dir = Path(tcfg.get("out_dir", "checkpoints/vjepa_ac_car")) / "vjepa_ac_car"
+    out_dir.mkdir(parents=True, exist_ok=True)
 
-    state_mean, state_std = _state_stats(raw_dir, train_s, cols)
-    kw = dict(horizon=T, frame_stride=stride, state_columns=cols, action_scale=ascale,
-              state_mean=state_mean, state_std=state_std)
-    train_ds = ACClipDataset(patch_dir, raw_dir, train_s, **kw)
-    val_ds = ACClipDataset(patch_dir, raw_dir, val_s, **kw)
+    # Support multi-root config (roots: list of {patch_dir, raw_dir, domain_id}).
+    # Falls back to legacy single-root (patch_dir / raw_dir) when 'roots' is absent.
+    raw_roots = d.get("roots")
+    if raw_roots is None:
+        raw_roots = [{"patch_dir": d["patch_dir"], "raw_dir": d["raw_dir"], "domain_id": 0}]
+    use_domain = len(raw_roots) > 1 or any(int(r.get("domain_id", 0)) != 0 for r in raw_roots)
+
+    # Discover sessions per root (what's actually encoded on disk)
+    for r in raw_roots:
+        r["_sessions"] = sorted(p.stem for p in Path(r["patch_dir"]).glob("*.npy"))
+    all_sessions = sorted(s for r in raw_roots for s in r["_sessions"])
+    if not all_sessions:
+        raise RuntimeError("No patch latents found in any configured root. Run encode_patch.py first.")
+
+    # Reproducible split frozen to out_dir/split.json (saved on first run, reused after).
+    train_s, val_s, sinfo = frozen_split(out_dir / "split.json", all_sessions,
+                                         val_frac=d.get("val_frac", 0.2), seed=cfg.get("seed", 0))
+    tag = "FROZEN <- split.json" if sinfo["frozen"] else f"saved -> {sinfo['path']}"
+    print(f"[ac_car] {len(all_sessions)} sessions -> {len(train_s)} train / {len(val_s)} val ({tag})")
+    if sinfo["missing"]:
+        print(f"[ac_car]   ⚠️ {len(sinfo['missing'])} session(s) in split.json no longer on disk (skipped)")
+    if sinfo["extra"]:
+        print(f"[ac_car]   ⚠️ {len(sinfo['extra'])} NEW session(s) not in split.json -> unused "
+              f"(delete {sinfo['path']} to regenerate the split)")
+
+    # per-root balance report
+    train_set, val_set = set(train_s), set(val_s)
+    for r in raw_roots:
+        r_train = [s for s in r["_sessions"] if s in train_set]
+        r_val = [s for s in r["_sessions"] if s in val_set]
+        r["_train"] = r_train; r["_val"] = r_val
+        tag_d = f"domain_id={r.get('domain_id', 0)}"
+        print(f"[ac_car]   {Path(r['patch_dir']).name} ({tag_d}): {len(r_train)} train / {len(r_val)} val")
+
+    # state stats from all train sessions across all roots
+    train_roots_stat = [{"raw_dir": r["raw_dir"], "sessions": r["_train"]} for r in raw_roots]
+    state_mean, state_std = _state_stats(train_roots_stat, cols)
+
+    # build datasets — multi-root uses domain token in action (action_dim increases by 1)
+    if use_domain:
+        train_roots_ds = [{"patch_dir": r["patch_dir"], "raw_dir": r["raw_dir"],
+                           "sessions": r["_train"], "domain_id": r.get("domain_id", 0)}
+                          for r in raw_roots]
+        val_roots_ds = [{"patch_dir": r["patch_dir"], "raw_dir": r["raw_dir"],
+                         "sessions": r["_val"], "domain_id": r.get("domain_id", 0)}
+                        for r in raw_roots]
+        kw = dict(horizon=T, frame_stride=stride, state_columns=cols, action_scale=ascale,
+                  state_mean=state_mean, state_std=state_std)
+        train_ds = ACClipDataset(roots=train_roots_ds, **kw)
+        val_ds = ACClipDataset(roots=val_roots_ds, **kw)
+    else:
+        r0 = raw_roots[0]
+        kw = dict(horizon=T, frame_stride=stride, state_columns=cols, action_scale=ascale,
+                  state_mean=state_mean, state_std=state_std)
+        train_ds = ACClipDataset(r0["patch_dir"], r0["raw_dir"], r0["_train"], **kw)
+        val_ds = ACClipDataset(r0["patch_dir"], r0["raw_dir"], r0["_val"], **kw)
     print(f"[ac_car] windows: {len(train_ds)} train / {len(val_ds)} val | state {cols}")
 
     bs = tcfg["batch_size"]
@@ -123,8 +176,6 @@ def train(cfg: dict) -> dict:
     warmup = int(tcfg.get("warmup_frac", 0.05) * total_steps)
     use_amp = device.startswith("cuda")
 
-    out_dir = Path(tcfg.get("out_dir", "checkpoints/vjepa_ac_car")) / "vjepa_ac_car"
-    out_dir.mkdir(parents=True, exist_ok=True)
     wcfg = cfg.get("wandb", {})
     run = wandb.init(project=wcfg.get("project", "lewm-rccar"), entity=wcfg.get("entity"),
                      group=wcfg.get("group", "vjepa_ac_car"), name="vjepa_ac_car", config=cfg,

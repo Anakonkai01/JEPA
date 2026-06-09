@@ -83,46 +83,77 @@ def _load_tokens(npy_path):
 
 
 class ACClipDataset(Dataset):
-    def __init__(self, patch_dir, raw_dir, sessions, horizon=4, frame_stride=2,
+    """ACClipDataset with optional multi-root support and domain token.
+
+    Two calling modes:
+      1. Single-root (legacy):
+           ACClipDataset(patch_dir, raw_dir, sessions, ...)
+         → actions shape (T, len(action_scale)), no domain token.
+
+      2. Multi-root (add KDS + TowerPro together):
+           ACClipDataset(roots=[
+               {"patch_dir": ..., "raw_dir": ..., "sessions": [...], "domain_id": 0},
+               {"patch_dir": ..., "raw_dir": ..., "sessions": [...], "domain_id": 1},
+           ], ...)
+         → actions shape (T, len(action_scale)+1), last dim = float(domain_id).
+         Sessions MUST be uniquely named across roots.
+    """
+
+    def __init__(self, patch_dir=None, raw_dir=None, sessions=None, horizon=4, frame_stride=2,
                  state_columns=DEFAULT_COLUMNS, action_scale=(1.0, 6.67),
-                 state_mean=None, state_std=None):
-        self.patch_dir = Path(patch_dir); self.raw_dir = Path(raw_dir)
+                 state_mean=None, state_std=None,
+                 roots=None):
         self.T = horizon; self.stride = frame_stride
         self.cols = tuple(state_columns)
         self.action_scale = torch.tensor(action_scale, dtype=torch.float32)
         self.state_mean, self.state_std = state_mean, state_std
 
-        self.index = []          # (session, start_row)
-        self._meta = {}          # session -> (act (N,2), state (N,S), rows, npy_path)
+        # normalise calling modes into a list of root dicts
+        if roots is not None:
+            root_list = roots
+            self._use_domain = True
+        else:
+            root_list = [{"patch_dir": patch_dir, "raw_dir": raw_dir,
+                          "sessions": sessions, "domain_id": 0}]
+            self._use_domain = False
+
+        self.index = []          # (session_key, start_row)
+        self._meta = {}          # session_key -> (act, state, rows, npy_path, domain_id)
         span = (horizon - 1) * frame_stride
-        for s in sessions:
-            pt = self.patch_dir / f"{s}.npy"
-            if not pt.exists():
-                continue
-            # Patch cache row order == actions_synced order (encode_patch iterates it) and
-            # load_state also derives from actions_synced -> all three align 1:1 by
-            # construction. So we DON'T load the (~500 MB) token tensor here, only CSVs.
-            fidx, act = _read_actions(self.raw_dir / s)
-            state, st_fidx = load_state(self.raw_dir / s, self.cols)
-            assert np.array_equal(st_fidx, fidx), f"state/action frame mismatch in {s}"
-            rows_in_cache = np.arange(len(fidx))
-            self._meta[s] = (act, state, rows_in_cache, str(pt))
-            for i in range(len(fidx) - span):
-                self.index.append((s, i))
+
+        for rc in root_list:
+            p_dir = Path(rc["patch_dir"]); r_dir = Path(rc["raw_dir"])
+            domain_id = int(rc.get("domain_id", 0))
+            slist = rc.get("sessions") or sorted(p.stem for p in p_dir.glob("*.npy"))
+            for s in (slist or []):
+                pt = p_dir / f"{s}.npy"
+                if not pt.exists():
+                    continue
+                fidx, act = _read_actions(r_dir / s)
+                state, st_fidx = load_state(r_dir / s, self.cols)
+                assert np.array_equal(st_fidx, fidx), f"state/action frame mismatch in {s}"
+                rows_in_cache = np.arange(len(fidx))
+                key = s   # session names are globally unique (KDS has _kds suffix)
+                self._meta[key] = (act, state, rows_in_cache, str(pt), domain_id)
+                for i in range(len(fidx) - span):
+                    self.index.append((key, i))
 
     def __len__(self):
         return len(self.index)
 
     def __getitem__(self, k):
-        s, i = self.index[k]
-        act, state, rows_in_cache, pt = self._meta[s]
-        local = [i + j * self.stride for j in range(self.T)]      # rows within this session
+        key, i = self.index[k]
+        act, state, rows_in_cache, pt, domain_id = self._meta[key]
+        local = [i + j * self.stride for j in range(self.T)]
         cache_rows = rows_in_cache[local]
         arr = _load_tokens(pt)                                    # memmap (N,Ntok,D) fp16
         z = torch.from_numpy(np.ascontiguousarray(arr[cache_rows])).float()  # (T,Ntok,D)
         z = F.layer_norm(z, (z.size(-1),))                       # per-token LN (V-JEPA 2-AC reps)
         st = torch.from_numpy(state[local]).float()              # (T, S)
         a = torch.from_numpy(act[local]).float() * self.action_scale
+        if self._use_domain:
+            dom = torch.full((self.T, 1), float(domain_id))
+            a = torch.cat([a, dom], dim=-1)                      # (T, A+1)
         if self.state_mean is not None:
             st = (st - self.state_mean) / self.state_std
         return {"tokens": z, "states": st, "actions": a}

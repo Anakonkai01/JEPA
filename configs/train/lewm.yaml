@@ -5,7 +5,7 @@ seed: 0
 
 wandb:
   enabled: false
-  project: lewm-rccar
+  project: rc-car-jepa
   entity: null          # null = your default wandb entity
   group: null           # auto-set per experiment (e.g. lewm_fs5_kfold)
 

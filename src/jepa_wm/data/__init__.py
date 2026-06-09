@@ -5,6 +5,7 @@ from .dataset import (
     list_sessions,
     normalize_roots,
     split_sessions,
+    frozen_split,
 )
 
 __all__ = [
@@ -14,4 +15,5 @@ __all__ = [
     "list_sessions",
     "normalize_roots",
     "split_sessions",
+    "frozen_split",
 ]

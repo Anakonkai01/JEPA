@@ -4,9 +4,9 @@
     # KDS only (latents already encoded):
     python scripts/build_graph.py --out data/graph/topograph_kds.pt
 
-    # all 92 sessions (after encoding TowerPro):
+    # all sessions (after encoding both pooled dirs):
     python scripts/build_graph.py \
-        --root data/latents:data/raw:kds \
+        --root data/latents_kds:data/raw_kds:kds \
         --root data/latents_towerpro:data/raw_towerpro:towerpro \
         --out data/graph/topograph.pt
 
@@ -63,7 +63,7 @@ def main():
     ap.add_argument("--sim-min", type=float, default=0.5)
     args = ap.parse_args()
 
-    roots = args.root or [{"latents": "data/latents", "raw": "data/raw", "domain": "kds"}]
+    roots = args.root or [{"latents": "data/latents_kds", "raw": "data/raw_kds", "domain": "kds"}]
     print(f"[build_graph] roots: {[(r['latents'], r['raw']) for r in roots]}")
     g = build_topograph(roots, node_stride=args.node_stride, knn=args.knn,
                         gps_gate_m=args.gps_gate_m, sim_min=args.sim_min)

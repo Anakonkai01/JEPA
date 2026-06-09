@@ -3,7 +3,7 @@ model:
   name: vjepa_ac_car
   latent_dim: 1024
   num_tokens: 576        # 384px -> 24x24 (native res V-JEPA 2.1; trước là 256px->16x16=256)
-  action_dim: 2
+  action_dim: 3          # [steer, throttle, domain_id]; domain_id=0 KDS / 1 TowerPro
   state_dim: 12          # [speed, gx,gy,gz, ax,ay,az, rx,ry,rz, prev_steer, prev_throttle] (+prev-action P2)
   pred_dim: 512
   depth: 12              # 8->12 (sâu hơn; KHÔNG 24 — quá chậm ở 576 token + overfit data ít)

@@ -1,23 +1,29 @@
-# VJEPA2ACCar training on TowerPro patch latents (docs/VJEPA2_AC_CAR.md).
-#   1) python scripts/encode_patch.py --raw-dir data/raw_towerpro --out-dir data/latents_towerpro_patch
+# VJEPA2ACCar training on TowerPro + KDS patch latents (docs/VJEPA2_AC_CAR.md).
+#   1) encode both roots:
+#      PYTHONPATH=src python scripts/encode_patch.py --raw-dir data/raw_towerpro --out-dir data/latents_towerpro_patch_384 --image-size 384
+#      PYTHONPATH=src python scripts/encode_patch.py --raw-dir data/raw_kds       --out-dir data/latents_kds_patch_384       --image-size 384
 #   2) python scripts/train_ac_car.py --config configs/train/vjepa_ac_car.yaml configs/model/vjepa_ac_car.yaml
 device: cuda
 seed: 0
 
 wandb:
   enabled: True
-  project: lewm-rccar
+  project: rc-car-jepa
   group: vjepa_ac_car
 
 data:
-  patch_dir: data/latents_towerpro_patch_384   # 384px/576-token (re-encode trước khi train)
-  raw_dir: data/raw_towerpro
+  # Multi-root: TowerPro (domain_id=1) + KDS (domain_id=0). Domain token appended to action
+  # -> action_dim=3 [steer, throttle, domain]. Model sees servo calibration via domain token.
+  # Delete checkpoints/vjepa_ac_car/vjepa_ac_car/split.json to regenerate split.
+  roots:
+    - {patch_dir: data/latents_towerpro_patch_384, raw_dir: data/raw_towerpro, domain_id: 1}
+    - {patch_dir: data/latents_kds_patch_384,      raw_dir: data/raw_kds,      domain_id: 0}
   val_frac: 0.2
   horizon: 4
   frame_stride: 2                 # ~220ms/step at 9fps (≈ V-JEPA 2-AC 4fps)
   # full IMU + GPS speed + prev-action (P2, ablatable: bỏ prev_steer/prev_throttle để tắt)
   state_columns: [speed, gx, gy, gz, ax, ay, az, rx, ry, rz, prev_steer, prev_throttle]
-  action_scale: [1.0, 6.67]       # throttle ~[-0.15,0.15] -> ~[-1,1]
+  action_scale: [1.0, 6.67]       # throttle ~[-0.15,0.15] -> ~[-1,1]; domain appended raw
 
 train:
   epochs: 60

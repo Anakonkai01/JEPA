@@ -10,7 +10,7 @@ seed: 0
 
 wandb:
   enabled: false
-  project: lewm-rccar
+  project: rc-car-jepa
   entity: null
   group: vjepa_ac_mixed
 

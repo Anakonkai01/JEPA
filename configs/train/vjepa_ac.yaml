@@ -5,13 +5,13 @@ seed: 0
 
 wandb:
   enabled: true
-  project: lewm-rccar
+  project: rc-car-jepa
   entity: null
   group: vjepa_ac
 
 data:
-  raw_dir: data/raw
-  latents_dir: data/latents      # output of scripts/encode_dataset.py (V-JEPA 2.1)
+  raw_dir: data/raw_kds          # renamed from data/raw 2026-06-09
+  latents_dir: data/latents_kds  # output of scripts/encode_dataset.py (V-JEPA 2.1)
   val_frac: 0.2
 
 train:

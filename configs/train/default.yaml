@@ -15,6 +15,6 @@ train:
 # data.* defaults come from configs/data/default.yaml — include it too if needed,
 # or rely on these inline minimums:
 data:
-  raw_dir: data/raw
-  latents_dir: data/latents
+  raw_dir: data/raw_kds          # KDS-servo sessions (renamed from data/raw 2026-06-09)
+  latents_dir: data/latents_kds
   use_imu: false

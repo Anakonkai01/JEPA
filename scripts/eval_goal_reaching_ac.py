@@ -28,7 +28,7 @@ import numpy as np
 import torch
 
 from jepa_wm.data.ac_clip import ACClipDataset
-from jepa_wm.data.dataset import split_sessions
+from jepa_wm.data.dataset import frozen_split
 from jepa_wm.models import build_model
 from jepa_wm.planning import CEMPlannerAC
 from jepa_wm.planning.dynamics import CarDynamics
@@ -81,9 +81,14 @@ def main():
     prev_idx = (cols.index("prev_steer"), cols.index("prev_throttle")) if "prev_steer" in cols else None
 
     sessions = sessions_with_patches(patch_dir)
-    train_s, val_s = split_sessions(sessions, val_frac=d_.get("val_frac", 0.2), seed=cfg.get("seed", 0))
+    # Reuse the EXACT train/val split frozen by training (split.json next to the ckpt);
+    # save=False so eval never creates one — falls back to the deterministic split if absent.
+    split_path = Path(args.checkpoint).parent / "split.json"
+    train_s, val_s, sinfo = frozen_split(split_path, sessions, val_frac=d_.get("val_frac", 0.2),
+                                         seed=cfg.get("seed", 0), save=False)
     print(f"[goal_reaching_ac] {args.checkpoint}")
-    print(f"  {len(val_s)} val sessions | state {cols} (speed@{speed_idx}, yaw@{yaw_idx}) | device {args.device}")
+    src = f"FROZEN <- {split_path}" if sinfo["frozen"] else "deterministic (no split.json found)"
+    print(f"  {len(val_s)} val sessions [{src}] | state {cols} (speed@{speed_idx}, yaw@{yaw_idx}) | device {args.device}")
     print(f"  action box: steer [-1,1], throttle [{args.throttle_min},{args.throttle_max}] | action_scale {ascale}")
 
     # fit the bicycle-model coefficients on the TRAIN sessions (held out from eval)

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import csv
+import json
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Iterable
@@ -81,6 +82,37 @@ def split_sessions(sessions: list[str], val_frac: float = 0.2, seed: int = 0):
     train = [s for i, s in enumerate(sessions) if i not in val_idx]
     val = [s for i, s in enumerate(sessions) if i in val_idx]
     return train, val
+
+
+def frozen_split(split_path, sessions, val_frac: float = 0.2, seed: int = 0, save: bool = True):
+    """Reproducible session split, pinned to ``split_path`` (JSON).
+
+    First call (file absent): compute the deterministic ``split_sessions`` and,
+    if ``save``, write ``{seed, val_frac, n_sessions, train, val}``. Later calls
+    reuse the saved lists verbatim (intersected with the sessions actually
+    present) so train + eval share the exact same val set even if the session
+    set later grows. Delete the JSON to regenerate. Returns ``(train, val, info)``
+    where ``info`` carries ``frozen`` (bool), ``path``, and any ``missing``/``extra``
+    sessions vs the saved lists.
+    """
+    split_path = Path(split_path)
+    avail = set(sessions)
+    if split_path.exists():
+        saved = json.loads(split_path.read_text())
+        listed = set(saved["train"]) | set(saved["val"])
+        train = [s for s in saved["train"] if s in avail]
+        val = [s for s in saved["val"] if s in avail]
+        info = {"frozen": True, "path": str(split_path),
+                "missing": sorted(listed - avail), "extra": sorted(avail - listed)}
+        return train, val, info
+    train, val = split_sessions(sessions, val_frac=val_frac, seed=seed)
+    if save:
+        split_path.parent.mkdir(parents=True, exist_ok=True)
+        split_path.write_text(json.dumps(
+            {"seed": seed, "val_frac": val_frac, "n_sessions": len(sessions),
+             "train": train, "val": val}, indent=2))
+    return train, val, {"frozen": False, "path": str(split_path) if save else None,
+                        "missing": [], "extra": []}
 
 
 class FrameSequenceDataset(Dataset):
