@@ -55,6 +55,10 @@ def main():
     ap.add_argument("--history", type=int, default=2)
     ap.add_argument("--throttle-min", type=float, default=-0.16)
     ap.add_argument("--throttle-max", type=float, default=0.15)
+    ap.add_argument("--policy", default=None,
+                    help="GoalPolicyPrior ckpt (train_policy_prior.py) -> warm-start CEM mu "
+                         "(PiJEPA-style) + report policy-alone action recovery. Needs pooled "
+                         "latents (scripts/pool_patch_latents.py).")
     ap.add_argument("--dt", type=float, default=0.22, help="clip frame-stride period (s) for CarDynamics")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--seed", type=int, default=0)
@@ -105,14 +109,32 @@ def main():
     fit_pairs = [(r["raw_dir"], [s for s in r["_sessions"] if s in train_set]) for r in raw_roots]
     dyn = CarDynamics.fit(fit_pairs, dt=args.dt, stride=stride,
                           speed_idx=speed_idx, yaw_idx=yaw_idx)
-    print(f"  dynamics: {dyn}\n")
+    print(f"  dynamics: {dyn}")
+
+    # optional PiJEPA-style policy prior: warm-start CEM mu + report policy-alone recovery.
+    policy = pooled = None
+    if args.policy:
+        from jepa_wm.models.policy_prior import load_policy, pooled_dir_for
+        policy, _pm = load_policy(args.policy, device=args.device)
+        pooled = {}
+        for r in raw_roots:
+            pdir = Path(pooled_dir_for(r["raw_dir"]))
+            for s in r["_sessions"]:
+                if s in val_set and (pdir / f"{s}.pt").exists():
+                    pooled[s] = torch.load(pdir / f"{s}.pt", map_location="cpu",
+                                           weights_only=False)["latents"].float()
+        print(f"  policy prior: {args.policy} ({len(pooled)} val sessions with pooled latents)")
+    print()
 
     rng = np.random.default_rng(args.seed)
     low = torch.tensor([-1.0, args.throttle_min], device=args.device)
     high = torch.tensor([1.0, args.throttle_max], device=args.device)
 
-    print(f"{'d':>3} {'CEM':>8} {'teacher':>8} {'rnd_mean':>8} {'rnd_best':>8} {'CEM/mean':>9} "
-          f"{'CEM/tea':>8} {'Δsteer':>7} {'Δthrot':>7} {'n':>4}")
+    hdr = (f"{'d':>3} {'CEM':>8} {'teacher':>8} {'rnd_mean':>8} {'rnd_best':>8} {'CEM/mean':>9} "
+           f"{'CEM/tea':>8} {'Δsteer':>7} {'Δthrot':>7}")
+    if policy is not None:
+        hdr += f" {'πΔster':>7} {'πΔthrt':>7}"
+    print(hdr + f" {'n':>4}")
     for d in args.distances:
         # RAW states (state_mean=None) and RAW actions (action_scale=1) — the planner applies
         # the train-time normalisation itself; tokens are always per-token LN'd by the dataset.
@@ -138,7 +160,9 @@ def main():
                                throttle_max=args.throttle_max, history=args.history,
                                prev_action_idx=prev_idx, device=args.device)
         cem_s, tea_s, rnd_mean_s, rnd_best_s, dsteer, dthrot = [], [], [], [], [], []
+        pol_dsteer, pol_dthrot = [], []
         for i in idx:
+            key, start = ds.index[int(i)]
             item = ds[int(i)]
             z = item["tokens"].to(args.device).float()       # (d+1, N, D) LN'd
             s_raw = item["states"].to(args.device).float()   # (d+1, S) RAW
@@ -150,7 +174,18 @@ def main():
             s0_raw = s_raw[0]                                 # (S,)
             teacher = a_raw[:d].unsqueeze(0)                  # (1, d, 2) the d real transitions
 
-            _, info = planner.plan(z0, s0_raw, goal, return_info=True, domain=dom)
+            mu0 = None
+            if policy is not None and key in pooled:
+                zp = pooled[key][start].to(args.device).unsqueeze(0)
+                zgp = pooled[key][start + d * stride].to(args.device).unsqueeze(0)
+                s_z = ((s0_raw - state_mean) / state_std).unsqueeze(0)
+                with torch.no_grad():
+                    prop = policy(zp, zgp, s_z, dom)[0]      # RAW (2,)
+                mu0 = prop
+                pol_dsteer.append(abs(float(prop[0] - teacher[0, 0, 0])))
+                pol_dthrot.append(abs(float(prop[1] - teacher[0, 0, 1])))
+
+            _, info = planner.plan(z0, s0_raw, goal, return_info=True, domain=dom, mu_init=mu0)
             cem_seq = info["sequence"].to(args.device)
             cem_s.append(info["score"])
             tea_s.append(float(planner.score(z0, s0_raw, goal, teacher, domain=dom)[0]))
@@ -162,9 +197,13 @@ def main():
             dthrot.append(abs(float(cem_seq[0, 1] - teacher[0, 0, 1])))
         cm, tm = np.median(cem_s), np.median(tea_s)
         rmean, rbest = np.median(rnd_mean_s), np.median(rnd_best_s)
-        print(f"{d:>3} {cm:>8.4f} {tm:>8.4f} {rmean:>8.4f} {rbest:>8.4f} "
-              f"{cm/max(rmean,1e-9):>9.2f} {cm/max(tm,1e-9):>8.2f} "
-              f"{np.median(dsteer):>7.3f} {np.median(dthrot):>7.3f} {len(idx):>4}")
+        line = (f"{d:>3} {cm:>8.4f} {tm:>8.4f} {rmean:>8.4f} {rbest:>8.4f} "
+                f"{cm/max(rmean,1e-9):>9.2f} {cm/max(tm,1e-9):>8.2f} "
+                f"{np.median(dsteer):>7.3f} {np.median(dthrot):>7.3f}")
+        if policy is not None:
+            line += (f" {np.median(pol_dsteer):>7.3f} {np.median(pol_dthrot):>7.3f}"
+                     if pol_dsteer else " " * 16)
+        print(line + f" {len(idx):>4}")
 
     print("\nĐọc: CEM/mean < 1 = planning có ích (hơn lái ngẫu nhiên); CEM/tea ~1 = sát người lái.")
     print("Δsteer/Δthrot nhỏ = CEM khôi phục được hành động người (proxy điều khiển tốt, RAW units).")

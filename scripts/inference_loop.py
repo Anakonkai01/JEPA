@@ -97,9 +97,10 @@ class Encoders:
     def nav(self, rgb_u8) -> np.ndarray:                  # one-off (goal-image localize)
         return self._tokens(rgb_u8).mean(0).cpu().numpy()
 
-    def ctrl(self, rgb_u8) -> torch.Tensor:               # one-off (subgoal / control-only)
+    def ctrl(self, rgb_u8):                               # one-off (subgoal / control-only)
+        """1 forward → (raw pooled (1024,) — policy-prior input, tokens LN'd (576,1024) — CEM)."""
         tok = self._tokens(rgb_u8)
-        return F.layer_norm(tok, (tok.size(-1),))         # (576, 1024)
+        return tok.mean(0), F.layer_norm(tok, (tok.size(-1),))
 
 
 # ---------------------------------------------------------------------------
@@ -266,6 +267,9 @@ def main():
     ap.add_argument("--domain-id", type=float, default=1.0,
                     help="domain token cho model multi-root (0=KDS, 1=TowerPro — servo HIỆN TẠI trên xe). "
                          "Chỉ dùng khi checkpoint train multi-root (action_dim=3); model cũ bỏ qua.")
+    ap.add_argument("--policy", default=None,
+                    help="GoalPolicyPrior ckpt (train_policy_prior.py) — PiJEPA-style warm-start CEM mu "
+                         "từ policy BC → ít iter/sample hơn, lái mượt hơn. None = CEM thuần.")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = ap.parse_args()
     if cv2 is None:
@@ -301,11 +305,19 @@ def main():
                            throttle_max=args.throttle_cap, prev_action_idx=prev_idx,
                            domain=domain, device=args.device)
 
-    # --- goal ---
-    graph = goal_node = goal_nav = goal_tokens = None
-    subgoal_cache: dict[int, torch.Tensor] = {}
+    policy = None
+    if args.policy:
+        from jepa_wm.models.policy_prior import load_policy
+        policy, pol_meta = load_policy(args.policy, device=args.device)
+        print(f"[infer] policy prior (PiJEPA warm-start): {args.policy} "
+              f"(domain={'on' if pol_meta['use_domain'] else 'off'})")
 
-    def subgoal_patch(node: int) -> torch.Tensor:
+    # --- goal ---
+    graph = goal_node = goal_nav = goal_tokens = goal_pool = None
+    subgoal_cache: dict[int, tuple] = {}
+
+    def subgoal_patch(node: int) -> tuple:
+        """node -> (raw pooled (1024,), LN tokens (N,D)) — one encode, cached."""
         if node not in subgoal_cache:
             img = cv2.imread(str(graph.frame_path(node)))
             if img is None:
@@ -319,7 +331,7 @@ def main():
         g = cv2.imread(args.goal_image)
         if g is None:
             ap.error(f"cannot read --goal-image {args.goal_image}")
-        goal_tokens = encoders.ctrl(g[:, :, ::-1].copy())      # (N,D) — fixed CEM target
+        goal_pool, goal_tokens = encoders.ctrl(g[:, :, ::-1].copy())   # fixed CEM target
         print("[infer] CONTROL-ONLY: CEM lái thẳng tới ảnh goal (bỏ graph/nav). Chạy trong nhà OK, "
               "nhưng model train ở park → OOD, action có thể không chuẩn.")
     else:
@@ -389,11 +401,12 @@ def main():
                     meta, rgb = item
 
                     if args.control_only:
-                        ctrl_tokens = encoders.ctrl(rgb)               # 1 encode (chỉ control)
-                        target_tokens = goal_tokens
+                        cur_pool, ctrl_tokens = encoders.ctrl(rgb)     # 1 encode (chỉ control)
+                        target_pool, target_tokens = goal_pool, goal_tokens
                         tag = "ctrl-only"
                     else:
                         nav, ctrl_tokens = encoders.both(rgb)          # 1 encode → cả nav + control
+                        cur_pool = torch.from_numpy(nav).to(args.device)
                         gps = None
                         if meta.get("lat", 0) and meta.get("lon", 0):
                             gps = (float(meta["lat"]), float(meta["lon"]))
@@ -432,15 +445,23 @@ def main():
                             target = ahead[0] if ahead else goal_node
                         else:
                             target = subs[1] if len(subs) >= 2 else subs[-1]
-                        target_tokens = subgoal_patch(target)
+                        target_pool, target_tokens = subgoal_patch(target)
                         gd = f"{gps_dist:.1f}m" if gps_dist is not None else "no-gps"
                         tag = f"cur{cur}->sub{target}->goal{goal_node} d={gd} route{len(subs)}"
 
                     z0 = ctrl_tokens.unsqueeze(0)                      # (1, N, D) — đã encode ở trên
                     s0 = build_state(meta, cols)
+                    # PiJEPA-style warm start: policy đề xuất action từ (pooled hiện tại, pooled goal,
+                    # state) → khởi tạo mu của CEM (CEM vẫn refine dưới world model).
+                    mu0 = None
+                    if policy is not None:
+                        s_z = ((s0.to(args.device) - state_mean) / state_std).unsqueeze(0)
+                        with torch.no_grad():
+                            mu0 = policy(cur_pool.float().unsqueeze(0), target_pool.float().unsqueeze(0),
+                                         s_z, domain if pol_meta["use_domain"] else None)[0]
                     # bf16 autocast quanh CEM (mặc định fp32 → chậm); model train bf16 nên nhất quán.
                     with torch.autocast("cuda", dtype=torch.bfloat16, enabled=args.device.startswith("cuda")):
-                        raw_steer, throt = planner.plan(z0, s0, target_tokens)
+                        raw_steer, throt = planner.plan(z0, s0, target_tokens, mu_init=mu0)
                     raw_steer, throt = float(raw_steer), float(throt)
                     # EMA làm mượt lái (chống zigzag/văng đường) + cua thì giảm ga
                     steer = args.steer_smooth * prev_steer + (1.0 - args.steer_smooth) * raw_steer

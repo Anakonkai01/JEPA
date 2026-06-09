@@ -158,10 +158,17 @@ class CEMPlannerAC:
         return (final - goal.unsqueeze(0)).abs().mean(dim=(1, 2))                    # (B,)
 
     @torch.no_grad()
-    def plan(self, z0, s0_raw, goal, return_info: bool = False, domain=None):
+    def plan(self, z0, s0_raw, goal, return_info: bool = False, domain=None, mu_init=None):
+        """``mu_init``: optional CEM warm-start (PiJEPA-style policy prior) — (2,) or (H,2)
+        RAW action(s); broadcast over the horizon and clamped to the box. None = zeros."""
         z0 = z0.to(self.device).float(); goal = goal.to(self.device).float()
-        mu = torch.zeros(self.H, 2, device=self.device)
-        mu[:, 1] = (self.low[1] + self.high[1]) / 2                                 # throttle mid-box
+        if mu_init is not None:
+            mu = torch.as_tensor(mu_init, dtype=torch.float32, device=self.device)
+            mu = (mu.view(1, 2).expand(self.H, 2) if mu.dim() == 1 else mu).clone()
+            mu = torch.max(torch.min(mu, self.high), self.low)
+        else:
+            mu = torch.zeros(self.H, 2, device=self.device)
+            mu[:, 1] = (self.low[1] + self.high[1]) / 2                             # throttle mid-box
         sigma = torch.full((self.H, 2), self.init_std, device=self.device)
         best_s, best_seq = None, None
         for _ in range(self.n_iter):
