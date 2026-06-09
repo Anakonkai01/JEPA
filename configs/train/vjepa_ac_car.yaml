@@ -27,11 +27,12 @@ data:
 
 train:
   epochs: 60
-  batch_size: 24                  # 40->24: 576 token + depth 12 nặng VRAM hơn (tăng lại nếu không OOM)
-  lr: 2.5e-4            # linear-scale with batch: 2e-4 * (40/32) = 2.5e-4
+  batch_size: 24
+  gradient_checkpointing: true    # seq=2312 (4×578tok) × depth=12 → 15GB without GC; GC ~2x slower backward
+  lr: 2.5e-4
   weight_decay: 1.0e-4
   warmup_frac: 0.05
-  num_workers: 6
+  num_workers: 4
   patience: 12
   min_delta: 1.0e-4
   out_dir: checkpoints/vjepa_ac_car

@@ -22,6 +22,7 @@ from __future__ import annotations
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+from torch.utils.checkpoint import checkpoint
 
 
 class VJEPA2ACCar(nn.Module):
@@ -61,6 +62,7 @@ class VJEPA2ACCar(nn.Module):
         self.encoder = nn.TransformerEncoder(layer, num_layers=depth, enable_nested_tensor=False)
         self.norm = nn.LayerNorm(pred_dim)
         self.head = nn.Linear(pred_dim, latent_dim)
+        self._grad_ckpt = False
 
     def _block_causal_mask(self, T: int, device) -> torch.Tensor:
         """(L,L) float mask, 0 = attend, -inf = block. Cached by (T, device)."""
@@ -84,6 +86,20 @@ class VJEPA2ACCar(nn.Module):
         x = x + self.temporal_pos[:, :T] + self.token_pos          # add pos emb
         return x.flatten(1, 2)                                     # (B, T*group, P)
 
+    def gradient_checkpointing_enable(self):
+        self._grad_ckpt = True
+
+    def _encode(self, x, mask):
+        """Run encoder layers, optionally with gradient checkpointing."""
+        if self._grad_ckpt:
+            for layer in self.encoder.layers:
+                x = checkpoint(layer, x, src_mask=mask, use_reentrant=False)
+            if self.encoder.norm is not None:
+                x = self.encoder.norm(x)
+        else:
+            x = self.encoder(x, mask=mask)
+        return x
+
     def forward(self, z, a, s):
         """z (B,T,N,D) patch maps, a (B,T,A), s (B,T,S).
 
@@ -93,7 +109,7 @@ class VJEPA2ACCar(nn.Module):
         """
         B, T, N, D = z.shape
         x = self._embed(z, a, s)                                   # (B, T*group, P)
-        x = self.encoder(x, mask=self._block_causal_mask(T, z.device))
+        x = self._encode(x, self._block_causal_mask(T, z.device))
         x = x.view(B, T, self.group, -1)[:, :, self.cond_tokens:]  # patch slots only (B,T,N,P)
         delta = self.head(self.norm(x))                            # (B,T,N,D)
         return z + delta if self.predict_residual else delta

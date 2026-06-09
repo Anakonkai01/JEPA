@@ -168,6 +168,9 @@ def train(cfg: dict) -> dict:
 
     model = build_model(cfg["model"]).to(device)
     print(f"[ac_car] {sum(p.numel() for p in model.parameters())/1e6:.2f}M params")
+    if tcfg.get("gradient_checkpointing", False) and hasattr(model, "gradient_checkpointing_enable"):
+        model.gradient_checkpointing_enable()
+        print("[ac_car] gradient checkpointing ON (saves VRAM at ~2x slower backward)")
     if tcfg.get("compile", True) and hasattr(torch, "compile"):
         print("[ac_car] compiling model with torch.compile(default)...")
         model = torch.compile(model, mode="default")
