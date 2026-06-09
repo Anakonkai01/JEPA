@@ -69,31 +69,37 @@ def _to_tensor(rgb_u8: np.ndarray, size: int, device) -> torch.Tensor:
 
 
 class Encoders:
-    def __init__(self, enc, device, nav_size=384, ctrl_size=256, fp16=False):
+    """384px (native) cho CẢ nav lẫn control → 1 lần encode/frame: patch tokens (576,1024) cho control
+    (per-token LN, như ACClipDataset), nav = mean-pool 576 token (khớp node graph build ở 384)."""
+
+    def __init__(self, enc, device, size=384, fp16=False):
         self.device = device
-        self.nav_size, self.ctrl_size = nav_size, ctrl_size
+        self.size = size
         self.fp16 = fp16 and device.startswith("cuda")    # encoder fp16 → ~nửa VRAM (cho laptop)
         self.enc = enc.half() if self.fp16 else enc
 
-    def _encode(self, rgb_u8, size):
-        x = _to_tensor(rgb_u8, size, self.device)
+    @torch.no_grad()
+    def _tokens(self, rgb_u8) -> torch.Tensor:
+        x = _to_tensor(rgb_u8, self.size, self.device)
         if self.fp16:
-            return self.enc(x.half())                     # pure fp16, không autocast
-        with torch.autocast("cuda", dtype=torch.bfloat16, enabled=self.device.startswith("cuda")):
-            return self.enc(x)
+            tok = self.enc(x.half())                      # pure fp16, không autocast
+        else:
+            with torch.autocast("cuda", dtype=torch.bfloat16, enabled=self.device.startswith("cuda")):
+                tok = self.enc(x)
+        return tok.float()[0]                             # (576, 1024)
 
-    @torch.no_grad()
-    def nav(self, rgb_u8) -> np.ndarray:
-        """384px pooled latent (1024,) — same as build_graph nodes."""
-        tok = self._encode(rgb_u8, self.nav_size)         # (1, 576, 1024)
-        return tok.float().mean(1)[0].cpu().numpy()
+    def both(self, rgb_u8):
+        """1 forward → (nav_latent (1024,) np, ctrl_tokens (576,1024) LN'd)."""
+        tok = self._tokens(rgb_u8)
+        nav = tok.mean(0).cpu().numpy()                   # = build_graph node (mean-pool 384)
+        return nav, F.layer_norm(tok, (tok.size(-1),))
 
-    @torch.no_grad()
-    def ctrl(self, rgb_u8) -> torch.Tensor:
-        """256px patch tokens (256,1024), per-token layer-normed (as ACClipDataset feeds)."""
-        tok = self._encode(rgb_u8, self.ctrl_size)        # (1, 256, 1024)
-        z = tok.float()[0]
-        return F.layer_norm(z, (z.size(-1),))                # (256, 1024)
+    def nav(self, rgb_u8) -> np.ndarray:                  # one-off (goal-image localize)
+        return self._tokens(rgb_u8).mean(0).cpu().numpy()
+
+    def ctrl(self, rgb_u8) -> torch.Tensor:               # one-off (subgoal / control-only)
+        tok = self._tokens(rgb_u8)
+        return F.layer_norm(tok, (tok.size(-1),))         # (576, 1024)
 
 
 # ---------------------------------------------------------------------------
@@ -188,8 +194,9 @@ class ActionHolder:
 
 # ---------------------------------------------------------------------------
 def build_state(meta: dict, columns) -> torch.Tensor:
-    """Raw state vector from stream meta, in the model's column order. gz==yaw_rate."""
-    alias = {"yaw_rate": "gz"}
+    """Raw state vector from stream meta, in the model's column order. gz==yaw_rate; prev-action =
+    telemetry steering/throttle hiện tại (= lệnh đang áp = action 'trước' cho quyết định kế)."""
+    alias = {"yaw_rate": "gz", "prev_steer": "steering", "prev_throttle": "throttle"}
     vals = [float(meta.get(alias.get(c, c), 0.0) or 0.0) for c in columns]
     return torch.tensor(vals, dtype=torch.float32)
 
@@ -264,6 +271,7 @@ def main():
     ascale = tuple(cfg["data"].get("action_scale", [1.0, 6.67]))
     speed_idx = cols.index("speed") if "speed" in cols else 0
     yaw_idx = cols.index("gz") if "gz" in cols else (cols.index("yaw_rate") if "yaw_rate" in cols else 1)
+    prev_idx = (cols.index("prev_steer"), cols.index("prev_throttle")) if "prev_steer" in cols else None
 
     enc = load_encoder(args.device)
     encoders = Encoders(enc, args.device, fp16=args.fp16_encoder)
@@ -271,7 +279,7 @@ def main():
     planner = CEMPlannerAC(model, dyn, state_mean, state_std, action_scale=ascale,
                            horizon=args.horizon, n_samples=args.samples, n_elite=args.elite,
                            n_iter=args.iters, throttle_min=0.0,           # forward-only (no surprise reverse)
-                           throttle_max=args.throttle_cap, device=args.device)
+                           throttle_max=args.throttle_cap, prev_action_idx=prev_idx, device=args.device)
 
     # --- goal ---
     graph = goal_node = goal_nav = goal_tokens = None
@@ -361,10 +369,11 @@ def main():
                     meta, rgb = item
 
                     if args.control_only:
+                        ctrl_tokens = encoders.ctrl(rgb)               # 1 encode (chỉ control)
                         target_tokens = goal_tokens
                         tag = "ctrl-only"
                     else:
-                        nav = encoders.nav(rgb)
+                        nav, ctrl_tokens = encoders.both(rgb)          # 1 encode → cả nav + control
                         gps = None
                         if meta.get("lat", 0) and meta.get("lon", 0):
                             gps = (float(meta["lat"]), float(meta["lon"]))
@@ -407,7 +416,7 @@ def main():
                         gd = f"{gps_dist:.1f}m" if gps_dist is not None else "no-gps"
                         tag = f"cur{cur}->sub{target}->goal{goal_node} d={gd} route{len(subs)}"
 
-                    z0 = encoders.ctrl(rgb).unsqueeze(0)               # (1, N, D)
+                    z0 = ctrl_tokens.unsqueeze(0)                      # (1, N, D) — đã encode ở trên
                     s0 = build_state(meta, cols)
                     # bf16 autocast quanh CEM (mặc định fp32 → chậm); model train bf16 nên nhất quán.
                     with torch.autocast("cuda", dtype=torch.bfloat16, enabled=args.device.startswith("cuda")):

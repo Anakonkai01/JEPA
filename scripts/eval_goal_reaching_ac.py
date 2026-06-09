@@ -78,6 +78,7 @@ def main():
     # speed / yaw-rate positions in the model's state vector (for the dynamics integrator)
     speed_idx = cols.index("speed") if "speed" in cols else 0
     yaw_idx = cols.index("gz") if "gz" in cols else (cols.index("yaw_rate") if "yaw_rate" in cols else 1)
+    prev_idx = (cols.index("prev_steer"), cols.index("prev_throttle")) if "prev_steer" in cols else None
 
     sessions = sessions_with_patches(patch_dir)
     train_s, val_s = split_sessions(sessions, val_frac=d_.get("val_frac", 0.2), seed=cfg.get("seed", 0))
@@ -109,7 +110,7 @@ def main():
                                horizon=d, n_samples=args.samples, n_elite=args.elite,
                                n_iter=args.iters, throttle_min=args.throttle_min,
                                throttle_max=args.throttle_max, history=args.history,
-                               device=args.device)
+                               prev_action_idx=prev_idx, device=args.device)
         cem_s, tea_s, rnd_mean_s, rnd_best_s, dsteer, dthrot = [], [], [], [], [], []
         for i in idx:
             item = ds[int(i)]

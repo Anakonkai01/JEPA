@@ -28,7 +28,7 @@ from jepa_wm.engine.encode import _FrameSet, load_encoder
 
 @torch.no_grad()
 def encode_session(enc, session_dir: Path, out_path: Path, device="cuda",
-                   image_size=256, batch_size=16, num_workers=8):
+                   image_size=384, batch_size=16, num_workers=8):
     """Saves a memmap-able .npy of shape (N, Ntok, 1024) float16. Row order == the
     session's actions_synced.csv order (the dataset relies on this 1:1 alignment)."""
     ds = _FrameSet(session_dir, image_size)
@@ -49,8 +49,8 @@ def encode_session(enc, session_dir: Path, out_path: Path, device="cuda",
 def main(argv=None):
     ap = argparse.ArgumentParser()
     ap.add_argument("--raw-dir", default="data/raw_towerpro")
-    ap.add_argument("--out-dir", default="data/latents_towerpro_patch")
-    ap.add_argument("--image-size", type=int, default=256)
+    ap.add_argument("--out-dir", default="data/latents_towerpro_patch_384")
+    ap.add_argument("--image-size", type=int, default=384)   # native res V-JEPA 2.1 (384->24x24=576 tok)
     ap.add_argument("--batch-size", type=int, default=16)
     ap.add_argument("--num-workers", type=int, default=8)
     ap.add_argument("--sessions", nargs="*", default=None)

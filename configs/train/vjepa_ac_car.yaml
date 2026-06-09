@@ -10,17 +10,18 @@ wandb:
   group: vjepa_ac_car
 
 data:
-  patch_dir: data/latents_towerpro_patch
+  patch_dir: data/latents_towerpro_patch_384   # 384px/576-token (re-encode trước khi train)
   raw_dir: data/raw_towerpro
   val_frac: 0.2
   horizon: 4
   frame_stride: 2                 # ~220ms/step at 9fps (≈ V-JEPA 2-AC 4fps)
-  state_columns: [speed, gx, gy, gz, ax, ay, az, rx, ry, rz]  # full IMU + GPS speed (ablate vs [speed, gz])
+  # full IMU + GPS speed + prev-action (P2, ablatable: bỏ prev_steer/prev_throttle để tắt)
+  state_columns: [speed, gx, gy, gz, ax, ay, az, rx, ry, rz, prev_steer, prev_throttle]
   action_scale: [1.0, 6.67]       # throttle ~[-0.15,0.15] -> ~[-1,1]
 
 train:
   epochs: 60
-  batch_size: 40
+  batch_size: 24                  # 40->24: 576 token + depth 12 nặng VRAM hơn (tăng lại nếu không OOM)
   lr: 2.5e-4            # linear-scale with batch: 2e-4 * (40/32) = 2.5e-4
   weight_decay: 1.0e-4
   warmup_frac: 0.05

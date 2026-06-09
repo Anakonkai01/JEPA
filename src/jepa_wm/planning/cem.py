@@ -109,7 +109,7 @@ class CEMPlannerAC:
                  action_scale=(1.0, 6.67), horizon: int = 4, n_samples: int = 128,
                  n_elite: int = 16, n_iter: int = 4, throttle_min=-0.16, throttle_max=0.15,
                  history: int = 2, init_std: float = 0.5, min_std: float = 0.05,
-                 device: str = "cuda"):
+                 prev_action_idx=None, device: str = "cuda"):
         self.model = model.eval()
         self.dyn = dynamics
         self.sm = state_mean.to(device).float(); self.ss = state_std.to(device).float()
@@ -118,16 +118,22 @@ class CEMPlannerAC:
         self.history = history; self.init_std = init_std; self.min_std = min_std
         self.low = torch.tensor([-1.0, throttle_min], device=device)
         self.high = torch.tensor([1.0, throttle_max], device=device)
+        # P2: nếu state có prev-action (2 cột cuối), truyền tuple chỉ số → rollout set chúng = action
+        # ứng viên của bước trước (khớp lúc train: state[t] chứa action[t-1]). None = state không có prev-action.
+        self.prev_idx = list(prev_action_idx) if prev_action_idx is not None else None
         self.device = device
 
     def _states_raw(self, s0_raw, raw_actions):
         """s0_raw (S,), raw_actions (B,H,2) -> raw states (B,H,S) integrated by dynamics
-        (speed + yaw from the action; other channels held at s0)."""
+        (speed + yaw from the action; prev-action slots set to the prior candidate action; rest held)."""
         B = raw_actions.size(0); S = s0_raw.numel()
         s = s0_raw.to(self.device).float().view(1, S).expand(B, S).contiguous()
-        out = [s]
+        out = [s]                                          # s0: prev-action đã có sẵn trong s0_raw
         for k in range(1, self.H):
-            s = self.dyn.step(s, raw_actions[:, k - 1]); out.append(s)
+            s = self.dyn.step(s, raw_actions[:, k - 1])    # dyn.step trả tensor clone → set in-place an toàn
+            if self.prev_idx is not None:
+                s[:, self.prev_idx] = raw_actions[:, k - 1]   # state[k] mang action[k-1] (gây transition k-1→k)
+            out.append(s)
         return torch.stack(out, dim=1)
 
     @torch.no_grad()

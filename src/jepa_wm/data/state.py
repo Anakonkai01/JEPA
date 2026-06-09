@@ -34,6 +34,7 @@ import numpy as np
 # overfit, not just noise (lat/lon/heading remain available only for the CEM dynamics).
 DEFAULT_COLUMNS = ("speed", "gx", "gy", "gz", "ax", "ay", "az", "rx", "ry", "rz")
 ALL_COLUMNS = ("speed", "gx", "gy", "gz", "ax", "ay", "az", "rx", "ry", "rz", "yaw_rate",
+               "prev_steer", "prev_throttle",   # action ở frame t-1 (P2: cho model biết lệnh đang giữ)
                "heading_sin", "heading_cos", "x", "y", "heading")
 
 
@@ -55,6 +56,11 @@ def load_state(session_dir, columns=DEFAULT_COLUMNS):
     acts = _read(session_dir / "actions_synced.csv")
     fidx = np.array([int(r["frame_idx"]) for r in acts])
     ft = np.array([float(r["t_scene_ms"]) for r in acts])
+    # action ở frame t-1 (raw [-1,1]); prev[0]=0 (đầu session chưa có lệnh trước). z-score lo phía sau.
+    steer = np.array([float(r["steering"]) for r in acts])
+    throt = np.array([float(r["throttle"]) for r in acts])
+    prev_steer = np.concatenate([[0.0], steer[:-1]]) if len(steer) else steer
+    prev_throttle = np.concatenate([[0.0], throt[:-1]]) if len(throt) else throt
 
     # --- IMU (already per-frame & synced) -> map by frame_idx
     imu = {int(r["frame_idx"]): r for r in _read(session_dir / "imu_synced.csv")}
@@ -84,6 +90,7 @@ def load_state(session_dir, columns=DEFAULT_COLUMNS):
 
     avail = {"speed": speed, "gx": gx, "gy": gy, "gz": gz, "yaw_rate": yaw_rate,
              "ax": ax, "ay": ay, "az": az, "rx": rx, "ry": ry, "rz": rz,
+             "prev_steer": prev_steer, "prev_throttle": prev_throttle,
              "heading_sin": hs, "heading_cos": hc, "x": x, "y": y, "heading": heading}
     state = np.stack([avail[c] for c in columns], axis=1).astype(np.float32)
     return state, fidx
