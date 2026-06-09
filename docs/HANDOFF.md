@@ -5,7 +5,7 @@
 > [LeWorldModel.md](LeWorldModel.md) · [../robot/android/README.md](../robot/android/README.md) ·
 > [../robot/android/DRIVE_SETUP.md](../robot/android/DRIVE_SETUP.md). Cập nhật file này mỗi khi trạng thái đổi.
 
-## 🌙 Đêm 2026-06-09 — VJEPA2ACCar (patch-token AC) — KẾT QUẢ
+## 🌙 2026-06-09 — VJEPA2ACCar (patch-token AC) — ĐÃ TRAIN + KẾT QUẢ
 
 **Model đóng góp chính (`VJEPA2ACCar`, `vjepa_ac_car`) đã train + eval. THẮNG pooled baseline.**
 
@@ -14,39 +14,36 @@
 | Model | rollout@1 ratio | rollout@3 ratio | Checkpoint |
 |---|---|---|---|
 | **VJEPA2ACCar v1** (10-D IMU, patch) | **0.826** (↓17%) | **0.775** (↓23%) | `checkpoints/vjepa_ac_car/vjepa_ac_car/best.pt` |
-| vjepa_ac_pool (pooled, baseline) | 0.867 (↓13%) | — | `checkpoints/vjepa_ac_pool_towerpro/vjepa_ac/best.pt` |
+| vjepa_ac_pool (pooled, no state) | 0.867 (↓13%) | — | `checkpoints/vjepa_ac_pool_towerpro/vjepa_ac/best.pt` |
 
-- **ratio < 1.0** = model tốt hơn "đứng yên" (identity baseline). Thấp hơn = tốt hơn.
-- `VJEPA2ACCar` thắng baseline 17% vs 13% tại step 1, và mở rộng ra 23% tại step 3 (tốt hơn theo horizon dài).
-- Checkpoint v1: ep=14, val_loss=0.5529 (L1 trên patch tokens LN-norm). Stopped sớm để có thời gian ablations.
-- **Note quan trọng:** 2 model có loss-scale KHÁC NHAU (pool=MSE+cos trên 1D; ac_car=L1 trên 256×1024 patch). So sánh bằng `ratio to identity` (scale-free).
-
-### Cấu hình đã dùng:
-- Encoder: V-JEPA 2.1 ViT-L frozen, per-frame, 256px → 256 patch tokens × 1024-D
-- State: **10-D full IMU** `[speed, gx,gy,gz, ax,ay,az, rx,ry,rz]` (GPS speed + gyro + accel + rotvec)
-- Horizon=4 frame, frame_stride=2 (~220ms/step), L1 teacher-forcing + 2-step rollout loss
-- batch=40, lr=2.5e-4, torch.compile(default), num_workers=6
-- **⚠️ torch.compile lưu weights với prefix `_orig_mod.`** → khi load manual phải strip:
+- ratio < 1.0 = tốt hơn identity baseline. Thấp hơn = tốt hơn.
+- Checkpoint v1: ep=14, val_loss=0.5529. Stopped sớm (patience=12 còn ~12 epoch) để có thời gian ablations.
+- **⚠️ torch.compile** lưu weights với prefix `_orig_mod.` → khi load thủ công phải strip:
   `sd = {k.replace('_orig_mod.','',1): v for k,v in ckpt['model'].items()}`
+  Đã fix trong trainer + compare_experiments.py.
 
-### Ablations đang chạy (queue tự động):
-1. ✅ **vjepa_ac_pool** — xong (78s), ratio=0.867
-2. 🔄 **vjepa_ac_car_minimal** (state=[speed,gz] 2-D) — đang chạy (~7h), xem `logs/train_ac_car_minimal.log`
+### Config v1:
+- Encoder: V-JEPA 2.1 ViT-L frozen, 256px per-frame → 256 patch tokens × 1024-D (cache `.npy` memmap)
+- State: 10-D `[speed, gx,gy,gz, ax,ay,az, rx,ry,rz]`, horizon=4, frame_stride=2, batch=40, lr=2.5e-4
+- Loss: L1 teacher-forcing + 2-step rollout (faithful V-JEPA 2-AC)
+
+### Ablation queue (tự động via `scripts/train_overnight.sh`, `logs/overnight.log`):
+1. ✅ **vjepa_ac_pool** (baseline pooled) — xong ep23, ratio=0.867
+2. 🔄 **vjepa_ac_car_minimal** (state=[speed,gz] 2-D) — đang chạy ep8+, ~19 min/epoch
+   - So sánh sơ bộ ep6-8: minimal val ~0.003–0.013 cao hơn v1 (10-D) → 10-D tốt hơn một chút
+   - Xem: `tail -5 logs/train_ac_car_minimal.log`
 3. ⏳ **vjepa_ac_car_residual** (predict_residual=True) — chờ sau minimal
-- Queue: `logs/overnight.log` (tự động via `scripts/train_overnight.sh`)
 
-### Khi bạn dậy, chạy:
-```bash
-PYTHONPATH=src python scripts/compare_experiments.py   # so sánh tất cả checkpoint đã train
-tail -5 logs/train_ac_car_minimal.log                  # xem ablation minimal đang chạy
-tail -5 logs/overnight.log                             # queue status
-```
-
-### Việc tiếp (sau khi ablations xong):
-1. **Quyết định state dim**: minimal vs full 10-D (đọc rollout ratio từ compare_experiments.py)
-2. **eval_goal_reaching**: CEM planning thật trên val set (dùng `CEMPlannerAC` + `CarDynamics`)
-3. **Chốt 384px**: encode lại data với 384px → train v2 (expensive, cuối cùng)
-4. **inference_loop.py**: phone → PC → action → xe (Phase 4)
+### Việc tiếp theo (phiên sau):
+1. **Đọc kết quả ablations** khi xong: `PYTHONPATH=src python scripts/compare_experiments.py`
+2. **Viết `scripts/inference_loop.py`** (Phase 4 — CHƯA CÓ):
+   - Kiến trúc: phone TCP stream (JPEG+meta) → PC encode V-JEPA → CEMPlannerAC → action
+   - Gửi action về: hiện chỉ có phone→PC (một chiều), cần thêm PC→phone→ESP32
+   - **Blocker**: `pc_stream_view.py` chỉ nhận, không gửi ngược. Android app chưa relay action từ PC.
+   - Nếu có dongle ESP-NOW: có thể dùng PC→dongle serial thay vì qua phone
+3. **Fix `robot/capture/controller.py`**: đổi UDP → serial (dongle), throttle Mode-3 linear map, clamp [-0.16, 0.15]
+4. **eval_goal_reaching offline**: CEM planning trên val set, dùng `CEMPlannerAC` + `CarDynamics`
+5. **Thu thêm data** nếu ra công viên (FlySky + phone như bình thường)
 
 ## 🧭 2026-06-08 — VISUAL NAVIGATION (graph subgoal) + control trên servo hiện tại
 
