@@ -103,13 +103,17 @@ class CEMPlannerAC:
     the predictor sees ``raw*action_scale`` and z-scored state; the goal/context tokens must
     be per-token layer-normed (the same normalisation the dataset applies). Returns the first
     raw action.
+
+    ``domain``: models trained multi-root (KDS+TowerPro) take action_dim=3 with a constant
+    domain token appended (0=KDS, 1=TowerPro). Set it here (or per-call in ``plan``/``score``)
+    so the planner appends the same column the dataset did; None = 2-D action model.
     """
 
     def __init__(self, model, dynamics, state_mean, state_std,
                  action_scale=(1.0, 6.67), horizon: int = 4, n_samples: int = 128,
                  n_elite: int = 16, n_iter: int = 4, throttle_min=-0.16, throttle_max=0.15,
                  history: int = 2, init_std: float = 0.5, min_std: float = 0.05,
-                 prev_action_idx=None, device: str = "cuda"):
+                 prev_action_idx=None, domain=None, device: str = "cuda"):
         self.model = model.eval()
         self.dyn = dynamics
         self.sm = state_mean.to(device).float(); self.ss = state_std.to(device).float()
@@ -121,6 +125,7 @@ class CEMPlannerAC:
         # P2: nếu state có prev-action (2 cột cuối), truyền tuple chỉ số → rollout set chúng = action
         # ứng viên của bước trước (khớp lúc train: state[t] chứa action[t-1]). None = state không có prev-action.
         self.prev_idx = list(prev_action_idx) if prev_action_idx is not None else None
+        self.domain = None if domain is None else float(domain)
         self.device = device
 
     def _states_raw(self, s0_raw, raw_actions):
@@ -137,18 +142,23 @@ class CEMPlannerAC:
         return torch.stack(out, dim=1)
 
     @torch.no_grad()
-    def score(self, z0, s0_raw, goal, raw_actions):
-        """z0 (1,N,D) z-scored, s0_raw (2,) raw, goal (N,D) z-scored, raw_actions (B,H,2)."""
+    def score(self, z0, s0_raw, goal, raw_actions, domain=None):
+        """z0 (1,N,D) z-scored, s0_raw (S,) raw, goal (N,D) z-scored, raw_actions (B,H,2).
+        ``domain`` overrides the planner default for this call (multi-root models)."""
         B = raw_actions.size(0)
-        states_z = (self._states_raw(s0_raw, raw_actions) - self.sm) / self.ss      # (B,H,2)
+        states_z = (self._states_raw(s0_raw, raw_actions) - self.sm) / self.ss      # (B,H,S)
         scaled = raw_actions * self.ascale                                          # (B,H,2)
+        dom = self.domain if domain is None else float(domain)
+        if dom is not None:                                                          # action_dim=3 model
+            dcol = torch.full((B, scaled.size(1), 1), dom, device=scaled.device, dtype=scaled.dtype)
+            scaled = torch.cat([scaled, dcol], dim=-1)                               # (B,H,3)
         z0b = z0.unsqueeze(0).expand(B, -1, -1, -1).contiguous()                    # (B,1,N,D)
         preds = self.model.rollout(z0b, states_z, scaled, history=self.history)     # (B,H,N,D)
         final = preds[:, -1]                                                        # (B,N,D)
         return (final - goal.unsqueeze(0)).abs().mean(dim=(1, 2))                    # (B,)
 
     @torch.no_grad()
-    def plan(self, z0, s0_raw, goal, return_info: bool = False):
+    def plan(self, z0, s0_raw, goal, return_info: bool = False, domain=None):
         z0 = z0.to(self.device).float(); goal = goal.to(self.device).float()
         mu = torch.zeros(self.H, 2, device=self.device)
         mu[:, 1] = (self.low[1] + self.high[1]) / 2                                 # throttle mid-box
@@ -157,7 +167,7 @@ class CEMPlannerAC:
         for _ in range(self.n_iter):
             eps = torch.randn(self.n_samples, self.H, 2, device=self.device)
             samp = torch.max(torch.min(mu + sigma * eps, self.high), self.low)
-            sc = self.score(z0, s0_raw, goal, samp)
+            sc = self.score(z0, s0_raw, goal, samp, domain=domain)
             elite = torch.topk(sc, self.n_elite, largest=False).indices
             mu = samp[elite].mean(0); sigma = samp[elite].std(0).clamp_min(self.min_std)
             if best_s is None or sc[elite[0]] < best_s:

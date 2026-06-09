@@ -43,7 +43,7 @@ import torch.nn.functional as F
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "robot" / "capture"))
 import controller as ctl  # noqa: E402
 
-from jepa_wm.data.dataset import split_sessions  # noqa: E402
+from jepa_wm.data.dataset import frozen_split  # noqa: E402
 from jepa_wm.engine.encode import IMAGENET_MEAN, IMAGENET_STD, load_encoder  # noqa: E402
 from jepa_wm.models import build_model  # noqa: E402
 from jepa_wm.nav.graph import TopoGraph  # noqa: E402
@@ -201,19 +201,29 @@ def build_state(meta: dict, columns) -> torch.Tensor:
     return torch.tensor(vals, dtype=torch.float32)
 
 
-def fit_dynamics(cfg, columns, speed_idx, yaw_idx, dt):
-    """Fit CarDynamics on the model's TRAIN split; fall back to unit coeffs if data missing."""
+def fit_dynamics(cfg, ckpt_path, speed_idx, yaw_idx, dt):
+    """Fit CarDynamics on the model's TRAIN split (frozen split.json next to the ckpt,
+    same as eval_goal_reaching_ac); supports both multi-root (data.roots) and legacy
+    single-root cfg. Falls back to unit coeffs if data missing — but warns LOUDLY,
+    because unit coefficients are far off the fitted ones (~1.8/0.09/0.14)."""
     try:
-        patch_dir, raw_dir = cfg["data"]["patch_dir"], cfg["data"]["raw_dir"]
-        sessions = sorted(p.stem for p in Path(patch_dir).glob("*.npy"))
-        train_s, _ = split_sessions(sessions, val_frac=cfg["data"].get("val_frac", 0.2),
-                                    seed=cfg.get("seed", 0))
-        dyn = CarDynamics.fit(raw_dir, train_s, dt=dt, stride=cfg["data"].get("frame_stride", 2),
+        d = cfg["data"]
+        roots = d.get("roots") or [{"patch_dir": d["patch_dir"], "raw_dir": d["raw_dir"]}]
+        for r in roots:
+            r["_sessions"] = sorted(p.stem for p in Path(r["patch_dir"]).glob("*.npy"))
+        sessions = sorted(s for r in roots for s in r["_sessions"])
+        split_path = Path(ckpt_path).parent / "split.json"
+        train_s, _, _ = frozen_split(split_path, sessions, val_frac=d.get("val_frac", 0.2),
+                                     seed=cfg.get("seed", 0), save=False)
+        tset = set(train_s)
+        pairs = [(r["raw_dir"], [s for s in r["_sessions"] if s in tset]) for r in roots]
+        dyn = CarDynamics.fit(pairs, dt=dt, stride=d.get("frame_stride", 2),
                               speed_idx=speed_idx, yaw_idx=yaw_idx)
         print(f"[infer] dynamics (fit): {dyn}")
         return dyn
     except Exception as e:
-        print(f"[infer] dynamics fit failed ({e}); using unit coeffs")
+        print(f"[infer] ⚠️ dynamics fit FAILED ({e}); dùng unit coeffs k=1 — SAI LỆCH LỚN so với "
+              f"fit thật (~k_thr 1.8 / k_drag 0.09 / k_yaw 0.14). Kiểm tra data/latents path!")
         return CarDynamics(speed_idx=speed_idx, yaw_idx=yaw_idx, dt=dt)
 
 
@@ -253,6 +263,9 @@ def main():
     ap.add_argument("--dt", type=float, default=0.22)
     ap.add_argument("--fp16-encoder", action="store_true",
                     help="encoder fp16 (~nửa VRAM, hướng tới <6GB cho laptop; mặc định bf16-autocast)")
+    ap.add_argument("--domain-id", type=float, default=1.0,
+                    help="domain token cho model multi-root (0=KDS, 1=TowerPro — servo HIỆN TẠI trên xe). "
+                         "Chỉ dùng khi checkpoint train multi-root (action_dim=3); model cũ bỏ qua.")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = ap.parse_args()
     if cv2 is None:
@@ -273,13 +286,20 @@ def main():
     yaw_idx = cols.index("gz") if "gz" in cols else (cols.index("yaw_rate") if "yaw_rate" in cols else 1)
     prev_idx = (cols.index("prev_steer"), cols.index("prev_throttle")) if "prev_steer" in cols else None
 
+    # multi-root checkpoint (KDS+TowerPro) -> action_dim=3 with appended domain token
+    need_domain = ("roots" in cfg["data"]) or cfg["model"].get("action_dim", 2) == len(ascale) + 1
+    domain = float(args.domain_id) if need_domain else None
+    if need_domain:
+        print(f"[infer] multi-root model -> domain token = {domain:g} (0=KDS, 1=TowerPro)")
+
     enc = load_encoder(args.device)
     encoders = Encoders(enc, args.device, fp16=args.fp16_encoder)
-    dyn = fit_dynamics(cfg, cols, speed_idx, yaw_idx, args.dt)
+    dyn = fit_dynamics(cfg, args.checkpoint, speed_idx, yaw_idx, args.dt)
     planner = CEMPlannerAC(model, dyn, state_mean, state_std, action_scale=ascale,
                            horizon=args.horizon, n_samples=args.samples, n_elite=args.elite,
                            n_iter=args.iters, throttle_min=0.0,           # forward-only (no surprise reverse)
-                           throttle_max=args.throttle_cap, prev_action_idx=prev_idx, device=args.device)
+                           throttle_max=args.throttle_cap, prev_action_idx=prev_idx,
+                           domain=domain, device=args.device)
 
     # --- goal ---
     graph = goal_node = goal_nav = goal_tokens = None

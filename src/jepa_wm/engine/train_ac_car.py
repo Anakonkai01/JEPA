@@ -62,6 +62,7 @@ def _losses(model, b, device):
     # 2-step rollout: predict z[:,1] from z[:,:1], feed back, predict z[:,2]
     if z.size(1) >= 3:
         p1 = model(z[:, :1], a[:, :1], s[:, :1])[:, -1:]        # ẑ1
+        p1 = F.layer_norm(p1, (p1.size(-1),))                   # re-LN fed-back rep (= rollout())
         ctx = torch.cat([z[:, :1], p1], dim=1)                  # (B,2,N,D)
         p2 = model(ctx, a[:, :2], s[:, :2])[:, -1:]             # ẑ2
         ro = F.l1_loss(p2[:, 0], z[:, 2])
@@ -148,13 +149,13 @@ def train(cfg: dict) -> dict:
                          "sessions": r["_val"], "domain_id": r.get("domain_id", 0)}
                         for r in raw_roots]
         kw = dict(horizon=T, frame_stride=stride, state_columns=cols, action_scale=ascale,
-                  state_mean=state_mean, state_std=state_std)
+                  state_mean=state_mean, state_std=state_std, max_gap=d.get("max_gap"))
         train_ds = ACClipDataset(roots=train_roots_ds, **kw)
         val_ds = ACClipDataset(roots=val_roots_ds, **kw)
     else:
         r0 = raw_roots[0]
         kw = dict(horizon=T, frame_stride=stride, state_columns=cols, action_scale=ascale,
-                  state_mean=state_mean, state_std=state_std)
+                  state_mean=state_mean, state_std=state_std, max_gap=d.get("max_gap"))
         train_ds = ACClipDataset(r0["patch_dir"], r0["raw_dir"], r0["_train"], **kw)
         val_ds = ACClipDataset(r0["patch_dir"], r0["raw_dir"], r0["_val"], **kw)
     print(f"[ac_car] windows: {len(train_ds)} train / {len(val_ds)} val | state {cols}")

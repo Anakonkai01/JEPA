@@ -69,8 +69,14 @@ def main():
     state_std = ckpt["state_std"].to(args.device).float()
 
     d_ = cfg["data"]
-    patch_dir = args.patch_dir or d_["patch_dir"]
-    raw_dir = args.raw_dir or d_["raw_dir"]
+    # Multi-root (roots: [{patch_dir, raw_dir, domain_id}]) or legacy single-root cfg.
+    raw_roots = d_.get("roots")
+    if raw_roots is None:
+        raw_roots = [{"patch_dir": args.patch_dir or d_["patch_dir"],
+                      "raw_dir": args.raw_dir or d_["raw_dir"], "domain_id": 0}]
+    elif args.patch_dir or args.raw_dir:
+        ap.error("--patch-dir/--raw-dir overrides only apply to single-root checkpoints")
+    use_domain = len(raw_roots) > 1 or any(int(r.get("domain_id", 0)) != 0 for r in raw_roots)
     cols = tuple(d_.get("state_columns", ["speed", "gx", "gy", "gz", "ax", "ay", "az", "rx", "ry", "rz"]))
     stride = d_.get("frame_stride", 2)
     ascale = tuple(d_.get("action_scale", [1.0, 6.67]))
@@ -80,19 +86,24 @@ def main():
     yaw_idx = cols.index("gz") if "gz" in cols else (cols.index("yaw_rate") if "yaw_rate" in cols else 1)
     prev_idx = (cols.index("prev_steer"), cols.index("prev_throttle")) if "prev_steer" in cols else None
 
-    sessions = sessions_with_patches(patch_dir)
+    for r in raw_roots:
+        r["_sessions"] = sessions_with_patches(r["patch_dir"])
+    sessions = sorted(s for r in raw_roots for s in r["_sessions"])
     # Reuse the EXACT train/val split frozen by training (split.json next to the ckpt);
     # save=False so eval never creates one — falls back to the deterministic split if absent.
     split_path = Path(args.checkpoint).parent / "split.json"
     train_s, val_s, sinfo = frozen_split(split_path, sessions, val_frac=d_.get("val_frac", 0.2),
                                          seed=cfg.get("seed", 0), save=False)
+    train_set, val_set = set(train_s), set(val_s)
     print(f"[goal_reaching_ac] {args.checkpoint}")
     src = f"FROZEN <- {split_path}" if sinfo["frozen"] else "deterministic (no split.json found)"
-    print(f"  {len(val_s)} val sessions [{src}] | state {cols} (speed@{speed_idx}, yaw@{yaw_idx}) | device {args.device}")
+    print(f"  {len(val_s)} val sessions [{src}] | state {cols} (speed@{speed_idx}, yaw@{yaw_idx}) "
+          f"| domain={'on' if use_domain else 'off'} | device {args.device}")
     print(f"  action box: steer [-1,1], throttle [{args.throttle_min},{args.throttle_max}] | action_scale {ascale}")
 
     # fit the bicycle-model coefficients on the TRAIN sessions (held out from eval)
-    dyn = CarDynamics.fit(raw_dir, train_s, dt=args.dt, stride=stride,
+    fit_pairs = [(r["raw_dir"], [s for s in r["_sessions"] if s in train_set]) for r in raw_roots]
+    dyn = CarDynamics.fit(fit_pairs, dt=args.dt, stride=stride,
                           speed_idx=speed_idx, yaw_idx=yaw_idx)
     print(f"  dynamics: {dyn}\n")
 
@@ -105,8 +116,18 @@ def main():
     for d in args.distances:
         # RAW states (state_mean=None) and RAW actions (action_scale=1) — the planner applies
         # the train-time normalisation itself; tokens are always per-token LN'd by the dataset.
-        ds = ACClipDataset(patch_dir, raw_dir, val_s, horizon=d + 1, frame_stride=stride,
-                           state_columns=cols, action_scale=(1.0, 1.0), state_mean=None)
+        # Multi-root: the dataset appends the raw domain id as the LAST action column.
+        ds_kw = dict(horizon=d + 1, frame_stride=stride, state_columns=cols,
+                     action_scale=(1.0, 1.0), state_mean=None, max_gap=d_.get("max_gap"))
+        if use_domain:
+            val_roots = [{"patch_dir": r["patch_dir"], "raw_dir": r["raw_dir"],
+                          "sessions": [s for s in r["_sessions"] if s in val_set],
+                          "domain_id": r.get("domain_id", 0)} for r in raw_roots]
+            ds = ACClipDataset(roots=val_roots, **ds_kw)
+        else:
+            r0 = raw_roots[0]
+            ds = ACClipDataset(r0["patch_dir"], r0["raw_dir"],
+                               [s for s in r0["_sessions"] if s in val_set], **ds_kw)
         if len(ds) == 0:
             print(f"{d:>3}  (no windows)")
             continue
@@ -121,18 +142,20 @@ def main():
             item = ds[int(i)]
             z = item["tokens"].to(args.device).float()       # (d+1, N, D) LN'd
             s_raw = item["states"].to(args.device).float()   # (d+1, S) RAW
-            a_raw = item["actions"].to(args.device).float()  # (d+1, 2) RAW
+            a_raw = item["actions"].to(args.device).float()  # (d+1, 2|3) RAW (+domain col)
+            dom = float(a_raw[0, -1]) if use_domain else None
+            a_raw = a_raw[:, :2]
             z0 = z[:1]                                        # (1, N, D) context frame
             goal = z[d]                                       # (N, D)
             s0_raw = s_raw[0]                                 # (S,)
             teacher = a_raw[:d].unsqueeze(0)                  # (1, d, 2) the d real transitions
 
-            _, info = planner.plan(z0, s0_raw, goal, return_info=True)
+            _, info = planner.plan(z0, s0_raw, goal, return_info=True, domain=dom)
             cem_seq = info["sequence"].to(args.device)
             cem_s.append(info["score"])
-            tea_s.append(float(planner.score(z0, s0_raw, goal, teacher)[0]))
+            tea_s.append(float(planner.score(z0, s0_raw, goal, teacher, domain=dom)[0]))
             rnd = low + (high - low) * torch.rand(args.samples, d, 2, device=args.device)
-            rsc = planner.score(z0, s0_raw, goal, rnd)
+            rsc = planner.score(z0, s0_raw, goal, rnd, domain=dom)
             rnd_mean_s.append(float(rsc.mean()))
             rnd_best_s.append(float(rsc.min()))
             dsteer.append(abs(float(cem_seq[0, 0] - teacher[0, 0, 0])))

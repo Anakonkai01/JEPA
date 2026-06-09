@@ -6,9 +6,9 @@ Each frame is encoded INDEPENDENTLY (image-encoder mode, как V-JEPA 2-AC), no
 
     frame (B,3,1,256,256) -> encoder -> (B, 256, 1024) patch tokens   [256px -> 16x16 grid]
 
-Per session we write ``<out>/<session>.pt = {"tokens": (N, Ntok, 1024) fp16,
-"frame_idx": (N,)}`` aligned 1:1 with ``actions_synced.csv``. At 256px this is
-~0.5 MB/frame; the whole TowerPro set (~125k frames) is ~66 GB.
+Per session we write ``<out>/<session>.npy`` = (N, Ntok, 1024) float16, row i aligned
+1:1 with row i of ``actions_synced.csv`` (memmap-able for lazy loading). At 256px this
+is ~0.5 MB/frame; the whole TowerPro set (~125k frames) is ~66 GB (384px ≈ 2.25×).
 
     PYTHONPATH=src python scripts/encode_patch.py --raw-dir data/raw_towerpro \
         --out-dir data/latents_towerpro_patch --image-size 256

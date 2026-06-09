@@ -102,7 +102,11 @@ class ACClipDataset(Dataset):
     def __init__(self, patch_dir=None, raw_dir=None, sessions=None, horizon=4, frame_stride=2,
                  state_columns=DEFAULT_COLUMNS, action_scale=(1.0, 6.67),
                  state_mean=None, state_std=None,
-                 roots=None):
+                 roots=None, max_gap=None):
+        """``max_gap``: if set, drop windows whose frame_idx span exceeds
+        ``span_rows * max_gap`` — i.e. windows crossing dropped-frame holes in
+        actions_synced.csv (telemetry gap / mode!=1), where the real Δt between
+        sampled rows is larger than frame_stride suggests. None = keep all (legacy)."""
         self.T = horizon; self.stride = frame_stride
         self.cols = tuple(state_columns)
         self.action_scale = torch.tensor(action_scale, dtype=torch.float32)
@@ -136,6 +140,8 @@ class ACClipDataset(Dataset):
                 key = s   # session names are globally unique (KDS has _kds suffix)
                 self._meta[key] = (act, state, rows_in_cache, str(pt), domain_id)
                 for i in range(len(fidx) - span):
+                    if max_gap is not None and fidx[i + span] - fidx[i] > span * max_gap:
+                        continue          # window crosses a dropped-frame hole -> wrong Δt
                     self.index.append((key, i))
 
     def __len__(self):

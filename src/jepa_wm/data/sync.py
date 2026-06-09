@@ -28,7 +28,8 @@ import os
 
 # src/jepa_wm/data/sync.py -> repo root is 4 levels up (data -> jepa_wm -> src -> JEPA)
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
-RAW = os.path.join(ROOT, "data", "raw")
+# 2026-06-09: data/raw đổi tên -> raw_kds + raw_towerpro (raw_mixed = symlink, dedupe bằng realpath)
+RAW_GLOBS = [os.path.join(ROOT, "data", d, "session_*") for d in ("raw", "raw_kds", "raw_towerpro")]
 # Session rác (xe đứng yên / quá ngắn) — xác định khi audit, xem memory dataset-v1-onboard.
 # Dataset is now curated by presence on disk (junk sessions deleted 2026-06-07 per the
 # operator's keep-list). Keep this set empty unless a bad session needs excluding without deleting.
@@ -171,14 +172,22 @@ def sync_session(d, dcam_ms, tol_ms, keep_all_modes, do_imu):
 
 def main():
     p = argparse.ArgumentParser()
-    p.add_argument("session", nargs="?", help="1 session dir (mặc định: tất cả trong data/raw)")
+    p.add_argument("session", nargs="?", help="1 session dir (mặc định: tất cả trong data/raw_kds + data/raw_towerpro)")
     p.add_argument("--dcam-ms", type=float, default=100.0, help="δ_cam trừ cho data CŨ (không có cột dcam_ms)")
     p.add_argument("--tol-ms", type=float, default=60.0, help="gap telemetry tối đa quanh frame (ms)")
     p.add_argument("--keep-all-modes", action="store_true", help="không loại frame theo mode")
     p.add_argument("--no-imu", action="store_true", help="bỏ xuất imu_synced.csv")
     a = p.parse_args()
 
-    dirs = [a.session] if a.session else sorted(glob.glob(os.path.join(RAW, "session_*")))
+    if a.session:
+        dirs = [a.session]
+    else:
+        seen, dirs = set(), []
+        for g in RAW_GLOBS:
+            for d in sorted(glob.glob(g)):
+                rp = os.path.realpath(d)
+                if rp not in seen:
+                    seen.add(rp); dirs.append(d)
     tot_k = tot_d = 0
     print(f"{'session':>24} {'kept':>6} {'dropped':>8}  note")
     for d in dirs:

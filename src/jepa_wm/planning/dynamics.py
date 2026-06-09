@@ -47,25 +47,32 @@ class CarDynamics:
         return out
 
     @classmethod
-    def fit(cls, raw_dir, sessions, dt=0.22, stride=2, speed_idx=0, yaw_idx=3):
-        """Least-squares fit k_thr,k_drag,k_yaw from data at the clip frame-stride."""
+    def fit(cls, raw_dir, sessions=None, dt=0.22, stride=2, speed_idx=0, yaw_idx=3):
+        """Least-squares fit k_thr,k_drag,k_yaw from data at the clip frame-stride.
+
+        ``raw_dir`` is either one dir (with ``sessions`` = list of names) or a list of
+        ``(raw_dir, sessions)`` pairs (multi-root KDS+TowerPro training)."""
+        pairs = raw_dir if isinstance(raw_dir, (list, tuple)) else [(raw_dir, sessions or [])]
         sp_cur, sp_nxt, thr, steer_sp, yaw = [], [], [], [], []
-        for s in sessions:
-            d = Path(raw_dir) / s
-            try:
-                st, fidx = load_state(d, ("speed", "yaw_rate"))
-            except Exception:
-                continue
-            acts = {int(r["frame_idx"]): (float(r["steering"]), float(r["throttle"]))
-                    for r in csv.DictReader(open(d / "actions_synced.csv"))}
-            speed = st[:, 0]; yr = st[:, 1]
-            for i in range(len(fidx) - stride):
-                f = int(fidx[i])
-                if f not in acts:
+        for rd, slist in pairs:
+            for s in (slist or []):
+                d = Path(rd) / s
+                try:
+                    st, fidx = load_state(d, ("speed", "yaw_rate"))
+                except Exception:
                     continue
-                sp_cur.append(speed[i]); sp_nxt.append(speed[i + stride])
-                str_, th_ = acts[f]
-                thr.append(th_); steer_sp.append(str_ * speed[i + stride]); yaw.append(yr[i])
+                acts = {int(r["frame_idx"]): (float(r["steering"]), float(r["throttle"]))
+                        for r in csv.DictReader(open(d / "actions_synced.csv"))}
+                speed = st[:, 0]; yr = st[:, 1]
+                for i in range(len(fidx) - stride):
+                    f = int(fidx[i])
+                    if f not in acts:
+                        continue
+                    sp_cur.append(speed[i]); sp_nxt.append(speed[i + stride])
+                    str_, th_ = acts[f]
+                    # step(): yaw' = k_yaw * steer * speed' — pair the NEXT-step yaw with
+                    # (steer_now * speed_next), not the current yaw (off-by-one otherwise).
+                    thr.append(th_); steer_sp.append(str_ * speed[i + stride]); yaw.append(yr[i + stride])
         sp_cur = np.array(sp_cur); sp_nxt = np.array(sp_nxt); thr = np.array(thr)
         # Δspeed = (k_thr*throttle - k_drag*speed)*dt  ->  regress Δspeed/dt on [throttle, -speed]
         dsp = (sp_nxt - sp_cur) / dt

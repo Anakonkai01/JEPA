@@ -1,9 +1,51 @@
 # HANDOFF — đọc cái này trước khi tiếp tục
 
-> Tóm tắt tình hình cho phiên sau. Cập nhật: **2026-06-09**.
+> Tóm tắt tình hình cho phiên sau. Cập nhật: **2026-06-10**.
 > Nền đầy đủ: [../CLAUDE.md](../CLAUDE.md) · [../README.md](../README.md) · [PLAN.md](PLAN.md) ·
 > [LeWorldModel.md](LeWorldModel.md) · [../robot/android/README.md](../robot/android/README.md) ·
 > [../robot/android/DRIVE_SETUP.md](../robot/android/DRIVE_SETUP.md). Cập nhật file này mỗi khi trạng thái đổi.
+
+## 🔎 2026-06-10 — RETRAIN 384 ĐANG CHẠY + RÀ SOÁT CODE TOÀN PIPELINE (fix P0 cho inference/eval)
+
+**Retrain 384/P2 ĐANG CHẠY** (start 2026-06-09 23:41, PID xem `nvidia-smi`): ep0 train 0.9345 /
+val 0.7937 / **10451s ≈ 2.9h/EPOCH** (chậm hơn ước 15-25h nhiều — 60 ep = ~7 ngày; patience 12,
+v1 cũ best @ep14 → kỳ vọng early-stop ~ep26 ≈ 3 ngày ≈ **xong ~2026-06-13, SÁT deadline 15**).
+- ⚠️ **`logs/train_ac_car_384.log` RỖNG vì `conda run` nuốt stdout** — theo dõi bằng
+  `tail -f wandb/latest-run/files/output.log` (hoặc wandb web `rc-car-jepa`). Lần sau chạy
+  `conda run --live-stream` hoặc gọi thẳng `~/miniforge3/envs/ai/bin/python`.
+- ⚠️ torch.compile **hit recompile_limit(8)** (forward bị gọi T=4/1/2 trong `_losses` + batch lẻ ở val)
+  → một phần chạy eager. Lần sau cân nhắc `torch.compile(model, dynamic=True)` hoặc nâng limit.
+- `last.pt`/`best.pt` ghi mỗi epoch → có thể eval giữa chừng bằng `best.pt`.
+
+**Rà soát code (phiên 2026-06-10) — ĐÃ SỬA + verify (CPU smoke test, không đụng GPU):**
+- **P0 `CEMPlannerAC` thiếu domain token** — model mới action_dim=3 ([steer,throttle,domain]) nhưng
+  planner chỉ sample 2-D → sẽ CRASH với checkpoint mới. Fix: `domain=` param (0=KDS, **1=TowerPro**),
+  append cột constant sau khi scale (khớp `ACClipDataset`). Override per-call `plan(..., domain=)`.
+- **P0 `eval_goal_reaching_ac.py`** đọc `cfg.data.patch_dir` (không tồn tại ở cfg multi-root) → KeyError.
+  Fix: hỗ trợ `data.roots`, dataset multi-root (domain ở cột action cuối, tách ra trước khi đưa teacher
+  vào planner). ✅ đã chạy thật end-to-end với best.pt ep0 (CPU, tiny) — plumbing OK.
+- **P0 `inference_loop.py`**: (1) `fit_dynamics` cũng đọc `patch_dir` → exception → âm thầm fallback
+  **unit coeffs k=1** (sai ~10× so với fit 1.59/0.08/0.09!) — fix multi-root + dùng **frozen split.json**
+  cạnh checkpoint (trước dùng `split_sessions` có thể lệch split). (2) thêm `--domain-id` (default 1 =
+  TowerPro, servo hiện tại) tự bật khi checkpoint multi-root.
+- **P1 `CarDynamics.fit` off-by-one yaw**: regress yaw[i] thay vì yaw[i+stride] (step() định nghĩa
+  yaw' = k_yaw·steer·speed') — đã fix; k_yaw đổi 0.142→**0.088** (fit multi-root KDS+TowerPro mới).
+  Hệ số mới: **k_thr=1.588, k_drag=0.078, k_yaw=0.088**.
+- **P1 train/rollout LN mismatch**: `_losses` 2-step rollout feed ẑ1 lại KHÔNG layer-norm, còn
+  `rollout()` (eval+CEM) có LN → đã thêm LN trong `_losses` (chỉ ảnh hưởng run SAU, run đang chạy
+  dùng code cũ trong RAM — chấp nhận, lệch nhỏ).
+- **`ACClipDataset` thêm `max_gap`** (lọc window vắt qua lỗ frame-drop). **Đo trên data thật: 0%**
+  window dính gap (181k window train) → run hiện tại KHÔNG bị ảnh hưởng; param chỉ phòng thủ
+  (`data.max_gap: 2` nếu muốn bật).
+- **`sync.py` default path stale** `data/raw` (đã đổi tên) → giờ quét `raw` + `raw_kds` +
+  `raw_towerpro`, dedupe symlink bằng realpath.
+- Ghi chú nhỏ: prev-action lúc train = action 1 ROW trước (~110ms), lúc CEM = action 1 STEP trước
+  (220ms), lúc inference = telemetry hiện tại — lệch timescale nhẹ, chấp nhận được (lái người mượt).
+  `state.py` zero-fill frame thiếu IMU (hiếm). VRAM train 15.7/16.3GB — sát trần, đừng chạy gì thêm trên GPU.
+
+**Việc sau khi train xong:** `eval_goal_reaching_ac.py` (đã multi-root) → encode pooled 384 (4b) →
+rebuild graph → chạy thật bãi thoáng. Research JEPA variants: xem mục cuối phiên chat 2026-06-10
+(PiJEPA = warm-start MPPI bằng policy — áp dụng được cho CEM; NWM/DINO-WM cùng họ frozen-encoder).
 
 ## ▶️ VIỆC NGAY (2026-06-09 tối) — THỰC THI RETRAIN 384/P2 (đã chuẩn bị xong, CHƯA chạy)
 **Data recovery (lạng→lùi→chỉnh) ĐÃ UP DRIVE đầy đủ.** Toàn bộ CODE retrain-prep đã commit+push
