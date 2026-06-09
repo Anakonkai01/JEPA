@@ -31,8 +31,18 @@ class SensorLogger(
     private val handler = Handler(sensorThread.looper)
     private val TAG = "SensorLogger"
 
+    // Giá trị cảm biến MỚI NHẤT — cập nhật LUÔN (kể cả khi không ghi) để stream meta lúc AUTO/inference
+    // có state cho world model. Thứ tự khớp DEFAULT_COLUMNS [speed, gx,gy,gz, ax,ay,az, rx,ry,rz].
+    @Volatile var accel = floatArrayOf(0f, 0f, 0f); private set
+    @Volatile var gyro = floatArrayOf(0f, 0f, 0f); private set
+    @Volatile var rot = floatArrayOf(0f, 0f, 0f); private set
+    @Volatile var gpsSpeed = 0f; private set
+    @Volatile var gpsLat = 0.0; private set    // cho localize (GPS-prior chống aliasing); 0 = chưa fix
+    @Volatile var gpsLon = 0.0; private set
+
     private val locListener = object : LocationListener {
         override fun onLocationChanged(loc: Location) {
+            gpsSpeed = loc.speed; gpsLat = loc.latitude; gpsLon = loc.longitude
             if (writer.active) writer.logGps(SystemClock.elapsedRealtime(), loc)
         }
         override fun onProviderDisabled(p: String) {}
@@ -67,6 +77,12 @@ class SensorLogger(
     }
 
     override fun onSensorChanged(e: SensorEvent) {
+        // Cập nhật latest LUÔN (cho meta stream); chỉ GHI CSV khi đang record.
+        when (e.sensor.type) {
+            Sensor.TYPE_ACCELEROMETER   -> accel = e.values.copyOf(3)
+            Sensor.TYPE_GYROSCOPE       -> gyro = e.values.copyOf(3)
+            Sensor.TYPE_ROTATION_VECTOR -> rot = e.values.copyOf(3)
+        }
         if (!writer.active) return
         val t = SystemClock.elapsedRealtime()
         when (e.sensor.type) {

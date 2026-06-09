@@ -63,6 +63,19 @@ class SessionWriter(private val ctx: Context) {
         // Locale.US BẮT BUỘC: locale VN format dấu phẩy thập phân → vỡ CSV (0,0020).
         actions?.write("$count,$tMs,${"%.4f".format(Locale.US, steer)},${"%.4f".format(Locale.US, throt)}," +
             "$seq,$esp,$mode,${"%.1f".format(Locale.US, dcamMs)}\n")
+        // Flush định kỳ (~3s @10Hz): nếu app bị OS kill / rút USB / hết pin giữa buổi thì chỉ mất
+        // vài dòng cuối thay vì TOÀN BỘ CSV (frame ghi ngay, nhưng CSV buffer mất hết khi crash).
+        if (count % 30 == 0) flushAll()
+    }
+
+    /** Đẩy mọi buffer CSV xuống đĩa (không đóng) — gọi định kỳ để chống mất data khi crash. */
+    private fun flushAll() {
+        try { actions?.flush() } catch (_: Exception) {}
+        try { telem?.flush() } catch (_: Exception) {}
+        try { accelW?.flush() } catch (_: Exception) {}
+        try { gyroW?.flush() } catch (_: Exception) {}
+        try { rotW?.flush() } catch (_: Exception) {}
+        try { gpsW?.flush() } catch (_: Exception) {}
     }
 
     /** Stream telemetry 50Hz thô (để re-align offline). */

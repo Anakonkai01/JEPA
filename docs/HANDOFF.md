@@ -5,6 +5,74 @@
 > [LeWorldModel.md](LeWorldModel.md) · [../robot/android/README.md](../robot/android/README.md) ·
 > [../robot/android/DRIVE_SETUP.md](../robot/android/DRIVE_SETUP.md). Cập nhật file này mỗi khi trạng thái đổi.
 
+## 🚗 2026-06-09 (đợt 2) — PHASE 4 closed-loop scaffold + goal-reaching eval + app pass
+
+**Chốt:** ablation dừng, **v1 (full 10-D IMU) = model chuẩn** cho tới khi xe chạy thật được
+(user: "kiểu gì hôm nay cũng thu thêm data… ablation để sau"). minimal (2-D) train dở ep8
+(`checkpoints/vjepa_ac_car_minimal/`, val 0.5654 ~ kém v1 chút), residual KHÔNG train. Đừng coi
+minimal/residual là kết luận.
+
+### Task 3 — `scripts/eval_goal_reaching_ac.py` (MỚI) — goal-reaching offline cho v1
+CEMPlannerAC + CarDynamics trên patch-token model (cái `eval_goal_reaching.py` cũ chỉ chạy pooled
+`CEMPlannerLatent`). Dataset trả tokens LN'd, state RAW (state_mean=None), action RAW (scale=1) →
+planner tự chuẩn hoá. CarDynamics.fit trên train split (k_thr=1.84, k_drag=0.09, k_yaw=0.14).
+Kết quả val (v1, 60 window/d) — **CEM/mean<1 = planning hơn random; CEM/tea~1 = sát người lái:**
+
+| d | CEM/rnd_mean | CEM/teacher | Δsteer | Δthrot |
+|---|---|---|---|---|
+| 1 | 0.74 | 0.96 | 0.055 | 0.035 |
+| 2 | 0.75 | 0.92 | 0.144 | 0.020 |
+| 4 | 0.77 | 0.92 | 0.316 | 0.046 |
+| 8 | 0.80 | 0.92 | 0.304 | 0.064 |
+
+Planning thắng random ở MỌI tầm (0.74→0.80, xấu dần nhẹ theo d), CEM bám teacher ~0.92, Δthrot
+nhỏ (ga tốt). Lệnh: `PYTHONPATH=src python -u scripts/eval_goal_reaching_ac.py --distances 1 2 4 8 --n-windows 60`.
+⚠️ d=16 RẤT chậm (>30') — bỏ; subgoal cách ~4m ≈ vài step nên d≤8 là tầm hữu ích.
+
+### Firmware AUTO đã VERIFY (đọc code, không assume)
+`main.cpp`: `readUsbControl()` (mỗi loop) đọc hex+\n USB → `applyControl` set `autoSteerB/autoThrotB`
++ `lastCtrlMs`; `M_AUTO` (CH9>1700) → `driveNorm(autoSteerB/255*2-1, …)` + watchdog `CTRL_WATCHDOG_MS`
+mất gói PC→neutral. Map byte ↔ chuẩn là NGHỊCH ĐẢO của `controller.action_to_bytes` → khớp. Chuỗi
+PC→phone→ESP32 đúng ở mức code; còn lại là test runtime.
+
+### ⚠️ TEST TRONG NHÀ (2026-06-09): full-nav KHÔNG chạy được — graph là data CÔNG VIÊN
+GPS yếu trong nhà + cảnh trong nhà không có trong `topograph.pt` → `localize` trả node bậy. Trong nhà
+CHỈ test được **plumbing** (`scripts/bench_relay_test.py`): phone↔PC↔ESP32 + firmware AUTO + app relay.
+Full nav phải ra công viên (có graph + GPS). Test plumbing nên **kê xe lên giá, bánh không chạm đất**.
+
+### Task 2 — closed-loop Phase 4 (transport = PHONE RELAY, scope = FULL NAV) — user chốt
+**`scripts/inference_loop.py` (MỚI)** — phone TCP frame → V-JEPA encode {nav 384px pooled +
+control 256px patch} → `TopoGraph.localize`(+GPS prior)→`plan_route`→`extract_subgoals` → subgoal
+patch → `CEMPlannerAC` (MPC horizon 4) → 2-byte action → **gửi NGƯỢC qua chính socket phone**
+(`controller.PhoneRelaySender`, khung 3-byte `[0xA5,steer,throt]`) → app relay xuống ESP32.
+Goal = `--goal-image` (encode→localize→goal node). FrameReader giữ latest-only (không dồn trễ).
+`--dongle` = đi ESP-NOW dongle thay vì phone. **CHƯA test end-to-end** (cần xe + firmware AUTO CH9).
+
+**`robot/capture/controller.py` (VIẾT LẠI)** — bỏ UDP cũ. `action_to_bytes` (Mode-3 đối xứng
+`(v+1)/2*255`, **clamp throttle [-0.16,0.15]**), `framed_action`, `PhoneRelaySender` (ghi socket),
+`SerialDongleSender` (hex+\n như recorder.py). Verified byte-map (neutral 127/127).
+
+**App Android — relay + state + UX (build OK, `app-debug.apk`):**
+- `PcLink`: thêm **downlink** — thread đọc khung 3-byte `[0xA5,steer,throt]` trên cùng socket →
+  `onAction` → `serial.send([steer,throt])`. (Firmware chỉ áp dụng khi CH9=AUTO → forward luôn an toàn.)
+- `SensorLogger`: giữ **latest** accel/gyro/rotvec/GPS speed+lat/lon (cập nhật cả khi không record);
+  `buildMeta` nay kèm `speed,lat,lon,gx..gz,ax..az,rx..rz` → closed-loop có đủ state cho world model.
+- **Fix mất data:** `SessionWriter` flush CSV mỗi 30 frame (app bị kill giữa buổi = chỉ mất vài dòng,
+  trước đây mất TOÀN BỘ CSV của session đó).
+- **Fix Drive:** `DriveUploader` kiểm tra file đã có trên Drive trước khi gửi → chống upload TRÙNG
+  (crash sau PUT trước khi ghi marker `.drive_uploaded`). ⚠️ còn 2 hạn chế Drive chưa fix: (1) PUT
+  không resume byte-offset (mạng rớt giữa zip lớn → gửi lại từ 0); (2) scope `drive.file` chỉ thấy
+  file APP tạo → nếu folder "JEPA" do rclone tạo, app tạo folder JEPA RIÊNG (data phân mảnh 2 chỗ).
+- **UX:** đổi IP PC ngay trong app (nhấn-giữ ô status → lưu SharedPreferences, khỏi build lại);
+  HUD update ~5Hz thay vì mỗi frame.
+
+### Việc tiếp (closed-loop thật)
+1. **Firmware AUTO**: xác nhận `main.cpp` đọc control hex USB + áp dụng khi CH9>1700 (AUTO) +
+   watchdog 500ms→neutral. `robot/capture/controller.py` clamp đã khớp envelope an toàn.
+2. **Test phone↔PC downlink**: chạy `inference_loop.py` với 1 goal-image, gạt CH9=AUTO, kiểm xe
+   nhận action (xem log `[infer] … steer/throt`, và app relay). Bắt đầu kê xe lên giá (bánh không chạm đất).
+3. **Thu data ga-biến-thiên hôm nay** (user đang ra ngoài) → sync → encode_patch → retrain v1 + rebuild graph.
+
 ## 🌙 2026-06-09 — VJEPA2ACCar (patch-token AC) — ĐÃ TRAIN + KẾT QUẢ
 
 **Model đóng góp chính (`VJEPA2ACCar`, `vjepa_ac_car`) đã train + eval. THẮNG pooled baseline.**

@@ -55,14 +55,19 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var lastRec = 0
     private var lastSaveMs = 0L
     private var lastStreamMs = 0L
+    private var lastHudMs = 0L
     private val SAVE_INTERVAL = 100L          // lưu cục bộ 10 Hz
     private val STREAM_INTERVAL = 40L         // stream PC ~25 Hz (mượt, tách khỏi nhịp lưu)
     private val TARGET_W = 640                 // hạ về 640px (V-JEPA chỉ cần 256)
     private val SHUTTER_FPS = 30               // ép phơi sáng ≤ 1/30s chống nhòe (thử 60 nếu cam hỗ trợ)
-    // ĐẶT IP máy nhận: cùng LAN dùng `hostname -I`; qua Tailscale (phone 5G) dùng IP 100.x (`tailscale ip -4`).
-    private val PC_HOST = "100.84.196.41"    // Tailscale IP của LAPTOP omarchy (chạy cả LAN lẫn 5G). LAN-only: "192.168.100.41". PC cũ 5070ti = 100.110.165.40
+    // IP máy nhận. Mặc định = Tailscale IP LAPTOP omarchy (cả LAN lẫn 5G); LAN-only "192.168.100.41";
+    // PC cũ 5070ti = 100.110.165.40. ĐỔI NGAY TRONG APP: nhấn-giữ ô status (lưu vào SharedPreferences,
+    // không cần build lại). `hostname -I` (LAN) hoặc `tailscale ip -4` (5G) trên máy nhận.
+    private val DEFAULT_PC_HOST = "100.84.196.41"
+    private lateinit var pcHost: String
     private val PC_PORT = 5055         // live view (pc_stream_view.py)
     private val UPLOAD_PORT = 5056     // gửi nguyên session (pc_receiver.py)
+    private fun prefs() = getSharedPreferences("jepa", MODE_PRIVATE)
 
     // FPS đếm thô
     private var fpsCount = 0; private var fpsT = 0L; private var fps = 0f
@@ -80,9 +85,14 @@ class MainActivity : AppCompatActivity() {
         ui = ActivityMainBinding.inflate(layoutInflater)
         setContentView(ui.root)
 
+        pcHost = prefs().getString("pc_host", DEFAULT_PC_HOST) ?: DEFAULT_PC_HOST
         writer = SessionWriter(this)
-        pcLink = PcLink(PC_HOST, PC_PORT, onStatus = { s -> pcStatus = s; runOnUiThread { updateHud() } })
-        uploader = Uploader(PC_HOST, UPLOAD_PORT, cacheDir, onStatus = { s -> upStatus = s; runOnUiThread { updateHud() } })
+        // onAction = closed-loop downlink: PC gửi [steer,throt] → relay xuống ESP32 (firmware chỉ
+        // áp dụng khi CH9=AUTO). 'serial' gán bên dưới trước pcLink.start() nên an toàn.
+        pcLink = PcLink(pcHost, PC_PORT,
+            onStatus = { s -> pcStatus = s; runOnUiThread { updateHud() } },
+            onAction = { bytes -> if (::serial.isInitialized) serial.send(bytes) })
+        uploader = Uploader(pcHost, UPLOAD_PORT, cacheDir, onStatus = { s -> upStatus = s; runOnUiThread { updateHud() } })
         sensorLogger = SensorLogger(this, writer)
         serial = SerialLink(this, onTelemetry = { t ->
             latest = t
@@ -94,6 +104,7 @@ class MainActivity : AppCompatActivity() {
         ui.dimBtn.setOnClickListener { setDim(true) }
         ui.blackout.setOnClickListener { setDim(false) }
         ui.sessionsBtn.setOnClickListener { startActivity(Intent(this, SessionListActivity::class.java)) }
+        ui.status.setOnLongClickListener { editPcHost(); true }   // nhấn-giữ status = đổi IP PC
 
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.CAMERA)
             == PackageManager.PERMISSION_GRANTED) startCamera()
@@ -107,6 +118,28 @@ class MainActivity : AppCompatActivity() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
             == PackageManager.PERMISSION_GRANTED) sensorLogger.startGps()
         else locPerm.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+    }
+
+    /** Nhấn-giữ status → đổi IP PC nhận (stream + upload). Lưu prefs rồi tạo lại Activity để
+     *  PcLink/Uploader nối lại host mới — khỏi build lại app khi đổi máy/mạng. */
+    private fun editPcHost() {
+        val et = android.widget.EditText(this).apply {
+            setText(pcHost); hint = "IP PC ($DEFAULT_PC_HOST)"; setSingleLine()
+        }
+        androidx.appcompat.app.AlertDialog.Builder(this)
+            .setTitle("IP máy PC nhận (port $PC_PORT/$UPLOAD_PORT)").setView(et)
+            .setPositiveButton("Lưu") { _, _ ->
+                val h = et.text.toString().trim()
+                if (h.isNotEmpty() && h != pcHost) {
+                    prefs().edit().putString("pc_host", h).apply()
+                    toast("PC = $h — khởi động lại link…")
+                    recreate()
+                }
+            }
+            .setNeutralButton("Mặc định") { _, _ ->
+                prefs().edit().remove("pc_host").apply(); toast("PC = $DEFAULT_PC_HOST"); recreate()
+            }
+            .setNegativeButton("Huỷ", null).show()
     }
 
     /** Tự bật/tắt ghi theo cờ rec (công tắc CH10 trên remote) — edge-triggered. */
@@ -223,17 +256,27 @@ class MainActivity : AppCompatActivity() {
             } catch (_: Exception) {}
         }
         image.close()
-        updateHud()
+        if (now - lastHudMs >= 200) { lastHudMs = now; updateHud() }   // HUD ~5Hz, đừng spam mỗi frame
     }
 
-    /** Meta JSON kèm mỗi frame stream về PC (Locale.US để JSON hợp lệ). */
+    /** Meta JSON kèm mỗi frame stream về PC (Locale.US để JSON hợp lệ). Gồm cả STATE cảm biến
+     *  (gyro/accel/rotvec + GPS speed) → closed-loop trên PC có đủ [speed,gx..gz,ax..az,rx..rz]
+     *  cho world model (khớp DEFAULT_COLUMNS trong src/jepa_wm/data/state.py). */
     private fun buildMeta(now: Long): String {
         val t = latest
         val st = "%.4f".format(Locale.US, t?.steer ?: 0f)
         val th = "%.4f".format(Locale.US, t?.throt ?: 0f)
+        val g = sensorLogger.gyro; val a = sensorLogger.accel; val r = sensorLogger.rot
+        fun f(v: Float) = "%.5f".format(Locale.US, v)
         return "{\"t_ms\":$now,\"idx\":${writer.count},\"steering\":$st,\"throttle\":$th," +
             "\"seq\":${t?.seq ?: -1L},\"esp_ms\":${t?.espMs ?: -1L},\"mode\":${t?.mode ?: -1}," +
-            "\"rec\":${t?.rec ?: 0},\"recording\":${writer.active}}"
+            "\"rec\":${t?.rec ?: 0},\"recording\":${writer.active}," +
+            "\"speed\":${f(sensorLogger.gpsSpeed)}," +
+            "\"lat\":${"%.7f".format(Locale.US, sensorLogger.gpsLat)}," +
+            "\"lon\":${"%.7f".format(Locale.US, sensorLogger.gpsLon)}," +
+            "\"gx\":${f(g[0])},\"gy\":${f(g[1])},\"gz\":${f(g[2])}," +
+            "\"ax\":${f(a[0])},\"ay\":${f(a[1])},\"az\":${f(a[2])}," +
+            "\"rx\":${f(r[0])},\"ry\":${f(r[1])},\"rz\":${f(r[2])}}"
     }
 
     private fun updateHud() {
@@ -245,7 +288,7 @@ class MainActivity : AppCompatActivity() {
         else "NO TELEM · $usbStatus"
         val rec = if (writer.active) "● REC ${writer.count}" else "STANDBY"
         runOnUiThread {
-            ui.status.text = "$rec   cam:${"%.0f".format(Locale.US, fps)}fps\n$telemTxt\n$pcStatus  $upStatus"
+            ui.status.text = "$rec  v0.2🤖  cam:${"%.0f".format(Locale.US, fps)}fps\n$telemTxt\n$pcStatus  $upStatus\nPC=$pcHost (giữ status để đổi)"
         }
     }
 

@@ -89,15 +89,38 @@ class DriveUploader(
             GoogleAuthUtil.clearToken(ctx, tok); tok = token(acc); folderId = ensureFolder(tok)
         }
         if (folderId == null) return false
-        val zip = File(ctx.cacheDir, "${dir.name}.zip")
+        val zipName = "${dir.name}.zip"
+        // Chống upload TRÙNG: nếu lần trước PUT xong nhưng app chết trước khi ghi marker, file đã
+        // có trên Drive → chỉ ghi marker rồi thôi (đỡ tốn 5G + đỡ tạo bản trùng tên trên Drive).
+        if (fileExists(tok, zipName, folderId)) {
+            File(dir, ".drive_uploaded").createNewFile()
+            return true
+        }
+        val zip = File(ctx.cacheDir, zipName)
         try {
             Zips.zipDir(dir, zip)
             onStatus("Drive: gửi ${dir.name} (${zip.length() / 1_000_000}MB)…")
-            val uri = initResumable(tok, "${dir.name}.zip", folderId) ?: return false
+            val uri = initResumable(tok, zipName, folderId) ?: return false
             if (!putFile(uri, zip)) return false
             File(dir, ".drive_uploaded").createNewFile()
             return true
         } finally { zip.delete() }
+    }
+
+    /** Đã có file tên này trong folder JEPA chưa? (scope drive.file chỉ thấy file do app tự tạo —
+     *  đủ cho dedup vì zip cũng do app này upload.) Lỗi mạng → coi như chưa có (sẽ thử upload). */
+    private fun fileExists(tok: String, name: String, folderId: String): Boolean {
+        val q = "name='${name.replace("'", "\\'")}' and '$folderId' in parents and trashed=false"
+        val url = "https://www.googleapis.com/drive/v3/files?q=" +
+            URLEncoder.encode(q, "UTF-8") + "&spaces=drive&fields=files(id)"
+        return try {
+            http.newCall(Request.Builder().url(url).header("Authorization", "Bearer $tok").build())
+                .execute().use { r ->
+                    if (!r.isSuccessful) return false
+                    val files = JSONObject(r.body!!.string()).optJSONArray("files")
+                    files != null && files.length() > 0
+                }
+        } catch (e: Exception) { false }
     }
 
     /** Tìm folder "JEPA", tạo nếu chưa có. null = lỗi (vd token hết hạn). */
