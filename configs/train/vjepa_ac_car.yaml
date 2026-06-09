@@ -27,8 +27,8 @@ data:
 
 train:
   epochs: 60
-  batch_size: 24
-  gradient_checkpointing: true    # seq=2312 (4×578tok) × depth=12 → 15GB without GC; GC ~2x slower backward
+  batch_size: 64
+  gradient_checkpointing: true    # seq=2312 (4×578tok) × depth=12 → OOM without GC; with GC ~13GB@batch64
   lr: 2.5e-4
   weight_decay: 1.0e-4
   warmup_frac: 0.05
