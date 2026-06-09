@@ -193,6 +193,70 @@ class ActionHolder:
             pass
 
 
+class WebBridge:
+    """Cầu nối file-based với scripts/route_web.py (không đụng socket phone):
+    - watch ``<dir>/active.json`` (web ghi): {"cmd":"run", waypoints..} / {"cmd":"stop"};
+    - ghi ``<dir>/live_status.json`` + ``live_frame.jpg`` cho web hiển thị real-time."""
+
+    def __init__(self, dir_):
+        self.dir = Path(dir_)
+        self.dir.mkdir(parents=True, exist_ok=True)
+        # lệnh cũ từ phiên trước KHÔNG tự áp — chỉ nhận lệnh ghi SAU khi khởi động
+        # (muốn chạy route: bấm ▶ Run lại trên web).
+        try:
+            self._mtime = (self.dir / "active.json").stat().st_mtime
+            print(f"[web] active.json cũ bỏ qua — bấm ▶ Run trên web để giao route", flush=True)
+        except OSError:
+            self._mtime = 0.0
+        self.route = None            # {"name","mode","waypoints","spacing"}
+        self.wp_idx = 0
+        self.stopped = False
+        self._last_frame = 0.0
+
+    def poll(self):
+        p = self.dir / "active.json"
+        try:
+            mt = p.stat().st_mtime
+        except OSError:
+            return
+        if mt <= self._mtime:
+            return
+        self._mtime = mt
+        try:
+            cmd = json.loads(p.read_text())
+        except Exception:
+            return
+        if cmd.get("cmd") == "stop":
+            self.route, self.stopped = None, True
+            print("[web] ⛔ STOP từ web → neutral, chờ route mới", flush=True)
+        elif cmd.get("cmd") == "run" and cmd.get("waypoints"):
+            self.route = {"name": str(cmd.get("name", "?")), "mode": str(cmd.get("mode", "graph")),
+                          "waypoints": [int(w) for w in cmd["waypoints"]],
+                          "spacing": float(cmd.get("spacing", 4.0))}
+            self.wp_idx = 0
+            self.stopped = False
+            print(f"[web] ▶ route '{self.route['name']}' (mode={self.route['mode']}, "
+                  f"{len(self.route['waypoints'])} waypoint)", flush=True)
+
+    def status(self, **kw):
+        kw["ts"] = time.time()
+        if self.route:
+            kw.setdefault("route", self.route["name"])
+            kw.setdefault("wp_idx", self.wp_idx)
+            kw.setdefault("wp_total", len(self.route["waypoints"]))
+        tmp = self.dir / "live_status.tmp"
+        tmp.write_text(json.dumps(kw))
+        tmp.replace(self.dir / "live_status.json")
+
+    def frame(self, rgb):
+        now = time.time()
+        if now - self._last_frame < 0.5:
+            return
+        self._last_frame = now
+        cv2.imwrite(str(self.dir / "live_frame.jpg"), rgb[:, :, ::-1],
+                    [int(cv2.IMWRITE_JPEG_QUALITY), 70])
+
+
 # ---------------------------------------------------------------------------
 def build_state(meta: dict, columns) -> torch.Tensor:
     """Raw state vector from stream meta, in the model's column order. gz==yaw_rate; prev-action =
@@ -287,10 +351,16 @@ def main():
     ap.add_argument("--recover-s", type=float, default=1.2, help="thời gian lùi mỗi lần recovery (giây)")
     ap.add_argument("--recover-max", type=int, default=3,
                     help="quá ngần này lần recovery trong 60s → DỪNG HẲN chờ người (tránh loop phá xe)")
+    ap.add_argument("--web", nargs="?", const="data/routes", default=None, metavar="DIR",
+                    help="bật cầu nối web planner (scripts/route_web.py): nhận route/STOP từ "
+                         "DIR/active.json, ghi live_status.json + live_frame.jpg. Không cần "
+                         "--goal-* (route giao từ web; xe idle + localize trong lúc chờ).")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = ap.parse_args()
     if cv2 is None:
         ap.error("opencv-python required (pip install opencv-python)")
+    if args.web and args.control_only:
+        ap.error("--web đi với full-nav (cần graph) — không dùng cùng --control-only")
 
     # --- model + normalisation ---
     ckpt = torch.load(args.checkpoint, map_location=args.device, weights_only=False)
@@ -368,12 +438,15 @@ def main():
             if g is None:
                 ap.error(f"cannot read --goal-image {args.goal_image}")
             goal_node = graph.localize(encoders.nav(g[:, :, ::-1].copy()))
+        elif not args.web:
+            ap.error("full-nav cần --goal-node HOẶC --goal-image (hoặc --web để giao route từ web)")
+        if goal_node is not None:
+            goal_nav = graph.Zn[goal_node]                     # L2-normalised
+            print(f"[infer] GOAL = node {goal_node} "
+                  f"(session {graph.node_session[goal_node]} frame {graph.node_frame[goal_node]}, "
+                  f"GPS xy {graph.XY[goal_node].round(1)})")
         else:
-            ap.error("full-nav cần --goal-node HOẶC --goal-image")
-        goal_nav = graph.Zn[goal_node]                         # L2-normalised
-        print(f"[infer] GOAL = node {goal_node} "
-              f"(session {graph.node_session[goal_node]} frame {graph.node_frame[goal_node]}, "
-              f"GPS xy {graph.XY[goal_node].round(1)})")
+            print("[infer] chưa có goal — chờ route từ web (route_web.py → ▶ Run)")
 
     # --- TCP server: phone connects (client) ---
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -384,6 +457,7 @@ def main():
           f"{'CONTROL-ONLY' if args.control_only else f'goal=node {goal_node}'}.")
 
     dongle = ctl.SerialDongleSender() if args.dongle else None
+    web = WebBridge(args.web) if args.web else None
     period = 1.0 / max(args.rate, 0.1)
     try:
         while True:
@@ -416,7 +490,10 @@ def main():
             try:
                 while reader.alive:
                     if halted:                            # quá recover-max lần kẹt → đứng yên chờ người
-                        emit(0.0, 0.0); time.sleep(0.5); continue
+                        emit(0.0, 0.0)
+                        if web is not None:
+                            web.status(state="halted")
+                        time.sleep(0.5); continue
                     t0 = time.time()
                     seq, item = reader.latest()
                     if item is None or seq == last_seq:
@@ -426,6 +503,14 @@ def main():
                         time.sleep(0.01); continue
                     last_seq = seq; last_frame_t = time.time()
                     meta, rgb = item
+
+                    if web is not None:
+                        web.poll()                        # nhận route mới / STOP từ web
+                        if web.stopped:
+                            emit(0.0, 0.0); prev_steer = 0.0
+                            web.frame(rgb)
+                            web.status(state="stopped", seq=seq)
+                            time.sleep(0.3); continue
 
                     if args.control_only:
                         cur_pool, ctrl_tokens = encoders.ctrl(rgb)     # 1 encode (chỉ control)
@@ -438,10 +523,33 @@ def main():
                         if meta.get("lat", 0) and meta.get("lon", 0):
                             gps = (float(meta["lat"]), float(meta["lon"]))
                         cur = graph.localize(nav, gps_prior=gps)
-                        # SAFETY off-route: node localize lệch GPS xe quá xa = lạc / localize sai →
-                        # neutral thay vì lái theo route bịa (A4). Chỉ khi có GPS fix.
-                        if gps is not None:
-                            loc_err = float(np.linalg.norm(graph.to_xy(*gps) - graph.XY[cur]))
+                        car_xy = graph.to_xy(*gps) if gps is not None else None
+
+                        # --- goal của vòng này: route từ WEB (waypoint tuần tự) > goal CLI ---
+                        goal, wp_mode, spacing = goal_node, "graph", args.subgoal_spacing
+                        if web is not None and web.route:
+                            wpts = web.route["waypoints"]
+                            wp_mode, spacing = web.route["mode"], web.route["spacing"]
+                            # waypoint trung gian đã tới gần → sang cái tiếp theo (theo thứ tự user vẽ)
+                            while (web.wp_idx < len(wpts) - 1 and car_xy is not None and
+                                   float(np.linalg.norm(car_xy - graph.XY[wpts[web.wp_idx]])) < args.reach_m):
+                                web.wp_idx += 1
+                                print(f"[web] ✓ waypoint {web.wp_idx}/{len(wpts)} → node "
+                                      f"{wpts[web.wp_idx]}", flush=True)
+                            goal = wpts[web.wp_idx]
+                        elif goal is None:                     # --web idle: localize + status, không lái
+                            emit(0.0, 0.0)
+                            web.frame(rgb)
+                            xy = car_xy if car_xy is not None else graph.XY[cur]
+                            web.status(state="idle", seq=seq, cur=int(cur),
+                                       xy=[float(xy[0]), float(xy[1])])
+                            time.sleep(0.5)
+                            continue
+
+                        # SAFETY off-route (mode graph): localize lệch GPS xe quá xa = lạc / localize
+                        # sai → neutral thay vì lái theo route bịa (A4). Chỉ khi có GPS fix.
+                        if wp_mode == "graph" and car_xy is not None:
+                            loc_err = float(np.linalg.norm(car_xy - graph.XY[cur]))
                             if loc_err > args.off_route_m:
                                 emit(0.0, 0.0); prev_steer = 0.0
                                 print(f"[infer] OFF-ROUTE: localize lệch GPS {loc_err:.1f}m > "
@@ -450,31 +558,44 @@ def main():
                         # reached? GPS distance to goal node — robust outdoors. Visual cosine aliases
                         # badly in self-similar parks (was firing instantly), so we DON'T use it.
                         gps_dist = None
-                        if gps is not None:
-                            gps_dist = float(np.linalg.norm(graph.to_xy(*gps) - graph.XY[goal_node]))
+                        if car_xy is not None:
+                            gps_dist = float(np.linalg.norm(car_xy - graph.XY[goal]))
                             reached_now = gps_dist < args.reach_m
                         else:
-                            reached_now = (cur == goal_node)
+                            reached_now = (cur == goal)
                         if reached_now:
-                            emit(0.0, 0.0); reached = True
+                            emit(0.0, 0.0); prev_steer = 0.0
+                            if web is not None and web.route:   # web: xong route → chờ route mới
+                                print(f"[web] 🏁 route '{web.route['name']}' HOÀN THÀNH "
+                                      f"(gps_dist={gps_dist})", flush=True)
+                                xy = car_xy if car_xy is not None else graph.XY[cur]
+                                web.status(state="reached", seq=seq, cur=int(cur), goal=int(goal),
+                                           xy=[float(xy[0]), float(xy[1])])
+                                web.route = None
+                                continue
+                            reached = True
                             print(f"[infer] GOAL reached (gps_dist={gps_dist}) -> neutral"); break
-                        route = graph.plan_route(cur, goal_node)
-                        if not route:
-                            emit(0.0, 0.0)
-                            print(f"[infer] no route {cur}->{goal_node}; neutral"); time.sleep(period); continue
-                        subs = graph.extract_subgoals(route, spacing_m=args.subgoal_spacing)
-                        # FIX B: nhắm subgoal đầu tiên còn cách xe > advance_m (bỏ qua subgoal đã tới
-                        # gần) → target luôn nằm PHÍA TRƯỚC, chống kẹt local-minimum (CEM hết "tưởng tới rồi").
-                        if gps is not None:
-                            car_xy = graph.to_xy(*gps)
-                            ahead = [s for s in subs[1:]
-                                     if float(np.linalg.norm(car_xy - graph.XY[s])) > args.advance_m]
-                            target = ahead[0] if ahead else goal_node
+                        if wp_mode == "direct":                # web direct: visual-servo THẲNG tới waypoint
+                            target = goal
+                            gd = f"{gps_dist:.1f}m" if gps_dist is not None else "no-gps"
+                            tag = f"cur{cur}->WP{target} d={gd} direct"
                         else:
-                            target = subs[1] if len(subs) >= 2 else subs[-1]
+                            route = graph.plan_route(cur, goal)
+                            if not route:
+                                emit(0.0, 0.0)
+                                print(f"[infer] no route {cur}->{goal}; neutral"); time.sleep(period); continue
+                            subs = graph.extract_subgoals(route, spacing_m=spacing)
+                            # FIX B: nhắm subgoal đầu tiên còn cách xe > advance_m (bỏ qua subgoal đã tới
+                            # gần) → target luôn nằm PHÍA TRƯỚC, chống kẹt local-minimum (CEM hết "tưởng tới rồi").
+                            if car_xy is not None:
+                                ahead = [s for s in subs[1:]
+                                         if float(np.linalg.norm(car_xy - graph.XY[s])) > args.advance_m]
+                                target = ahead[0] if ahead else goal
+                            else:
+                                target = subs[1] if len(subs) >= 2 else subs[-1]
+                            gd = f"{gps_dist:.1f}m" if gps_dist is not None else "no-gps"
+                            tag = f"cur{cur}->sub{target}->goal{goal} d={gd} route{len(subs)}"
                         target_pool, target_tokens = subgoal_patch(target)
-                        gd = f"{gps_dist:.1f}m" if gps_dist is not None else "no-gps"
-                        tag = f"cur{cur}->sub{target}->goal{goal_node} d={gd} route{len(subs)}"
 
                     z0 = ctrl_tokens.unsqueeze(0)                      # (1, N, D) — đã encode ở trên
                     s0 = build_state(meta, cols)
@@ -497,6 +618,14 @@ def main():
                     emit(steer, throt)                                 # once (phone keeps-alive) or holder (dongle)
                     print(f"[infer] seq{seq} {tag} steer{steer:+.2f}(raw{raw_steer:+.2f}) throt{throt:+.2f} "
                           f"({time.time()-t0:.2f}s)", flush=True)
+
+                    if web is not None:                    # live cho web planner (map + camera)
+                        web.frame(rgb)
+                        xy = car_xy if car_xy is not None else graph.XY[cur]
+                        web.status(state="run", seq=seq, cur=int(cur), goal=int(goal),
+                                   target=int(target), gps_dist=gps_dist, mode=wp_mode,
+                                   steer=round(steer, 3), throt=round(throt, 3),
+                                   xy=[float(xy[0]), float(xy[1])])
 
                     # --- STUCK / CRASH RECOVERY: lệnh ga tiến mà xe không nhúc nhích (đâm tường,
                     # lao bờ cỏ, kẹt bánh) → lùi + đánh lái ngược rồi replan (giống người lái trong data).

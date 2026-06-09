@@ -82,6 +82,24 @@ median 2.0m, <8m 86% / extent 106×133m. (5 session GPS-drift bị skip.)
 **Độ trễ — phân tích cho user:** 2.9h/epoch KHÔNG phải do GC (GC chỉ ~1.3×, và bắt buộc vì OOM):
 data ×2.6 + 576 token (~2.5-3×) + depth 12 (×1.5) + compile recompile-limit. Để nguyên chạy tiếp.
 
+**5. WEB ROUTE PLANNER (mới, theo yêu cầu user):** chọn đường cho xe trên web — map 2D toàn graph
+(pan/zoom, click node → XEM ẢNH frame, dbl-click thêm waypoint), GỢI Ý Dijkstra nối waypoint
+(+subgoal preview), mode per-route (`graph` = Dijkstra giữa waypoint / `direct` = servo thẳng),
+LƯU route (`data/routes/*.json`), ▶ Run giao route cho xe ĐANG chạy + ⛔ STOP khẩn, live: vị trí
+xe + trail + camera ~2fps. Kiến trúc: `scripts/route_web.py` (Flask :5060, đọc topograph.pt) ↔
+file-based ↔ `inference_loop.py --web` (class `WebBridge` watch `data/routes/active.json`, ghi
+`live_status.json` + `live_frame.jpg`; idle = chỉ localize; route xong → chờ route mới, không thoát).
+UI: `web/route_planner.html` (vanilla JS canvas, không build step). **Đã test:** mọi API (graph/
+node_image cả 2 root/suggest/save/activate/stop/live) + WebBridge round-trip (run→status→stop→frame)
+✅; CHƯA test với xe thật. Chạy:
+```bash
+PYTHONPATH=src python scripts/route_web.py                 # web http://<PC>:5060 (Tailscale OK)
+PYTHONPATH=src python scripts/inference_loop.py --web \
+  --policy checkpoints/policy_prior/best.pt --pulse --throttle-cap 0.065   # xe nhận route từ web
+```
+Lưu ý: lệnh active.json cũ bị bỏ qua khi inference khởi động (bấm ▶ Run lại); waypoint advance
+theo GPS `--reach-m`; STOP trên web = neutral + chờ (không phải kill process).
+
 ## ▶️ VIỆC NGAY (2026-06-09 tối) — THỰC THI RETRAIN 384/P2 (đã chuẩn bị xong, CHƯA chạy)
 **Data recovery (lạng→lùi→chỉnh) ĐÃ UP DRIVE đầy đủ.** Toàn bộ CODE retrain-prep đã commit+push
 (`b4bb9e4`, đã smoke-test): 384px control, num_tokens 576, prev-action state (state_dim 12),
