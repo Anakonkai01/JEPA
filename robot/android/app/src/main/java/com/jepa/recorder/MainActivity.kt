@@ -59,7 +59,8 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var autoAction: ByteArray? = null
     @Volatile private var autoActionMs = 0L
     @Volatile private var autoKeepAlive = true
-    private val AUTO_STALE_MS = 1000L
+    private val AUTO_RAMP_MS = 500L    // PC im > ngần này → RAMP action về tâm (đừng giữ full-lock)
+    private val AUTO_STALE_MS = 900L   // > ngần này → ngừng relay → firmware watchdog (500ms) về neutral
     private var lastSaveMs = 0L
     private var lastStreamMs = 0L
     private var lastHudMs = 0L
@@ -129,18 +130,32 @@ class MainActivity : AppCompatActivity() {
     }
 
     /** Thread keep-alive: gửi lại action cuối từ PC xuống ESP32 @~12Hz qua USB (đường tin cậy),
-     *  hấp thụ jitter WAN. Ngừng nếu PC im > AUTO_STALE_MS → firmware watchdog tự về neutral. */
+     *  hấp thụ jitter WAN. AN TOÀN: PC im > AUTO_RAMP_MS thì RAMP action về tâm (steer thẳng + ga 0)
+     *  thay vì giữ full-lock (lệnh cũ sai mà giữ → văng/đâm); im > AUTO_STALE_MS thì ngừng hẳn →
+     *  firmware watchdog (500ms) về neutral. */
     private fun startAutoRelay() {
         Thread {
             while (autoKeepAlive) {
                 val a = autoAction
-                if (a != null && ::serial.isInitialized &&
-                    SystemClock.elapsedRealtime() - autoActionMs < AUTO_STALE_MS) {
-                    serial.send(a)
+                if (a != null && ::serial.isInitialized) {
+                    val age = SystemClock.elapsedRealtime() - autoActionMs
+                    if (age < AUTO_RAMP_MS) {
+                        serial.send(a)                                  // tươi → gửi nguyên
+                    } else if (age < AUTO_STALE_MS) {
+                        val k = (age - AUTO_RAMP_MS).toFloat() / (AUTO_STALE_MS - AUTO_RAMP_MS)  // 0→1
+                        serial.send(byteArrayOf(lerpToCenter(a[0], k), lerpToCenter(a[1], k)))
+                    }
+                    // age ≥ AUTO_STALE_MS → không gửi → firmware watchdog về neutral
                 }
                 try { Thread.sleep(80) } catch (_: InterruptedException) { break }   // ~12Hz
             }
         }.apply { isDaemon = true }.start()
+    }
+
+    /** Nội suy 1 byte control về TÂM (127 = steer thẳng / ga neutral) theo k∈[0,1]. */
+    private fun lerpToCenter(b: Byte, k: Float): Byte {
+        val v = b.toInt() and 0xFF
+        return (v + (127 - v) * k).toInt().coerceIn(0, 255).toByte()
     }
 
     /** Nhấn-giữ status → đổi IP PC nhận (stream + upload). Lưu prefs rồi tạo lại Activity để
@@ -311,7 +326,7 @@ class MainActivity : AppCompatActivity() {
         else "NO TELEM · $usbStatus"
         val rec = if (writer.active) "● REC ${writer.count}" else "STANDBY"
         runOnUiThread {
-            ui.status.text = "$rec  v0.3🤖  cam:${"%.0f".format(Locale.US, fps)}fps\n$telemTxt\n$pcStatus  $upStatus\nPC=$pcHost (giữ status để đổi)"
+            ui.status.text = "$rec  v0.4🤖  cam:${"%.0f".format(Locale.US, fps)}fps\n$telemTxt\n$pcStatus  $upStatus\nPC=$pcHost (giữ status để đổi)"
         }
     }
 

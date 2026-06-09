@@ -69,24 +69,29 @@ def _to_tensor(rgb_u8: np.ndarray, size: int, device) -> torch.Tensor:
 
 
 class Encoders:
-    def __init__(self, enc, device, nav_size=384, ctrl_size=256):
-        self.enc, self.device = enc, device
+    def __init__(self, enc, device, nav_size=384, ctrl_size=256, fp16=False):
+        self.device = device
         self.nav_size, self.ctrl_size = nav_size, ctrl_size
+        self.fp16 = fp16 and device.startswith("cuda")    # encoder fp16 → ~nửa VRAM (cho laptop)
+        self.enc = enc.half() if self.fp16 else enc
+
+    def _encode(self, rgb_u8, size):
+        x = _to_tensor(rgb_u8, size, self.device)
+        if self.fp16:
+            return self.enc(x.half())                     # pure fp16, không autocast
+        with torch.autocast("cuda", dtype=torch.bfloat16, enabled=self.device.startswith("cuda")):
+            return self.enc(x)
 
     @torch.no_grad()
     def nav(self, rgb_u8) -> np.ndarray:
         """384px pooled latent (1024,) — same as build_graph nodes."""
-        x = _to_tensor(rgb_u8, self.nav_size, self.device)
-        with torch.autocast("cuda", dtype=torch.bfloat16, enabled=self.device.startswith("cuda")):
-            tok = self.enc(x)                                # (1, 576, 1024)
+        tok = self._encode(rgb_u8, self.nav_size)         # (1, 576, 1024)
         return tok.float().mean(1)[0].cpu().numpy()
 
     @torch.no_grad()
     def ctrl(self, rgb_u8) -> torch.Tensor:
         """256px patch tokens (256,1024), per-token layer-normed (as ACClipDataset feeds)."""
-        x = _to_tensor(rgb_u8, self.ctrl_size, self.device)
-        with torch.autocast("cuda", dtype=torch.bfloat16, enabled=self.device.startswith("cuda")):
-            tok = self.enc(x)                                # (1, 256, 1024)
+        tok = self._encode(rgb_u8, self.ctrl_size)        # (1, 256, 1024)
         z = tok.float()[0]
         return F.layer_norm(z, (z.size(-1),))                # (256, 1024)
 
@@ -130,6 +135,8 @@ class FrameReader(threading.Thread):
                 with self._lock:
                     self._latest = (meta, img[:, :, ::-1].copy())   # -> RGB
                     self._seq += 1
+        except Exception:
+            pass                              # phone rớt giữa chừng → kết thúc êm (main loop sẽ nối lại)
         finally:
             self.alive = False
 
@@ -207,19 +214,38 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--checkpoint", default="checkpoints/vjepa_ac_car/vjepa_ac_car/best.pt")
     ap.add_argument("--graph", default="data/graph/topograph.pt")
-    ap.add_argument("--goal-image", required=True, help="goal frame (full-nav: -> nearest graph node; control-only: CEM target)")
+    ap.add_argument("--goal-image", default=None, help="goal frame (full-nav: -> nearest graph node; control-only: CEM target)")
+    ap.add_argument("--goal-node", type=int, default=None,
+                    help="full-nav: chọn THẲNG node goal trên graph (xem scripts/pick_goal.py để lấy id) — khỏi cần ảnh")
+    ap.add_argument("--goal-xy", default=None, metavar="X,Y",
+                    help="full-nav: goal = node gần toạ độ (mét) này nhất — đọc X,Y trên scripts/pick_goal.py map")
     ap.add_argument("--control-only", action="store_true",
                     help="bỏ graph/nav: CEM lái thẳng để cảnh hiện tại khớp ảnh goal (chạy được trong nhà, không cần GPS; model OOD ngoài park)")
     ap.add_argument("--port", type=int, default=5055)
     ap.add_argument("--horizon", type=int, default=4, help="CEM (MPC) lookahead steps")
-    ap.add_argument("--samples", type=int, default=128)
-    ap.add_argument("--elite", type=int, default=16)
-    ap.add_argument("--iters", type=int, default=3)
+    ap.add_argument("--samples", type=int, default=64, help="CEM samples (giảm = nhanh hơn)")
+    ap.add_argument("--elite", type=int, default=12)
+    ap.add_argument("--iters", type=int, default=2, help="CEM iterations (giảm = nhanh hơn)")
+    ap.add_argument("--throttle-cap", type=float, default=0.08,
+                    help="ga TỐI ĐA cho lần chạy (an toàn): box throttle = [0, cap], forward-only")
     ap.add_argument("--subgoal-spacing", type=float, default=4.0, help="metres between subgoals")
-    ap.add_argument("--reach-sim", type=float, default=0.85, help="cosine to a subgoal = reached")
+    ap.add_argument("--advance-m", type=float, default=3.0,
+                    help="nhắm subgoal đầu tiên còn cách xe > ngần này (mét) → bỏ qua subgoal đã tới gần, chống kẹt")
+    ap.add_argument("--steer-smooth", type=float, default=0.6,
+                    help="EMA lái: steer = α·cũ + (1-α)·mới. Cao = mượt hơn (chống zigzag/văng đường). 0=tắt")
+    ap.add_argument("--turn-slow", type=float, default=0.5,
+                    help="cua thì giảm ga: throt *= (1 - k·|steer|). 0=tắt")
+    ap.add_argument("--stale-s", type=float, default=0.4,
+                    help="không có frame mới quá ngần này (giây) → NEUTRAL (link khựng, đừng giữ lệnh cũ)")
+    ap.add_argument("--off-route-m", type=float, default=10.0,
+                    help="node localize cách xe (GPS) xa hơn ngần này → coi như LẠC → neutral (đừng lái theo route bịa)")
+    ap.add_argument("--reach-m", type=float, default=4.0,
+                    help="tới đích khi GPS cách goal < ngần này (mét). Robust hơn cosine ở park tự-giống.")
     ap.add_argument("--rate", type=float, default=5.0, help="max control Hz")
     ap.add_argument("--dongle", action="store_true", help="send via ESP-NOW dongle, not phone relay")
     ap.add_argument("--dt", type=float, default=0.22)
+    ap.add_argument("--fp16-encoder", action="store_true",
+                    help="encoder fp16 (~nửa VRAM, hướng tới <6GB cho laptop; mặc định bf16-autocast)")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = ap.parse_args()
     if cv2 is None:
@@ -240,18 +266,14 @@ def main():
     yaw_idx = cols.index("gz") if "gz" in cols else (cols.index("yaw_rate") if "yaw_rate" in cols else 1)
 
     enc = load_encoder(args.device)
-    encoders = Encoders(enc, args.device)
+    encoders = Encoders(enc, args.device, fp16=args.fp16_encoder)
     dyn = fit_dynamics(cfg, cols, speed_idx, yaw_idx, args.dt)
     planner = CEMPlannerAC(model, dyn, state_mean, state_std, action_scale=ascale,
                            horizon=args.horizon, n_samples=args.samples, n_elite=args.elite,
-                           n_iter=args.iters, throttle_min=ctl.THROTTLE_MIN,
-                           throttle_max=ctl.THROTTLE_MAX, device=args.device)
+                           n_iter=args.iters, throttle_min=0.0,           # forward-only (no surprise reverse)
+                           throttle_max=args.throttle_cap, device=args.device)
 
     # --- goal ---
-    goal_rgb = cv2.imread(args.goal_image)
-    if goal_rgb is None:
-        ap.error(f"cannot read --goal-image {args.goal_image}")
-    goal_rgb = goal_rgb[:, :, ::-1].copy()                      # BGR -> RGB
     graph = goal_node = goal_nav = goal_tokens = None
     subgoal_cache: dict[int, torch.Tensor] = {}
 
@@ -264,15 +286,37 @@ def main():
         return subgoal_cache[node]
 
     if args.control_only:
-        goal_tokens = encoders.ctrl(goal_rgb)                  # (N,D) — fixed CEM target
+        if not args.goal_image:
+            ap.error("--control-only cần --goal-image")
+        g = cv2.imread(args.goal_image)
+        if g is None:
+            ap.error(f"cannot read --goal-image {args.goal_image}")
+        goal_tokens = encoders.ctrl(g[:, :, ::-1].copy())      # (N,D) — fixed CEM target
         print("[infer] CONTROL-ONLY: CEM lái thẳng tới ảnh goal (bỏ graph/nav). Chạy trong nhà OK, "
               "nhưng model train ở park → OOD, action có thể không chuẩn.")
     else:
         graph = TopoGraph.load(args.graph)
-        goal_node = graph.localize(encoders.nav(goal_rgb))
+        if args.goal_node is not None:                         # chọn thẳng node trên graph
+            if not (0 <= args.goal_node < len(graph.Zn)):
+                ap.error(f"--goal-node {args.goal_node} ngoài [0,{len(graph.Zn)})")
+            goal_node = args.goal_node
+        elif args.goal_xy:                                      # node gần toạ độ (mét) nhất
+            try:
+                gx, gy = (float(v) for v in args.goal_xy.split(","))
+            except ValueError:
+                ap.error('--goal-xy phải dạng "X,Y" (mét)')
+            goal_node = int(np.argmin(np.linalg.norm(graph.XY - np.array([gx, gy], np.float32), axis=1)))
+        elif args.goal_image:                                  # hoặc localize từ ảnh
+            g = cv2.imread(args.goal_image)
+            if g is None:
+                ap.error(f"cannot read --goal-image {args.goal_image}")
+            goal_node = graph.localize(encoders.nav(g[:, :, ::-1].copy()))
+        else:
+            ap.error("full-nav cần --goal-node HOẶC --goal-image")
         goal_nav = graph.Zn[goal_node]                         # L2-normalised
-        print(f"[infer] goal image -> node {goal_node} "
-              f"(session {graph.node_session[goal_node]} frame {graph.node_frame[goal_node]})")
+        print(f"[infer] GOAL = node {goal_node} "
+              f"(session {graph.node_session[goal_node]} frame {graph.node_frame[goal_node]}, "
+              f"GPS xy {graph.XY[goal_node].round(1)})")
 
     # --- TCP server: phone connects (client) ---
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -302,14 +346,18 @@ def main():
                     sender.send(s, t)
 
             reader = FrameReader(conn); reader.start()
-            last_seq, reached = -1, False
+            last_seq, reached, prev_steer = -1, False, 0.0
+            last_frame_t = time.time()
             try:
                 while reader.alive:
                     t0 = time.time()
                     seq, item = reader.latest()
                     if item is None or seq == last_seq:
+                        # SAFETY: link/stream khựng > stale_s → neutral (đừng để keep-alive giữ lệnh cũ)
+                        if time.time() - last_frame_t > args.stale_s:
+                            emit(0.0, 0.0); prev_steer = 0.0
                         time.sleep(0.01); continue
-                    last_seq = seq
+                    last_seq = seq; last_frame_t = time.time()
                     meta, rgb = item
 
                     if args.control_only:
@@ -321,25 +369,56 @@ def main():
                         if meta.get("lat", 0) and meta.get("lon", 0):
                             gps = (float(meta["lat"]), float(meta["lon"]))
                         cur = graph.localize(nav, gps_prior=gps)
-                        # reached goal? (visual cosine to the goal node)
-                        navn = nav / (np.linalg.norm(nav) + 1e-8)
-                        if cur == goal_node or float(goal_nav @ navn) >= args.reach_sim:
+                        # SAFETY off-route: node localize lệch GPS xe quá xa = lạc / localize sai →
+                        # neutral thay vì lái theo route bịa (A4). Chỉ khi có GPS fix.
+                        if gps is not None:
+                            loc_err = float(np.linalg.norm(graph.to_xy(*gps) - graph.XY[cur]))
+                            if loc_err > args.off_route_m:
+                                emit(0.0, 0.0); prev_steer = 0.0
+                                print(f"[infer] OFF-ROUTE: localize lệch GPS {loc_err:.1f}m > "
+                                      f"{args.off_route_m}m -> neutral", flush=True)
+                                time.sleep(period); continue
+                        # reached? GPS distance to goal node — robust outdoors. Visual cosine aliases
+                        # badly in self-similar parks (was firing instantly), so we DON'T use it.
+                        gps_dist = None
+                        if gps is not None:
+                            gps_dist = float(np.linalg.norm(graph.to_xy(*gps) - graph.XY[goal_node]))
+                            reached_now = gps_dist < args.reach_m
+                        else:
+                            reached_now = (cur == goal_node)
+                        if reached_now:
                             emit(0.0, 0.0); reached = True
-                            print("[infer] GOAL reached -> neutral"); break
+                            print(f"[infer] GOAL reached (gps_dist={gps_dist}) -> neutral"); break
                         route = graph.plan_route(cur, goal_node)
                         if not route:
                             emit(0.0, 0.0)
                             print(f"[infer] no route {cur}->{goal_node}; neutral"); time.sleep(period); continue
                         subs = graph.extract_subgoals(route, spacing_m=args.subgoal_spacing)
-                        target = subs[1] if len(subs) >= 2 else subs[-1]   # next subgoal ahead
+                        # FIX B: nhắm subgoal đầu tiên còn cách xe > advance_m (bỏ qua subgoal đã tới
+                        # gần) → target luôn nằm PHÍA TRƯỚC, chống kẹt local-minimum (CEM hết "tưởng tới rồi").
+                        if gps is not None:
+                            car_xy = graph.to_xy(*gps)
+                            ahead = [s for s in subs[1:]
+                                     if float(np.linalg.norm(car_xy - graph.XY[s])) > args.advance_m]
+                            target = ahead[0] if ahead else goal_node
+                        else:
+                            target = subs[1] if len(subs) >= 2 else subs[-1]
                         target_tokens = subgoal_patch(target)
-                        tag = f"cur{cur}->sub{target}->goal{goal_node}"
+                        gd = f"{gps_dist:.1f}m" if gps_dist is not None else "no-gps"
+                        tag = f"cur{cur}->sub{target}->goal{goal_node} d={gd} route{len(subs)}"
 
                     z0 = encoders.ctrl(rgb).unsqueeze(0)               # (1, N, D)
                     s0 = build_state(meta, cols)
-                    steer, throt = planner.plan(z0, s0, target_tokens)
-                    emit(float(steer), float(throt))                   # once (phone keeps-alive) or holder (dongle)
-                    print(f"[infer] seq{seq} {tag} steer{float(steer):+.2f} throt{float(throt):+.2f} "
+                    # bf16 autocast quanh CEM (mặc định fp32 → chậm); model train bf16 nên nhất quán.
+                    with torch.autocast("cuda", dtype=torch.bfloat16, enabled=args.device.startswith("cuda")):
+                        raw_steer, throt = planner.plan(z0, s0, target_tokens)
+                    raw_steer, throt = float(raw_steer), float(throt)
+                    # EMA làm mượt lái (chống zigzag/văng đường) + cua thì giảm ga
+                    steer = args.steer_smooth * prev_steer + (1.0 - args.steer_smooth) * raw_steer
+                    prev_steer = steer
+                    throt = throt * (1.0 - args.turn_slow * min(1.0, abs(steer)))
+                    emit(steer, throt)                                 # once (phone keeps-alive) or holder (dongle)
+                    print(f"[infer] seq{seq} {tag} steer{steer:+.2f}(raw{raw_steer:+.2f}) throt{throt:+.2f} "
                           f"({time.time()-t0:.2f}s)", flush=True)
 
                     dtw = period - (time.time() - t0)

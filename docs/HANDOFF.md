@@ -5,6 +5,29 @@
 > [LeWorldModel.md](LeWorldModel.md) · [../robot/android/README.md](../robot/android/README.md) ·
 > [../robot/android/DRIVE_SETUP.md](../robot/android/DRIVE_SETUP.md). Cập nhật file này mỗi khi trạng thái đổi.
 
+## 🏁 2026-06-09 (đợt 3) — CHẠY THẬT NGOÀI CÔNG VIÊN + rà soát + P0/P1 fixes
+
+**Cột mốc:** xe **TỰ LÁI ~26m** ngoài công viên (full-nav qua Tailscale, gps 31m→**4.9m sát đích**),
+rồi dao động mấy mét cuối → trôi → **đâm tường** (không có né vật cản). Lần đầu autonomous thật.
+
+**Đã thêm trong buổi (giúp đi xa được):** `--goal-node/--goal-xy` (chọn goal trên map, `scripts/pick_goal.py`
+render map + `--mark-current` định vị xe), `scripts/capture_goal.py`, fix-B advance subgoal theo GPS,
+reach theo GPS, smoothing lái (EMA `--steer-smooth` + `--turn-slow`), tối ưu trễ **2.8s→~0.4s** (bf16 CEM
++ samples 64/iters 2), `--control-only`.
+
+**Rà soát 7 nghi vấn + sửa (plan `~/.claude/plans/oke-t-i-v-i-b-n-curious-breeze.md`):**
+- **P0 an toàn (DONE, chưa test):** inference `--stale-s` (mất frame >0.4s → neutral), `--off-route-m`
+  (localize lệch GPS → neutral); app **keep-alive an toàn** (PC im >500ms → RAMP lái về thẳng + ga 0,
+  ngừng hẳn >900ms) → APK **v0.4-safe** (build OK, **CHƯA cài** vì đang thu data).
+- **P1:** inference `--fp16-encoder` (hướng <6GB cho laptop, opt-in).
+- **GPU 60W/P0:** thủ phạm = **`ollama serve`** (systemd, user `ollama`) giữ GPU. **User chạy:**
+  `sudo systemctl stop ollama` (+ `disable`) → kỳ vọng P8/~15W.
+- **Multi-frame encode: BÁC BỎ** (xem mục dưới đã sửa) — tốc độ vào qua STATE token, không phải encoder.
+
+**Việc tiếp:** cài APK v0.4 + test P0 (`bench_relay_test.py --once --hold 1.2` → echo ramp về 0);
+data RECOVERY (lạng→lùi→chỉnh, đang thu) + approach-and-stop + ga-biến-thiên → retrain; P2: action-trước
+vào state + off-route + predictor sâu hơn. **Chạy thật chỉ ở BÃI THOÁNG** (không né vật cản) + `--reach-m 6`.
+
 ## 🚗 2026-06-09 (đợt 2) — PHASE 4 closed-loop scaffold + goal-reaching eval + app pass
 
 **Chốt:** ablation dừng, **v1 (full 10-D IMU) = model chuẩn** cho tới khi xe chạy thật được
@@ -174,17 +197,19 @@ trong data TowerPro có thể auto-label sau).
   output (576,1024) hợp lệ NHƯNG **latent không có vận tốc**. (Test: T=1→576 tok; T=2→576 = 1 tubelet
   CÓ motion; T=16→4608.) → **lý do sâu của throttle yếu**: frame tĩnh không biết tốc độ; normalization
   chỉ giúp một phần.
-- **Multi-frame clip** (feed T=4/8) = nâng cấp chính cho CONTROL (latent có motion). MẠNH hơn đổi ViT-G
-  (encoder không phải bottleneck — place-rec đã sát đáy GPS). **Split latent:** giữ single-frame cho NAV
-  (motion sẽ HẠI place-rec), dùng multi-frame cho CONTROL.
+- ~~**Multi-frame clip** (feed T=4/8) = nâng cấp chính cho CONTROL~~ ⚠️ **SAI — ĐÃ BÁC BỎ 2026-06-09**
+  (xác minh từ source hub + paper + chính `docs/VJEPA2_AC_CAR.md`): model 2.1 vit_large_384 chạy
+  **image path tubelet_size=1** (Conv3d kernel t=1 = KHÔNG tích chập thời gian); và doc đã đo
+  **clip nhiều frame vào encoder vẫn R²(speed)≈0**. → tốc độ phải vào qua **STATE token** (model đã có),
+  KHÔNG phải multi-frame. Chi tiết: plan `oke-t-i-v-i-b-n-curious-breeze.md` PHẦN D.
 
 ### Việc tiếp (ưu tiên cho phiên sau / Codex)
 1. **Closed-loop N4 (cần phone A42 — user chưa mang theo):** viết `src/.../inference_loop.py` (chưa có):
    phone TCP frame → PC encode V-JEPA → `TopoGraph.localize`+`plan_route`+`extract_subgoals` → CEM
    (`CEMPlannerLatent`) lái tới subgoal → 2-byte action. Sửa `robot/capture/controller.py` (còn UDP cũ →
    serial native; throttle Mode-3 linear; **clamp cứng [-0.16, 0.15]** = giới hạn an toàn của xe).
-2. **Prototype multi-frame clip cho control:** encode T=4 (sửa `engine/encode.py` unsqueeze→clip) → đo
-   throttle-conditioning (eval_goal_reaching Δthrot) vs T=1. Nếu cải thiện → encode lại control latents.
+2. ~~Prototype multi-frame clip cho control~~ ⚠️ **BỎ — đã bác bỏ (xem trên + plan PHẦN D).** Thay bằng:
+   cải thiện STATE token (thêm action-trước vào state) + năng lực predictor + chuẩn-hoá action + data ga-biến-thiên.
 3. **Data chiều 2026-06-08 (user đang thu):** approach 1 mốc từ 5-10 hướng (=ảnh goal cố định) +
    test-route A→B. Khi về: `scripts/sync_dataset.py` → `encode_dataset.py --raw-dir <batch>` → rebuild
    graph + retrain vjepa_ac.
