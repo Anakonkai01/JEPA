@@ -281,7 +281,17 @@ def main():
             conn.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
             print(f"[infer] phone {addr} connected")
             sender = dongle if dongle else ctl.PhoneRelaySender(conn)
-            holder = ActionHolder(sender)        # keep-alive resend @12Hz (beats 500ms watchdog)
+            # Phone relay: the PHONE keeps-alive (resends @12Hz over USB) so the PC sends each new
+            # action ONCE — WAN (Tailscale/5G) jitter no longer trips the firmware watchdog. The
+            # dongle path has no phone, so there the PC must keep-alive itself (ActionHolder).
+            holder = ActionHolder(sender) if dongle else None
+
+            def emit(s, t):
+                if holder is not None:
+                    holder.set(s, t)
+                else:
+                    sender.send(s, t)
+
             reader = FrameReader(conn); reader.start()
             last_seq, reached = -1, False
             try:
@@ -302,12 +312,12 @@ def main():
                     # reached goal? (visual cosine to the goal node)
                     navn = nav / (np.linalg.norm(nav) + 1e-8)
                     if cur == goal_node or float(goal_nav @ navn) >= args.reach_sim:
-                        holder.set(0.0, 0.0); reached = True
+                        emit(0.0, 0.0); reached = True
                         print("[infer] GOAL reached -> neutral"); break
 
                     route = graph.plan_route(cur, goal_node)
                     if not route:
-                        holder.set(0.0, 0.0)
+                        emit(0.0, 0.0)
                         print(f"[infer] no route {cur}->{goal_node}; neutral"); time.sleep(period); continue
                     subs = graph.extract_subgoals(route, spacing_m=args.subgoal_spacing)
                     target = subs[1] if len(subs) >= 2 else subs[-1]   # next subgoal ahead
@@ -315,7 +325,7 @@ def main():
                     z0 = encoders.ctrl(rgb).unsqueeze(0)               # (1, N, D)
                     s0 = build_state(meta, cols)
                     steer, throt = planner.plan(z0, s0, subgoal_patch(target))
-                    holder.set(float(steer), float(throt))             # keep-alive thread does the send
+                    emit(float(steer), float(throt))                   # once (phone keeps-alive) or holder (dongle)
                     print(f"[infer] seq{seq} cur{cur}->sub{target}->goal{goal_node} "
                           f"steer{float(steer):+.2f} throt{float(throt):+.2f} ({time.time()-t0:.2f}s)",
                           flush=True)
@@ -327,7 +337,13 @@ def main():
                 print(f"[infer] loop error: {e}")
             finally:
                 reader.alive = False
-                holder.stop()                       # stops keep-alive + sends neutral
+                if holder is not None:
+                    holder.stop()                   # dongle: stop keep-alive + neutral
+                else:
+                    try:
+                        sender.send(0.0, 0.0)       # phone: one neutral (phone keep-alive will go stale)
+                    except Exception:
+                        pass
                 conn.close()
                 print(f"[infer] phone disconnected{' (goal reached)' if reached else ''}; waiting…")
     except KeyboardInterrupt:

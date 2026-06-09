@@ -53,6 +53,13 @@ class MainActivity : AppCompatActivity() {
     @Volatile private var pcStatus = ""
     @Volatile private var upStatus = ""
     @Volatile private var lastRec = 0
+    // Closed-loop keep-alive: PC gửi action MỚI 1 lần; phone giữ + tự gửi lại ESP32 @12Hz tại CHỖ
+    // (USB tin cậy) → jitter/dropout 5G-Tailscale KHÔNG làm chạm watchdog firmware (hết giật).
+    // PC im quá AUTO_STALE_MS → ngừng relay → firmware watchdog (500ms) tự về neutral (an toàn).
+    @Volatile private var autoAction: ByteArray? = null
+    @Volatile private var autoActionMs = 0L
+    @Volatile private var autoKeepAlive = true
+    private val AUTO_STALE_MS = 1000L
     private var lastSaveMs = 0L
     private var lastStreamMs = 0L
     private var lastHudMs = 0L
@@ -91,7 +98,7 @@ class MainActivity : AppCompatActivity() {
         // áp dụng khi CH9=AUTO). 'serial' gán bên dưới trước pcLink.start() nên an toàn.
         pcLink = PcLink(pcHost, PC_PORT,
             onStatus = { s -> pcStatus = s; runOnUiThread { updateHud() } },
-            onAction = { bytes -> if (::serial.isInitialized) serial.send(bytes) })
+            onAction = { bytes -> autoAction = bytes; autoActionMs = SystemClock.elapsedRealtime() })
         uploader = Uploader(pcHost, UPLOAD_PORT, cacheDir, onStatus = { s -> upStatus = s; runOnUiThread { updateHud() } })
         sensorLogger = SensorLogger(this, writer)
         serial = SerialLink(this, onTelemetry = { t ->
@@ -111,6 +118,7 @@ class MainActivity : AppCompatActivity() {
         else camPerm.launch(Manifest.permission.CAMERA)
 
         serial.start()
+        startAutoRelay()
         pcLink.start()
         uploader.start()
         uploader.enqueuePending(File(getExternalFilesDir(null), "sessions"))  // bù session chưa gửi (PC từng tắt)
@@ -118,6 +126,21 @@ class MainActivity : AppCompatActivity() {
         if (ContextCompat.checkSelfPermission(this, Manifest.permission.ACCESS_FINE_LOCATION)
             == PackageManager.PERMISSION_GRANTED) sensorLogger.startGps()
         else locPerm.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+    }
+
+    /** Thread keep-alive: gửi lại action cuối từ PC xuống ESP32 @~12Hz qua USB (đường tin cậy),
+     *  hấp thụ jitter WAN. Ngừng nếu PC im > AUTO_STALE_MS → firmware watchdog tự về neutral. */
+    private fun startAutoRelay() {
+        Thread {
+            while (autoKeepAlive) {
+                val a = autoAction
+                if (a != null && ::serial.isInitialized &&
+                    SystemClock.elapsedRealtime() - autoActionMs < AUTO_STALE_MS) {
+                    serial.send(a)
+                }
+                try { Thread.sleep(80) } catch (_: InterruptedException) { break }   // ~12Hz
+            }
+        }.apply { isDaemon = true }.start()
     }
 
     /** Nhấn-giữ status → đổi IP PC nhận (stream + upload). Lưu prefs rồi tạo lại Activity để
@@ -288,7 +311,7 @@ class MainActivity : AppCompatActivity() {
         else "NO TELEM · $usbStatus"
         val rec = if (writer.active) "● REC ${writer.count}" else "STANDBY"
         runOnUiThread {
-            ui.status.text = "$rec  v0.2🤖  cam:${"%.0f".format(Locale.US, fps)}fps\n$telemTxt\n$pcStatus  $upStatus\nPC=$pcHost (giữ status để đổi)"
+            ui.status.text = "$rec  v0.3🤖  cam:${"%.0f".format(Locale.US, fps)}fps\n$telemTxt\n$pcStatus  $upStatus\nPC=$pcHost (giữ status để đổi)"
         }
     }
 
@@ -327,6 +350,7 @@ class MainActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
+        autoKeepAlive = false
         if (writer.active) writer.stop()
         serial.stop()
         pcLink.stop()

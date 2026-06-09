@@ -76,6 +76,8 @@ def main():
     ap.add_argument("--throttle", type=float, default=0.0, help="constant throttle (default 0; WHEELS UP if >0)")
     ap.add_argument("--steer-amp", type=float, default=0.6, help="steer sweep amplitude")
     ap.add_argument("--hold", type=float, default=1.2, help="seconds per steer step")
+    ap.add_argument("--once", action="store_true",
+                    help="send each step ONCE (test phone keep-alive: echo phải giữ nguyên suốt step)")
     ap.add_argument("--dongle", action="store_true", help="use ESP-NOW dongle instead of phone relay")
     args = ap.parse_args()
 
@@ -104,18 +106,24 @@ def main():
                 while reader.alive:
                     steer = pattern[i % len(pattern)]
                     i += 1
-                    # GỬI LẶP ~10Hz suốt step: firmware watchdog 500ms → phải <0.5s/lần mới giữ
-                    # được action (gửi 1 lần rồi nghỉ 1.2s thì xe tự về neutral giữa chừng).
                     t0 = time.time()
-                    sent = True
-                    while time.time() - t0 < args.hold and reader.alive:
-                        sent = sender.send(steer, args.throttle) and sent
-                        time.sleep(0.1)
+                    if args.once:
+                        # GỬI 1 LẦN: dựa vào phone keep-alive resend qua USB. Nếu echo giữ nguyên
+                        # suốt step (không tụt về 0) → phone đang tự relay đúng (giải pháp #1 OK).
+                        sent = sender.send(steer, args.throttle)
+                        while time.time() - t0 < args.hold and reader.alive:
+                            time.sleep(0.1)
+                    else:
+                        # GỬI LẶP ~10Hz suốt step (PC tự keep-alive — không phụ thuộc phone relay).
+                        sent = True
+                        while time.time() - t0 < args.hold and reader.alive:
+                            sent = sender.send(steer, args.throttle) and sent
+                            time.sleep(0.1)
                     m = reader.meta or {}
                     echo = m.get("steering", "?")
                     print(f"[bench] sent steer{steer:+.2f} throt{args.throttle:+.2f} "
                           f"{'ok' if sent else 'SEND-FAIL'} | phone frames={reader.n} "
-                          f"mode={m.get('mode','?')} echo_steer={echo} "
+                          f"mode={m.get('mode','?')} echo_steer={echo} echo_throt={m.get('throttle','-')} "
                           f"speed={m.get('speed','-')} gz={m.get('gz','-')}", flush=True)
                     if isinstance(echo, (int, float)) and abs(float(echo) - steer) < 0.1 and m.get("mode") == 2:
                         print("[bench]   ✓ round-trip khớp (telemetry phản hồi đúng steer đã gửi, mode=AUTO)")

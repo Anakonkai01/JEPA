@@ -11,8 +11,8 @@ android {
         applicationId = "com.jepa.recorder"
         minSdk = 26
         targetSdk = 34
-        versionCode = 2
-        versionName = "0.2-autopilot"
+        versionCode = 3
+        versionName = "0.3-keepalive"
     }
     buildTypes {
         release { isMinifyEnabled = false }

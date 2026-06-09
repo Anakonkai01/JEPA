@@ -40,6 +40,18 @@ GPS yếu trong nhà + cảnh trong nhà không có trong `topograph.pt` → `lo
 CHỈ test được **plumbing** (`scripts/bench_relay_test.py`): phone↔PC↔ESP32 + firmware AUTO + app relay.
 Full nav phải ra công viên (có graph + GPS). Test plumbing nên **kê xe lên giá, bánh không chạm đất**.
 
+### ✅ PLUMBING + LATENCY-FIX (#1) ĐÃ VERIFY TRÊN XE THẬT (2026-06-09)
+- Chạy `bench_relay_test.py` (lái quét + ga) trên xe (qua Tailscale, phone↔ESP32 USB, CH9=AUTO,
+  bánh hổng): **servo lắc + motor quay + echo_steer/throt khớp lệnh, round-trip ✓** → chuỗi
+  PC→phone→ESP32 AUTO chạy thật. Firmware AUTO USB không cần sửa.
+- **Latency/jitter fix #1 (keep-alive trên PHONE) — DONE + verified.** App v0.3: PcLink chỉ *lưu*
+  action từ PC; thread riêng resend ESP32 **@12Hz qua USB** (ngừng nếu PC im >`AUTO_STALE_MS`=1s →
+  firmware watchdog 500ms về neutral). PC `inference_loop` đường phone gửi **1 lần/plan** (dongle vẫn
+  PC keep-alive). → WAN jitter (5G/Tailscale) KHÔNG còn chạm watchdog. **Verify:** `bench --once --hold 0.8`
+  gửi 1 lần/step mà echo giữ ±0.6 suốt 0.8s (bản cũ tụt về 0 sau 0.5s). KHÔNG cần flash firmware.
+- ⚠️ Gotcha test: cắm lại phone↔ESP32 phải **app foreground + bấm Allow USB** (telem OK) thì relay
+  mới chạy; nếu không `serial.send` no-op (servo đứng im, frames=0).
+
 ### Task 2 — closed-loop Phase 4 (transport = PHONE RELAY, scope = FULL NAV) — user chốt
 **`scripts/inference_loop.py` (MỚI)** — phone TCP frame → V-JEPA encode {nav 384px pooled +
 control 256px patch} → `TopoGraph.localize`(+GPS prior)→`plan_route`→`extract_subgoals` → subgoal
