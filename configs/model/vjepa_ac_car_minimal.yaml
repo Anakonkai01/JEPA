@@ -1,0 +1,13 @@
+# ABLATION: vjepa_ac_car with minimal state (2-D: speed + gz).
+model:
+  name: vjepa_ac_car
+  latent_dim: 1024
+  num_tokens: 256
+  action_dim: 2
+  state_dim: 2            # [speed, gz] minimal
+  pred_dim: 512
+  depth: 8
+  n_heads: 8
+  max_frames: 16
+  dropout: 0.1
+  predict_residual: false

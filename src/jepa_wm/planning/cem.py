@@ -91,6 +91,77 @@ class CEMPlannerLatent:
                        "sequence": best_seq.detach().cpu()}
 
 
+class CEMPlannerAC:
+    """CEM for VJEPA2ACCar (patch-token world model + bicycle-model state integrator).
+
+    Plans raw actions ``[steer, throttle]`` to reach a goal patch map, by (a) integrating
+    the [speed,yaw_rate] state forward with ``CarDynamics`` (raw units), (b) rolling the
+    patch tokens forward with the predictor (scaled actions + z-scored state), and scoring
+    the final predicted patch map's L1 distance to the goal (V-JEPA 2 energy, eq. 5).
+
+    Units: samples are RAW actions (steer∈[-1,1], throttle∈[throttle_min,throttle_max]);
+    the predictor sees ``raw*action_scale`` and z-scored state; the goal/context tokens must
+    be per-token layer-normed (the same normalisation the dataset applies). Returns the first
+    raw action.
+    """
+
+    def __init__(self, model, dynamics, state_mean, state_std,
+                 action_scale=(1.0, 6.67), horizon: int = 4, n_samples: int = 128,
+                 n_elite: int = 16, n_iter: int = 4, throttle_min=-0.16, throttle_max=0.15,
+                 history: int = 2, init_std: float = 0.5, min_std: float = 0.05,
+                 device: str = "cuda"):
+        self.model = model.eval()
+        self.dyn = dynamics
+        self.sm = state_mean.to(device).float(); self.ss = state_std.to(device).float()
+        self.ascale = torch.as_tensor(action_scale, dtype=torch.float32, device=device)
+        self.H = horizon; self.n_samples = n_samples; self.n_elite = n_elite; self.n_iter = n_iter
+        self.history = history; self.init_std = init_std; self.min_std = min_std
+        self.low = torch.tensor([-1.0, throttle_min], device=device)
+        self.high = torch.tensor([1.0, throttle_max], device=device)
+        self.device = device
+
+    def _states_raw(self, s0_raw, raw_actions):
+        """s0_raw (S,), raw_actions (B,H,2) -> raw states (B,H,S) integrated by dynamics
+        (speed + yaw from the action; other channels held at s0)."""
+        B = raw_actions.size(0); S = s0_raw.numel()
+        s = s0_raw.to(self.device).float().view(1, S).expand(B, S).contiguous()
+        out = [s]
+        for k in range(1, self.H):
+            s = self.dyn.step(s, raw_actions[:, k - 1]); out.append(s)
+        return torch.stack(out, dim=1)
+
+    @torch.no_grad()
+    def score(self, z0, s0_raw, goal, raw_actions):
+        """z0 (1,N,D) z-scored, s0_raw (2,) raw, goal (N,D) z-scored, raw_actions (B,H,2)."""
+        B = raw_actions.size(0)
+        states_z = (self._states_raw(s0_raw, raw_actions) - self.sm) / self.ss      # (B,H,2)
+        scaled = raw_actions * self.ascale                                          # (B,H,2)
+        z0b = z0.unsqueeze(0).expand(B, -1, -1, -1).contiguous()                    # (B,1,N,D)
+        preds = self.model.rollout(z0b, states_z, scaled, history=self.history)     # (B,H,N,D)
+        final = preds[:, -1]                                                        # (B,N,D)
+        return (final - goal.unsqueeze(0)).abs().mean(dim=(1, 2))                    # (B,)
+
+    @torch.no_grad()
+    def plan(self, z0, s0_raw, goal, return_info: bool = False):
+        z0 = z0.to(self.device).float(); goal = goal.to(self.device).float()
+        mu = torch.zeros(self.H, 2, device=self.device)
+        mu[:, 1] = (self.low[1] + self.high[1]) / 2                                 # throttle mid-box
+        sigma = torch.full((self.H, 2), self.init_std, device=self.device)
+        best_s, best_seq = None, None
+        for _ in range(self.n_iter):
+            eps = torch.randn(self.n_samples, self.H, 2, device=self.device)
+            samp = torch.max(torch.min(mu + sigma * eps, self.high), self.low)
+            sc = self.score(z0, s0_raw, goal, samp)
+            elite = torch.topk(sc, self.n_elite, largest=False).indices
+            mu = samp[elite].mean(0); sigma = samp[elite].std(0).clamp_min(self.min_std)
+            if best_s is None or sc[elite[0]] < best_s:
+                best_s, best_seq = sc[elite[0]], samp[elite[0]]
+        first = best_seq[0].detach().cpu()
+        if not return_info:
+            return first
+        return first, {"score": float(best_s), "sequence": best_seq.detach().cpu()}
+
+
 class CEMPlanner:
     def __init__(self, model, horizon: int = 8, n_samples: int = 500, n_elite: int = 50,
                  n_iter: int = 4, action_dim: int = 2, action_low=-1.0, action_high=1.0,

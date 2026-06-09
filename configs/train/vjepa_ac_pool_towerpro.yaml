@@ -1,0 +1,31 @@
+# BASELINE: vjepa_ac_pool (pooled latents, no patch tokens, no state).
+# Comparison target for VJEPA2ACCar.
+#   python scripts/train.py --config configs/train/vjepa_ac_pool_towerpro.yaml configs/model/vjepa_ac.yaml
+device: cuda
+seed: 0
+
+wandb:
+  enabled: true
+  project: lewm-rccar
+  group: ablation
+
+data:
+  raw_dir: data/raw_towerpro
+  latents_dir: data/latents_towerpro
+  val_frac: 0.2
+  action_scale: [1.0, 6.67]
+
+train:
+  epochs: 120
+  batch_size: 512
+  lr: 3.0e-4
+  weight_decay: 1.0e-4
+  warmup_frac: 0.05
+  cos_weight: 0.5
+  num_workers: 6
+  patience: 15
+  min_delta: 1.0e-4
+  out_dir: checkpoints/vjepa_ac_pool_towerpro
+
+eval:
+  horizon: 3

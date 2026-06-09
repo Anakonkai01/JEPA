@@ -1,0 +1,13 @@
+# VJEPA2ACCar — faithful V-JEPA-2-AC patch-token predictor for the car.
+model:
+  name: vjepa_ac_car
+  latent_dim: 1024
+  num_tokens: 256        # 256px -> 16x16
+  action_dim: 2
+  state_dim: 10          # [speed, gx,gy,gz, ax,ay,az, rx,ry,rz] — full IMU (gyro+accel+rotvec) + GPS speed
+  pred_dim: 512
+  depth: 8
+  n_heads: 8
+  max_frames: 16
+  dropout: 0.1
+  predict_residual: false   # faithful to Meta V-JEPA 2-AC (absolute next-rep). Ablate true.

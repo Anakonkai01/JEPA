@@ -5,9 +5,17 @@ build any model from YAML without import-time branching.
 """
 from .ac_predictor import ACPredictor
 from .leworldmodel import LeWorldModel
+from .vjepa2_ac_car import VJEPA2ACCar
 
+# NOTE: ``ACPredictor`` is the POOLED action-conditioned probe (mean-pooled V-JEPA
+# latent + 2-token transformer, ~7.4M). It is NOT Meta's V-JEPA 2-AC (that one is
+# patch-token, depth-24, action+state, block-causal — see reference/vjepa2). So it is
+# registered honestly as a BASELINE; ``vjepa_ac`` is kept as a back-compat alias so
+# existing checkpoints (cfg.model.name == "vjepa_ac") still load.
 MODEL_REGISTRY = {
-    "vjepa_ac": ACPredictor,
+    "vjepa_ac_pool": ACPredictor,   # honest name — pooled AC probe (BASELINE)
+    "vjepa_ac": ACPredictor,        # alias (back-compat: shipped checkpoints)
+    "vjepa_ac_car": VJEPA2ACCar,    # faithful patch-token V-JEPA-2-AC (contribution)
     "leworldmodel": LeWorldModel,
 }
 

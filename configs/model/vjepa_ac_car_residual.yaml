@@ -1,0 +1,13 @@
+# ABLATION: vjepa_ac_car with predict_residual=True.
+model:
+  name: vjepa_ac_car
+  latent_dim: 1024
+  num_tokens: 256
+  action_dim: 2
+  state_dim: 10
+  pred_dim: 512
+  depth: 8
+  n_heads: 8
+  max_frames: 16
+  dropout: 0.1
+  predict_residual: true    # ablation: residual vs Meta's absolute prediction

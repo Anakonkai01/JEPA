@@ -1,4 +1,9 @@
-"""v-jepa-2.1-ac — the Action-Conditioned latent predictor (main contribution).
+"""POOLED Action-Conditioned latent predictor — a BASELINE (NOT Meta's V-JEPA 2-AC).
+
+⚠️ Naming: this is a small probe on the *mean-pooled* frozen V-JEPA 2.1 latent. The
+real V-JEPA 2-AC (reference/vjepa2/src/models/ac_predictor.py) is patch-token, depth-24,
+with interleaved action+state tokens and block-causal attention. This file is the
+honest "pooled AC probe" baseline; the patch-token contribution model lives elsewhere.
 
 Given the current frozen V-JEPA latent ``s_t`` and an action ``a_t``, predict the
 next latent ``ŝ_{t+1}``. Trained with MSE + cosine on the frozen target latent

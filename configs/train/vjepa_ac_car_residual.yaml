@@ -1,0 +1,33 @@
+# ABLATION: vjepa_ac_car with predict_residual=True (predict z_delta instead of z_abs).
+# Check Meta's choice of absolute prediction vs residual.
+device: cuda
+seed: 0
+
+wandb:
+  enabled: true
+  project: lewm-rccar
+  group: ablation
+
+data:
+  patch_dir: data/latents_towerpro_patch
+  raw_dir: data/raw_towerpro
+  val_frac: 0.2
+  horizon: 4
+  frame_stride: 2
+  state_columns: [speed, gx, gy, gz, ax, ay, az, rx, ry, rz]
+  action_scale: [1.0, 6.67]
+
+train:
+  epochs: 60
+  batch_size: 40
+  lr: 2.5e-4
+  weight_decay: 1.0e-4
+  warmup_frac: 0.05
+  num_workers: 6
+  patience: 12
+  min_delta: 1.0e-4
+  compile: true
+  out_dir: checkpoints/vjepa_ac_car_residual
+
+eval:
+  horizon: 3

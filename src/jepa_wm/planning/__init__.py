@@ -1,3 +1,3 @@
-from .cem import CEMPlanner, CEMPlannerLatent
+from .cem import CEMPlanner, CEMPlannerLatent, CEMPlannerAC
 
-__all__ = ["CEMPlanner", "CEMPlannerLatent"]
+__all__ = ["CEMPlanner", "CEMPlannerLatent", "CEMPlannerAC"]
