@@ -270,6 +270,23 @@ def main():
     ap.add_argument("--policy", default=None,
                     help="GoalPolicyPrior ckpt (train_policy_prior.py) — PiJEPA-style warm-start CEM mu "
                          "từ policy BC → ít iter/sample hơn, lái mượt hơn. None = CEM thuần.")
+    ap.add_argument("--pulse", action=argparse.BooleanOptionalAction, default=False,
+                    help="pulse mode (sense-plan-act): áp action --pulse-move giây rồi NGẮT GA (giữ lái) "
+                         "trong lúc encode+CEM → drift lúc tính ≈ 0, frame để plan gần như tĩnh. "
+                         "Chống dao động/văng route khi trễ ~0.4s.")
+    ap.add_argument("--pulse-move", type=float, default=0.45,
+                    help="pulse: thời gian chạy mỗi nhịp (giây) ≈ 1-2 bước model (dt 0.22)")
+    ap.add_argument("--recover", action=argparse.BooleanOptionalAction, default=True,
+                    help="tự RECOVERY khi kẹt (đâm tường / lao bờ cỏ): lệnh ga tiến mà GPS speed ~0 "
+                         "quá --stuck-s giây → lùi + đánh lái ngược --recover-s giây → replan. "
+                         "(maneuver giống ~160 sự kiện va-lùi-chỉnh người lái trong data)")
+    ap.add_argument("--stuck-speed", type=float, default=0.15, help="dưới tốc độ này (m/s) coi là không nhúc nhích")
+    ap.add_argument("--stuck-s", type=float, default=2.0, help="kẹt liên tục quá ngần này (giây) → recovery")
+    ap.add_argument("--recover-throttle", type=float, default=-0.11,
+                    help="ga lùi lúc recovery (clamp cứng [-0.16,0] ở controller)")
+    ap.add_argument("--recover-s", type=float, default=1.2, help="thời gian lùi mỗi lần recovery (giây)")
+    ap.add_argument("--recover-max", type=int, default=3,
+                    help="quá ngần này lần recovery trong 60s → DỪNG HẲN chờ người (tránh loop phá xe)")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = ap.parse_args()
     if cv2 is None:
@@ -385,11 +402,21 @@ def main():
                 else:
                     sender.send(s, t)
 
+            def hold(s, t, secs):
+                """Giữ action trong `secs` giây, resend ~3Hz (app ngừng keep-alive sau 1s PC im lặng)."""
+                end = time.time() + secs
+                while time.time() < end:
+                    emit(s, t)
+                    time.sleep(min(0.3, max(0.0, end - time.time())))
+
             reader = FrameReader(conn); reader.start()
             last_seq, reached, prev_steer = -1, False, 0.0
             last_frame_t = time.time()
+            stuck_since, recover_times, halted = None, [], False
             try:
                 while reader.alive:
+                    if halted:                            # quá recover-max lần kẹt → đứng yên chờ người
+                        emit(0.0, 0.0); time.sleep(0.5); continue
                     t0 = time.time()
                     seq, item = reader.latest()
                     if item is None or seq == last_seq:
@@ -471,9 +498,46 @@ def main():
                     print(f"[infer] seq{seq} {tag} steer{steer:+.2f}(raw{raw_steer:+.2f}) throt{throt:+.2f} "
                           f"({time.time()-t0:.2f}s)", flush=True)
 
-                    dtw = period - (time.time() - t0)
-                    if dtw > 0:
-                        time.sleep(dtw)
+                    # --- STUCK / CRASH RECOVERY: lệnh ga tiến mà xe không nhúc nhích (đâm tường,
+                    # lao bờ cỏ, kẹt bánh) → lùi + đánh lái ngược rồi replan (giống người lái trong data).
+                    # Cần GPS fix: speed lấy từ GPS — không fix (trong nhà/bench) thì speed=0 sẽ
+                    # kích hoạt recovery NHẦM, nên tắt khi chưa có fix.
+                    if args.recover and float(meta.get("lat", 0) or 0):
+                        spd = float(meta.get("speed", 0.0) or 0.0)
+                        now = time.time()
+                        if throt > 0.03 and spd < args.stuck_speed:
+                            stuck_since = stuck_since or now
+                        else:
+                            stuck_since = None
+                        if stuck_since and now - stuck_since > args.stuck_s:
+                            recover_times = [t for t in recover_times if now - t < 60.0]
+                            if len(recover_times) >= args.recover_max:
+                                halted = True
+                                emit(0.0, 0.0)
+                                print(f"[infer] 🛑 KẸT {args.recover_max} lần/60s — DỪNG HẲN, cần người "
+                                      f"(gạt CH9 về manual để lấy xe).", flush=True)
+                                continue
+                            recover_times.append(now)
+                            rev_steer = max(-1.0, min(1.0, -prev_steer))
+                            print(f"[infer] 🔁 RECOVERY #{len(recover_times)}: kẹt {now-stuck_since:.1f}s "
+                                  f"(spd {spd:.2f}) → lùi {args.recover_s:.1f}s steer {rev_steer:+.2f} "
+                                  f"throt {args.recover_throttle:+.2f}", flush=True)
+                            hold(0.0, 0.0, 0.3)                       # khựng lại, nhả ESC
+                            hold(rev_steer, args.recover_throttle, args.recover_s)
+                            hold(0.0, 0.0, 0.3)                       # dừng → frame mới gần như tĩnh
+                            stuck_since, prev_steer = None, 0.0       # reset EMA lái, replan từ đầu
+                            continue                                  # bỏ pacing, lấy frame mới ngay
+
+                    if args.pulse:
+                        # PULSE (sense-plan-act): cho xe CHẠY pulse_move giây với action vừa chốt,
+                        # rồi NGẮT GA (giữ lái) — vòng sau encode+CEM trên cảnh gần như đứng yên,
+                        # drift trong lúc tính ≈ 0 (trễ không còn ăn vào độ chính xác).
+                        hold(steer, throt, args.pulse_move)
+                        emit(steer, 0.0)                              # coast trong lúc tính
+                    else:
+                        dtw = period - (time.time() - t0)
+                        if dtw > 0:
+                            time.sleep(dtw)
             except Exception as e:
                 print(f"[infer] loop error: {e}")
             finally:
