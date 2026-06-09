@@ -61,12 +61,18 @@ def main():
     ap.add_argument("--knn", type=int, default=8)
     ap.add_argument("--gps-gate-m", type=float, default=8.0)
     ap.add_argument("--sim-min", type=float, default=0.5)
+    ap.add_argument("--min-node-speed", type=float, default=0.25,
+                    help="bỏ frame GPS speed < ngần này (m/s): xe dí tường/kẹt cỏ/đứng yên "
+                         "KHÔNG được làm node/subgoal. 0 = tắt")
+    ap.add_argument("--skip-reverse", action=argparse.BooleanOptionalAction, default=True,
+                    help="bỏ frame đang LÙI (throttle<-0.02) — camera ngược hướng đi, heading sai")
     args = ap.parse_args()
 
     roots = args.root or [{"latents": "data/latents_kds", "raw": "data/raw_kds", "domain": "kds"}]
     print(f"[build_graph] roots: {[(r['latents'], r['raw']) for r in roots]}")
     g = build_topograph(roots, node_stride=args.node_stride, knn=args.knn,
-                        gps_gate_m=args.gps_gate_m, sim_min=args.sim_min)
+                        gps_gate_m=args.gps_gate_m, sim_min=args.sim_min,
+                        min_node_speed=args.min_node_speed, skip_reverse=args.skip_reverse)
 
     comps = g.components()
     M = len(g.Zn)

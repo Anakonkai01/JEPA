@@ -68,12 +68,12 @@ def _gps_implausible(gt, gla, glo, max_extent_m: float, max_speed: float) -> boo
     return extent > max_extent_m or vmax > max_speed
 
 
-def _read_synced_times(path: Path) -> dict[int, float]:
-    """frame_idx -> t_scene_ms from actions_synced.csv."""
-    out: dict[int, float] = {}
+def _read_synced_rows(path: Path) -> dict[int, tuple[float, float]]:
+    """frame_idx -> (t_scene_ms, throttle) from actions_synced.csv."""
+    out: dict[int, tuple[float, float]] = {}
     with open(path) as f:
         for r in csv.DictReader(f):
-            out[int(r["frame_idx"])] = float(r["t_scene_ms"])
+            out[int(r["frame_idx"])] = (float(r["t_scene_ms"]), float(r.get("throttle", 0) or 0))
     return out
 
 
@@ -242,6 +242,7 @@ def build_topograph(roots, *, node_stride: int = 5, knn: int = 8,
                     gps_gate_m: float = 8.0, sim_min: float = 0.5,
                     loop_weight: float = 0.5, max_jump_m: float = 15.0,
                     max_gps_extent_m: float = 160.0, max_gps_speed: float = 12.0,
+                    min_node_speed: float = 0.25, skip_reverse: bool = True,
                     chunk: int = 2048, verbose: bool = True) -> TopoGraph:
     """Build a :class:`TopoGraph` from one or more (latents, raw) roots.
 
@@ -254,10 +255,18 @@ def build_topograph(roots, *, node_stride: int = 5, knn: int = 8,
         loop_weight: metres assigned to a loop-closure edge (same place ~= 0).
         max_jump_m: drop a node whose GPS is > this from BOTH temporal neighbours
             (isolated spike = impossible teleport at ~0.5s/node). 0 disables.
+        min_node_speed: drop frames where GPS speed < this (m/s) — the car sitting
+            against a wall / stuck in grass / idling. Those views must NOT become
+            nodes (a subgoal image staring at a wall would steer the car INTO it).
+            0 disables.
+        skip_reverse: drop frames with throttle < -0.02 (reversing out of a crash:
+            camera looks opposite to travel, heading flips — bad nodes/subgoals).
+            The recovery dataset (lạng→lùi→chỉnh) is full of these.
     """
     specs = _resolve_roots(roots)
 
     Z, LL, ROOT, SESS, FR = [], [], [], [], []
+    n_filtered = 0
     for ri, sp in enumerate(specs):
         sessions = sorted(p.name for p in sp.raw.glob("session_*")
                           if (p / "actions_synced.csv").exists()
@@ -266,8 +275,8 @@ def build_topograph(roots, *, node_stride: int = 5, knn: int = 8,
             d = torch.load(sp.latents / f"{sess}.pt", weights_only=False)
             lat = d["latents"].numpy().astype(np.float32)
             fidx = d["frame_idx"].numpy()
-            times = _read_synced_times(sp.raw / sess / "actions_synced.csv")
-            gt, gla, glo, _ = _read_gps(sp.raw / sess / "gps.csv")
+            rows = _read_synced_rows(sp.raw / sess / "actions_synced.csv")
+            gt, gla, glo, gsp = _read_gps(sp.raw / sess / "gps.csv")
             if len(gt) < 3:
                 continue
             if _gps_implausible(gt, gla, glo, max_gps_extent_m, max_gps_speed):
@@ -277,14 +286,22 @@ def build_topograph(roots, *, node_stride: int = 5, knn: int = 8,
             keep = np.arange(0, len(lat), node_stride)
             for i in keep:
                 fi = int(fidx[i])
-                t = times.get(fi)
-                if t is None:
+                rec = rows.get(fi)
+                if rec is None:
+                    continue
+                t, thr = rec
+                if skip_reverse and thr < -0.02:
+                    n_filtered += 1
+                    continue
+                if min_node_speed > 0 and float(np.interp(t, gt, gsp)) < min_node_speed:
+                    n_filtered += 1
                     continue
                 la = float(np.interp(t, gt, gla)); lo = float(np.interp(t, gt, glo))
                 Z.append(lat[i]); LL.append((la, lo))
                 ROOT.append(ri); SESS.append(sess); FR.append(fi)
         if verbose:
-            print(f"[graph] root {sp.domain}: {len(Z)} nodes so far", flush=True)
+            print(f"[graph] root {sp.domain}: {len(Z)} nodes so far "
+                  f"({n_filtered} filtered: reverse/stuck)", flush=True)
 
     Z = np.asarray(Z, dtype=np.float32)
     LL = np.asarray(LL, dtype=np.float64)
@@ -378,6 +395,8 @@ def build_topograph(roots, *, node_stride: int = 5, knn: int = 8,
     edges = np.asarray(edges, dtype=np.float64)
     params = {"node_stride": node_stride, "knn": knn, "gps_gate_m": gps_gate_m,
               "sim_min": sim_min, "loop_weight": loop_weight,
+              "min_node_speed": min_node_speed, "skip_reverse": skip_reverse,
+              "n_filtered_reverse_stuck": n_filtered,
               "n_temporal": n_temporal, "n_loop": n_loop, "n_alias_rejected": n_alias}
     if verbose:
         print(f"[graph] DONE: {M} nodes | {n_temporal} temporal + {n_loop} loop edges "
