@@ -43,9 +43,44 @@ v1 cũ best @ep14 → kỳ vọng early-stop ~ep26 ≈ 3 ngày ≈ **xong ~2026-
   (220ms), lúc inference = telemetry hiện tại — lệch timescale nhẹ, chấp nhận được (lái người mượt).
   `state.py` zero-fill frame thiếu IMU (hiếm). VRAM train 15.7/16.3GB — sát trần, đừng chạy gì thêm trên GPU.
 
-**Việc sau khi train xong:** `eval_goal_reaching_ac.py` (đã multi-root) → encode pooled 384 (4b) →
-rebuild graph → chạy thật bãi thoáng. Research JEPA variants: xem mục cuối phiên chat 2026-06-10
-(PiJEPA = warm-start MPPI bằng policy — áp dụng được cho CEM; NWM/DINO-WM cùng họ frozen-encoder).
+**Việc sau khi train xong:** `eval_goal_reaching_ac.py` (đã multi-root, có `--policy` để A/B
+warm-start) → chạy thật bãi thoáng với `--pulse --policy checkpoints/policy_prior/best.pt`.
+
+## 🆕 2026-06-10 (đợt 2) — PiJEPA policy prior + pulse/recovery + graph rebuild (TẤT CẢ KHÔNG ĐỤNG GPU)
+
+**1. PiJEPA-style policy prior (commit e3a8191):** BC policy goal-conditioned π(pooled z_t, pooled
+z_goal, state, domain) → [steer,throttle], train trên data người lái với goal = frame cách d~U{1..8}
+bước. Dùng để **warm-start mu của CEM** (`CEMPlannerAC.plan(mu_init=)`) → CEM hội tụ nhanh hơn →
+giảm samples/iters → giảm trễ. Wire sẵn: `eval_goal_reaching_ac --policy …` (A/B + cột π riêng),
+`inference_loop --policy …`. Train: `scripts/train_policy_prior.py` (CPU, ~1.6M params, vài phút;
+đọc split/stats từ ckpt WM). **KẾT QUẢ (val, 209 session, `checkpoints/policy_prior/best.pt`):**
+π alone med|Δsteer| **0.023–0.027 PHẲNG theo d=1..8**, med|Δthrot| 0.003–0.004 — so CEM v1 cũ
+(0.055→0.304 / 0.020–0.064) tốt hơn **2–10×** ở action-recovery. ⚠️ Đây là BC-imitation offline,
+KHÔNG đo compounding-drift closed-loop → vẫn dùng làm warm-start cho CEM (đúng triết lý PiJEPA),
+không thay CEM. Sau khi WM train xong: A/B `eval_goal_reaching_ac --policy` + thử giảm samples/iters.
+
+**2. Pooled latents 384 — XONG không tốn GPU (`scripts/pool_patch_latents.py`):** pooled = token-mean
+của patch cache → derive bằng CPU memmap thay vì re-encode 2 GPU-h. `data/latents_towerpro` (181) +
+`data/latents_kds` (28) đã đầy đủ = bước 4b CŨNG XONG.
+
+**3. Graph rebuild 209-session + FILTER node đâm/lùi/kẹt (commit ef31b8b):** user hỏi đúng chỗ —
+build cũ lấy MỌI frame stride-5 làm node, gồm cả frame dí-mũi-vào-tường (ảnh subgoal nhìn sát tường
+→ CEM lái xe VÀO tường) + frame đang lùi (camera ngược hướng). Fix: `min_node_speed=0.25` +
+`skip_reverse` (mặc định BẬT). Kết quả rebuild: **23% node ứng viên bị lọc** (9.790 — chủ yếu data
+recovery), graph mới `data/graph/topograph.pt` = 33.590 node / **1 component 100%** / localize
+median 2.0m, <8m 86% / extent 106×133m. (5 session GPS-drift bị skip.)
+
+**4. `inference_loop` thêm `--pulse` + RECOVERY (commit 321f3ad):**
+- `--pulse` (sense-plan-act): áp action `--pulse-move` 0.45s rồi NGẮT GA (giữ lái) trong lúc
+  encode+CEM → drift lúc tính ≈ 0. Trị tận gốc dao động-do-trễ (xe trôi ~0.8m/quyết định ở cap 0.08).
+- `--recover` (mặc định BẬT, cần GPS fix): ga tiến mà GPS speed <0.15 m/s quá 2s (= đâm tường/lao
+  cỏ/kẹt) → lùi 1.2s + đánh lái ngược (giống ~160 sự kiện người lái) → replan; quá 3 lần/60s → DỪNG
+  HẲN chờ người. Trong nhà không GPS fix → tự tắt (khỏi false-trigger bench test).
+- ⚠️ CHƯA test trên xe thật. Lệnh chạy thật đề xuất: `--pulse --policy checkpoints/policy_prior/best.pt
+  --throttle-cap 0.065 --reach-m 6`.
+
+**Độ trễ — phân tích cho user:** 2.9h/epoch KHÔNG phải do GC (GC chỉ ~1.3×, và bắt buộc vì OOM):
+data ×2.6 + 576 token (~2.5-3×) + depth 12 (×1.5) + compile recompile-limit. Để nguyên chạy tiếp.
 
 ## ▶️ VIỆC NGAY (2026-06-09 tối) — THỰC THI RETRAIN 384/P2 (đã chuẩn bị xong, CHƯA chạy)
 **Data recovery (lạng→lùi→chỉnh) ĐÃ UP DRIVE đầy đủ.** Toàn bộ CODE retrain-prep đã commit+push
