@@ -207,7 +207,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--checkpoint", default="checkpoints/vjepa_ac_car/vjepa_ac_car/best.pt")
     ap.add_argument("--graph", default="data/graph/topograph.pt")
-    ap.add_argument("--goal-image", required=True, help="goal frame -> nearest graph node = goal")
+    ap.add_argument("--goal-image", required=True, help="goal frame (full-nav: -> nearest graph node; control-only: CEM target)")
+    ap.add_argument("--control-only", action="store_true",
+                    help="bỏ graph/nav: CEM lái thẳng để cảnh hiện tại khớp ảnh goal (chạy được trong nhà, không cần GPS; model OOD ngoài park)")
     ap.add_argument("--port", type=int, default=5055)
     ap.add_argument("--horizon", type=int, default=4, help="CEM (MPC) lookahead steps")
     ap.add_argument("--samples", type=int, default=128)
@@ -239,39 +241,46 @@ def main():
 
     enc = load_encoder(args.device)
     encoders = Encoders(enc, args.device)
-    graph = TopoGraph.load(args.graph)
     dyn = fit_dynamics(cfg, cols, speed_idx, yaw_idx, args.dt)
     planner = CEMPlannerAC(model, dyn, state_mean, state_std, action_scale=ascale,
                            horizon=args.horizon, n_samples=args.samples, n_elite=args.elite,
                            n_iter=args.iters, throttle_min=ctl.THROTTLE_MIN,
                            throttle_max=ctl.THROTTLE_MAX, device=args.device)
 
-    # --- goal node from the goal image ---
+    # --- goal ---
     goal_rgb = cv2.imread(args.goal_image)
     if goal_rgb is None:
         ap.error(f"cannot read --goal-image {args.goal_image}")
-    goal_node = graph.localize(encoders.nav(goal_rgb[:, :, ::-1].copy()))
-    goal_nav = graph.Zn[goal_node]                              # L2-normalised
-    print(f"[infer] goal image -> node {goal_node} "
-          f"(session {graph.node_session[goal_node]} frame {graph.node_frame[goal_node]})")
-
+    goal_rgb = goal_rgb[:, :, ::-1].copy()                      # BGR -> RGB
+    graph = goal_node = goal_nav = goal_tokens = None
     subgoal_cache: dict[int, torch.Tensor] = {}
 
     def subgoal_patch(node: int) -> torch.Tensor:
         if node not in subgoal_cache:
-            p = graph.frame_path(node)
-            img = cv2.imread(str(p))
+            img = cv2.imread(str(graph.frame_path(node)))
             if img is None:
-                raise FileNotFoundError(f"subgoal frame missing: {p}")
+                raise FileNotFoundError(f"subgoal frame missing: node {node}")
             subgoal_cache[node] = encoders.ctrl(img[:, :, ::-1].copy())
         return subgoal_cache[node]
+
+    if args.control_only:
+        goal_tokens = encoders.ctrl(goal_rgb)                  # (N,D) — fixed CEM target
+        print("[infer] CONTROL-ONLY: CEM lái thẳng tới ảnh goal (bỏ graph/nav). Chạy trong nhà OK, "
+              "nhưng model train ở park → OOD, action có thể không chuẩn.")
+    else:
+        graph = TopoGraph.load(args.graph)
+        goal_node = graph.localize(encoders.nav(goal_rgb))
+        goal_nav = graph.Zn[goal_node]                         # L2-normalised
+        print(f"[infer] goal image -> node {goal_node} "
+              f"(session {graph.node_session[goal_node]} frame {graph.node_frame[goal_node]})")
 
     # --- TCP server: phone connects (client) ---
     srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
     srv.bind(("0.0.0.0", args.port))
     srv.listen(1)
-    print(f"[infer] listening 0.0.0.0:{args.port} — set phone PC_HOST to this PC. Goal=node {goal_node}.")
+    print(f"[infer] listening 0.0.0.0:{args.port} — set phone PC_HOST to this PC. "
+          f"{'CONTROL-ONLY' if args.control_only else f'goal=node {goal_node}'}.")
 
     dongle = ctl.SerialDongleSender() if args.dongle else None
     period = 1.0 / max(args.rate, 0.1)
@@ -303,32 +312,35 @@ def main():
                     last_seq = seq
                     meta, rgb = item
 
-                    nav = encoders.nav(rgb)
-                    gps = None
-                    if meta.get("lat", 0) and meta.get("lon", 0):
-                        gps = (float(meta["lat"]), float(meta["lon"]))
-                    cur = graph.localize(nav, gps_prior=gps)
-
-                    # reached goal? (visual cosine to the goal node)
-                    navn = nav / (np.linalg.norm(nav) + 1e-8)
-                    if cur == goal_node or float(goal_nav @ navn) >= args.reach_sim:
-                        emit(0.0, 0.0); reached = True
-                        print("[infer] GOAL reached -> neutral"); break
-
-                    route = graph.plan_route(cur, goal_node)
-                    if not route:
-                        emit(0.0, 0.0)
-                        print(f"[infer] no route {cur}->{goal_node}; neutral"); time.sleep(period); continue
-                    subs = graph.extract_subgoals(route, spacing_m=args.subgoal_spacing)
-                    target = subs[1] if len(subs) >= 2 else subs[-1]   # next subgoal ahead
+                    if args.control_only:
+                        target_tokens = goal_tokens
+                        tag = "ctrl-only"
+                    else:
+                        nav = encoders.nav(rgb)
+                        gps = None
+                        if meta.get("lat", 0) and meta.get("lon", 0):
+                            gps = (float(meta["lat"]), float(meta["lon"]))
+                        cur = graph.localize(nav, gps_prior=gps)
+                        # reached goal? (visual cosine to the goal node)
+                        navn = nav / (np.linalg.norm(nav) + 1e-8)
+                        if cur == goal_node or float(goal_nav @ navn) >= args.reach_sim:
+                            emit(0.0, 0.0); reached = True
+                            print("[infer] GOAL reached -> neutral"); break
+                        route = graph.plan_route(cur, goal_node)
+                        if not route:
+                            emit(0.0, 0.0)
+                            print(f"[infer] no route {cur}->{goal_node}; neutral"); time.sleep(period); continue
+                        subs = graph.extract_subgoals(route, spacing_m=args.subgoal_spacing)
+                        target = subs[1] if len(subs) >= 2 else subs[-1]   # next subgoal ahead
+                        target_tokens = subgoal_patch(target)
+                        tag = f"cur{cur}->sub{target}->goal{goal_node}"
 
                     z0 = encoders.ctrl(rgb).unsqueeze(0)               # (1, N, D)
                     s0 = build_state(meta, cols)
-                    steer, throt = planner.plan(z0, s0, subgoal_patch(target))
+                    steer, throt = planner.plan(z0, s0, target_tokens)
                     emit(float(steer), float(throt))                   # once (phone keeps-alive) or holder (dongle)
-                    print(f"[infer] seq{seq} cur{cur}->sub{target}->goal{goal_node} "
-                          f"steer{float(steer):+.2f} throt{float(throt):+.2f} ({time.time()-t0:.2f}s)",
-                          flush=True)
+                    print(f"[infer] seq{seq} {tag} steer{float(steer):+.2f} throt{float(throt):+.2f} "
+                          f"({time.time()-t0:.2f}s)", flush=True)
 
                     dtw = period - (time.time() - t0)
                     if dtw > 0:
