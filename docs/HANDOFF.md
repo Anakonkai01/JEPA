@@ -50,6 +50,14 @@ khác: CEM thay MPPI, BC-MLP thay Octo), `V-JEPA_Revisiting…pdf` (V-JEPA 1, 24
 **Retrain 384/P2 ĐANG CHẠY** (start 2026-06-09 23:41, PID xem `nvidia-smi`): ep0 train 0.9345 /
 val 0.7937 / **10451s ≈ 2.9h/EPOCH** (chậm hơn ước 15-25h nhiều — 60 ep = ~7 ngày; patience 12,
 v1 cũ best @ep14 → kỳ vọng early-stop ~ep26 ≈ 3 ngày ≈ **xong ~2026-06-13, SÁT deadline 15**).
+- **Tiến độ ep0-4** (đo 2026-06-10 chiều): val 0.7937→0.6984→0.6862→0.6566→**0.6407**, giảm ĐỀU
+  mỗi epoch (chưa plateau; chậm dần là bình thường — identity floor, xem dưới). Đánh giá CPU trên
+  best.pt ep4 (48 val window): val 0.6407 = **TF 0.3075 + rollout 0.3331**; per-step L1 0.306 vs
+  identity |z1−z0| 0.375 → **ratio@1 ≈ 0.816 NGAY Ở EP4 — đã vượt v1 final 0.826**. On-track.
+- **LN mismatch (P1 đã fix trên disk) ĐÃ ĐỊNH LƯỢNG = KHÔNG đáng kể:** trên best.pt ep4,
+  2-step rollout feed-back KHÔNG-LN (= code cũ trong RAM đang train) 0.3331 vs CÓ-LN (= rollout()
+  eval/CEM) 0.3351 → lệch **0.58%** của term đó (~0.3% tổng loss). Lý do: prediction đã gần-LN sẵn
+  (per-token |mean| 0.0004, std 0.908). → **KHÔNG restart run**; eval bằng rollout() có LN vẫn ổn.
 - ⚠️ **`logs/train_ac_car_384.log` RỖNG vì `conda run` nuốt stdout** — theo dõi bằng
   `tail -f wandb/latest-run/files/output.log` (hoặc wandb web `rc-car-jepa`). Lần sau chạy
   `conda run --live-stream` hoặc gọi thẳng `~/miniforge3/envs/ai/bin/python`.
