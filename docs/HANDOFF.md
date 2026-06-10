@@ -86,14 +86,15 @@ data ×2.6 + 576 token (~2.5-3×) + depth 12 (×1.5) + compile recompile-limit. 
 (pan/zoom, click node → XEM ẢNH frame, dbl-click thêm waypoint), GỢI Ý Dijkstra nối waypoint
 (+subgoal preview), mode per-route (`graph` = Dijkstra giữa waypoint / `direct` = servo thẳng),
 LƯU route (`data/routes/*.json`), ▶ Run giao route cho xe ĐANG chạy + ⛔ STOP khẩn, live: vị trí
-xe + trail + camera ~2fps. Kiến trúc: `scripts/route_web.py` (Flask :5060, đọc topograph.pt) ↔
+xe + trail + camera ~2fps. Kiến trúc: `scripts/route_web.py` (Flask :8060 — ⚠️ KHÔNG dùng 5060,
+port SIP bị Firefox/Chrome chặn; đọc topograph.pt) ↔
 file-based ↔ `inference_loop.py --web` (class `WebBridge` watch `data/routes/active.json`, ghi
 `live_status.json` + `live_frame.jpg`; idle = chỉ localize; route xong → chờ route mới, không thoát).
 UI: `web/route_planner.html` (vanilla JS canvas, không build step). **Đã test:** mọi API (graph/
 node_image cả 2 root/suggest/save/activate/stop/live) + WebBridge round-trip (run→status→stop→frame)
 ✅; CHƯA test với xe thật. Chạy:
 ```bash
-PYTHONPATH=src python scripts/route_web.py                 # web http://<PC>:5060 (Tailscale OK)
+PYTHONPATH=src python scripts/route_web.py                 # web http://100.110.165.40:8060 (Tailscale)
 PYTHONPATH=src python scripts/inference_loop.py --web \
   --policy checkpoints/policy_prior/best.pt --pulse --throttle-cap 0.065   # xe nhận route từ web
 ```

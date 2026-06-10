@@ -206,7 +206,8 @@ def main():
     global G
     ap = argparse.ArgumentParser()
     ap.add_argument("--graph", default="data/graph/topograph.pt")
-    ap.add_argument("--port", type=int, default=5060)
+    # ⚠️ đừng dùng 5060 (port SIP — Firefox/Chrome chặn "This address is restricted")
+    ap.add_argument("--port", type=int, default=8060)
     ap.add_argument("--host", default="0.0.0.0")
     args = ap.parse_args()
     ROUTES_DIR.mkdir(parents=True, exist_ok=True)
