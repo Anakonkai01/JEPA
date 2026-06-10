@@ -317,20 +317,54 @@ class MainActivity : AppCompatActivity() {
             "\"rx\":${f(r[0])},\"ry\":${f(r[1])},\"rz\":${f(r[2])}}"
     }
 
+    /** HUD màu (liếc nhanh ngoài nắng: đỏ = cần chú ý):
+     *  dòng 1 REC/cam · dòng 2 telemetry (mode AUTO nổi bật) · dòng 3 relay closed-loop
+     *  (action PC↓ + tuổi lệnh + FRESH/RAMP/STALE) · cuối = link PC/upload + host. */
     private fun updateHud() {
         val t = latest
         val ageMs = if (t != null) (SystemClock.elapsedRealtimeNanos() - t.tNanos) / 1_000_000 else -1L
-        val telemTxt = if (t != null && ageMs in 0L..500L)
-            "telem OK  mode:${t.mode}  steer:${"%+.2f".format(Locale.US, t.steer)} throt:${"%+.2f".format(Locale.US, t.throt)}" +
-                (t.rssi?.let { "  ESP:${it}dBm" } ?: "")
-        else "NO TELEM · $usbStatus"
-        val rec = if (writer.active) "● REC ${writer.count}" else "STANDBY"
+        val telemOk = t != null && ageMs in 0L..500L
+
+        val rec = if (writer.active) "<font color='#FF5252'><b>● REC ${writer.count}</b></font>"
+                  else "<font color='#9E9E9E'>STANDBY</font>"
+        val head = "$rec  <font color='#9E9E9E'>v0.5 · cam ${"%.0f".format(Locale.US, fps)}fps</font>"
+
+        val modeTxt = when (t?.mode) {
+            2 -> "<font color='#40C4FF'><b>AUTO</b></font>"; 1 -> "REC"; 0 -> "NEUT"; else -> "?"
+        }
+        val telem = if (telemOk)
+            "<font color='#69F0AE'>telem OK</font> $modeTxt  lái ${"%+.2f".format(Locale.US, t!!.steer)}" +
+                "  ga ${"%+.2f".format(Locale.US, t.throt)}" +
+                (t.rssi?.let { "  <font color='#9E9E9E'>${it}dBm</font>" } ?: "")
+        else "<font color='#FF5252'><b>NO TELEM</b></font> · ${esc(usbStatus)}"
+
+        // Closed-loop: action cuối PC gửi xuống + tuổi lệnh + trạng thái relay (xem startAutoRelay).
+        val a = autoAction
+        val relay = if (a == null) "" else {
+            val age = SystemClock.elapsedRealtime() - autoActionMs
+            val st = (a[0].toInt() and 0xFF) / 255f * 2 - 1
+            val th = (a[1].toInt() and 0xFF) / 255f * 2 - 1
+            val (tag, col) = when {
+                age < AUTO_RAMP_MS -> "FRESH" to "#40C4FF"
+                age < AUTO_STALE_MS -> "RAMP→tâm" to "#FFD740"
+                else -> "STALE (watchdog)" to "#FF5252"
+            }
+            "<br><font color='$col'>PC↓ lái ${"%+.2f".format(Locale.US, st)}  ga ${"%+.2f".format(Locale.US, th)}" +
+                " · ${age}ms $tag</font>"
+        }
+
+        val links = "<font color='#9E9E9E'>${esc(pcStatus)}  ${esc(upStatus)}<br>PC=$pcHost (giữ để đổi)</font>"
+        val html = "$head<br>$telem$relay<br>$links"
         runOnUiThread {
-            ui.status.text = "$rec  v0.4🤖  cam:${"%.0f".format(Locale.US, fps)}fps\n$telemTxt\n$pcStatus  $upStatus\nPC=$pcHost (giữ status để đổi)"
+            ui.status.text = androidx.core.text.HtmlCompat.fromHtml(
+                html, androidx.core.text.HtmlCompat.FROM_HTML_MODE_LEGACY)
         }
     }
 
-    /** RGBA_8888 ImageProxy → xoay đúng chiều → hạ 640px → JPEG. */
+    private fun esc(s: String) = s.replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+    /** RGBA_8888 ImageProxy → crop padding + scale 640px + rotate trong MỘT lần createBitmap
+     *  (scale trước khi xoay ở mức ma trận → đỡ ~4× pixel so với xoay full-res rồi mới hạ). */
     private fun imageToJpeg(image: ImageProxy): ByteArray {
         val plane = image.planes[0]
         val buffer = plane.buffer.apply { rewind() }
@@ -338,21 +372,17 @@ class MainActivity : AppCompatActivity() {
         val rowStride = plane.rowStride
         val w = image.width; val h = image.height
         val rowPadding = rowStride - pixelStride * w
-        var bmp = Bitmap.createBitmap(w + rowPadding / pixelStride, h, Bitmap.Config.ARGB_8888)
+        val bmp = Bitmap.createBitmap(w + rowPadding / pixelStride, h, Bitmap.Config.ARGB_8888)
         bmp.copyPixelsFromBuffer(buffer)
-        if (rowPadding != 0) bmp = Bitmap.createBitmap(bmp, 0, 0, w, h)
 
         val deg = image.imageInfo.rotationDegrees
-        if (deg != 0) {
-            val m = Matrix().apply { postRotate(deg.toFloat()) }
-            bmp = Bitmap.createBitmap(bmp, 0, 0, bmp.width, bmp.height, m, true)
-        }
-        val tw = TARGET_W
-        val th = (bmp.height.toLong() * tw / bmp.width).toInt().coerceAtLeast(1)
-        val scaled = Bitmap.createScaledBitmap(bmp, tw, th, true)
+        // chiều RỘNG sau xoay = w (0/180°) hoặc h (90/270°) → scale sao cho ảnh cuối rộng TARGET_W
+        val scale = TARGET_W.toFloat() / (if (deg % 180 == 0) w else h)
+        val m = Matrix().apply { postScale(scale, scale); postRotate(deg.toFloat()) }
+        val out = Bitmap.createBitmap(bmp, 0, 0, w, h, m, true)   // crop + scale + rotate 1 lượt
 
         val baos = ByteArrayOutputStream()
-        scaled.compress(Bitmap.CompressFormat.JPEG, 85, baos)
+        out.compress(Bitmap.CompressFormat.JPEG, 85, baos)
         return baos.toByteArray()
     }
 

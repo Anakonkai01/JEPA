@@ -75,6 +75,11 @@ class SessionListActivity : AppCompatActivity() {
 
     override fun onResume() { super.onResume(); reload() }
 
+    override fun onDestroy() {
+        super.onDestroy()
+        drive.stop()   // không stop → mỗi lần mở màn này leak 1 thread queue.take() vĩnh viễn
+    }
+
     private fun reload() {
         Thread {
             val items = SessionStore.list(this)

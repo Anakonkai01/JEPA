@@ -65,7 +65,8 @@ class Uploader(
     }
 
     private fun send(dir: File): Boolean {
-        if (!dir.exists()) return true
+        // .uploaded đã có = session từng gửi OK (bị enqueue trùng enqueue/enqueuePending) → bỏ qua
+        if (!dir.exists() || File(dir, ".uploaded").exists()) return true
         val zip = File(cacheDir, "${dir.name}.zip")
         try {
             Zips.zipDir(dir, zip)

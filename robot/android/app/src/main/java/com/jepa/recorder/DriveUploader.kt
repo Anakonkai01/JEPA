@@ -7,8 +7,8 @@ import com.google.android.gms.auth.GoogleAuthUtil
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
 import okhttp3.Request
-import okhttp3.RequestBody.Companion.asRequestBody
 import okhttp3.RequestBody.Companion.toRequestBody
+import okio.source
 import org.json.JSONArray
 import org.json.JSONObject
 import java.io.File
@@ -96,15 +96,23 @@ class DriveUploader(
             File(dir, ".drive_uploaded").createNewFile()
             return true
         }
+        // Zip GIỮ LẠI giữa các lần retry (chỉ xoá khi gửi xong): resume byte-offset cần phần đã
+        // gửi khớp bit-bit với phần sắp gửi. (Zips ghi entry time = mtime → rezip cũng same-bytes.)
         val zip = File(ctx.cacheDir, zipName)
-        try {
-            Zips.zipDir(dir, zip)
-            onStatus("Drive: gửi ${dir.name} (${zip.length() / 1_000_000}MB)…")
-            val uri = initResumable(tok, zipName, folderId) ?: return false
-            if (!putFile(uri, zip)) return false
-            File(dir, ".drive_uploaded").createNewFile()
-            return true
-        } finally { zip.delete() }
+        if (!zip.exists() || zip.length() == 0L) Zips.zipDir(dir, zip)
+        // URI resumable lưu cạnh session → app chết / rớt mạng giữa zip lớn → lần sau gửi TIẾP
+        // từ byte đã nhận (không phải từ 0). URI Google sống ~1 tuần; hết hạn thì init lại.
+        val uriFile = File(dir, ".drive_upload_uri")
+        var uri = if (uriFile.exists()) uriFile.readText().trim().ifEmpty { null } else null
+        if (uri == null) {
+            uri = initResumable(tok, zipName, folderId) ?: return false
+            uriFile.writeText(uri)
+        }
+        onStatus("Drive: gửi ${dir.name} (${zip.length() / 1_000_000}MB)…")
+        if (!putResumable(tok, uri, zip, uriFile)) return false
+        uriFile.delete(); zip.delete()
+        File(dir, ".drive_uploaded").createNewFile()
+        return true
     }
 
     /** Đã có file tên này trong folder JEPA chưa? (scope drive.file chỉ thấy file do app tự tạo —
@@ -157,9 +165,42 @@ class DriveUploader(
         http.newCall(req).execute().use { r -> return if (r.isSuccessful) r.header("Location") else null }
     }
 
-    private fun putFile(sessionUri: String, zip: File): Boolean {
-        val req = Request.Builder().url(sessionUri)
-            .put(zip.asRequestBody("application/zip".toMediaType())).build()
-        http.newCall(req).execute().use { r -> return r.isSuccessful }
+    // PUT có RESUME: hỏi Drive đã nhận tới byte nào (PUT rỗng + Content-Range "bytes <star>/len"
+    // → 308 kèm header Range "bytes=0-N") rồi chỉ gửi phần còn thiếu từ N+1. Session hết hạn
+    // (404/410) → xoá URI đã lưu để lần retry sau init session mới.
+    private fun putResumable(tok: String, uri: String, zip: File, uriFile: File): Boolean {
+        val len = zip.length()
+        var offset = 0L
+        http.newCall(
+            Request.Builder().url(uri).header("Authorization", "Bearer $tok")
+                .put(ByteArray(0).toRequestBody(null))
+                .header("Content-Range", "bytes */$len").build()
+        ).execute().use { r ->
+            when (r.code) {
+                200, 201 -> return true                       // lần trước thật ra đã PUT xong
+                308 -> offset = r.header("Range")             // "bytes=0-N"; null = chưa nhận byte nào
+                    ?.substringAfter('-')?.toLongOrNull()?.plus(1) ?: 0L
+                404, 410 -> { uriFile.delete(); return false }  // session hết hạn → init lại lần sau
+                else -> return false
+            }
+        }
+        if (offset > 0) {
+            Log.i(TAG, "resume ${zip.name}: $offset/$len")
+            onStatus("Drive: resume ${zip.name} (${offset * 100 / len}%)")
+        }
+        val body = object : okhttp3.RequestBody() {
+            override fun contentType() = "application/zip".toMediaType()
+            override fun contentLength() = len - offset
+            override fun writeTo(sink: okio.BufferedSink) {
+                java.io.FileInputStream(zip).use { fis ->
+                    var left = offset
+                    while (left > 0) { val sk = fis.skip(left); if (sk <= 0) break; left -= sk }
+                    sink.writeAll(fis.source())
+                }
+            }
+        }
+        val req = Request.Builder().url(uri).header("Authorization", "Bearer $tok").put(body)
+        if (offset > 0) req.header("Content-Range", "bytes $offset-${len - 1}/$len")
+        http.newCall(req.build()).execute().use { r -> return r.isSuccessful }
     }
 }

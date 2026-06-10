@@ -11,8 +11,8 @@ android {
         applicationId = "com.jepa.recorder"
         minSdk = 26
         targetSdk = 34
-        versionCode = 4
-        versionName = "0.4-safe"
+        versionCode = 5
+        versionName = "0.5-pro"   // HUD màu + relay closed-loop + Drive resume + fix leak/ANR
     }
     buildTypes {
         release { isMinifyEnabled = false }

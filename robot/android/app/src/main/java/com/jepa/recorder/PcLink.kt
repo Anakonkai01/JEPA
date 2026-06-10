@@ -45,10 +45,12 @@ class PcLink(
         thread?.interrupt()
     }
 
-    /** Gọi từ camera thread — không block; đầy queue thì bỏ frame. */
+    /** Gọi từ camera thread — không block; đầy queue thì bỏ frame CŨ nhất giữ frame MỚI
+     *  (closed-loop cần frame tươi — giữ frame cũ chỉ cộng thêm trễ cho PC). */
     fun offer(jpeg: ByteArray, meta: String) {
         if (!connected) return
-        queue.offer(Frame(jpeg, meta))
+        val f = Frame(jpeg, meta)
+        if (!queue.offer(f)) { queue.poll(); queue.offer(f) }
     }
 
     private fun loop() {

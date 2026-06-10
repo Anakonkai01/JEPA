@@ -44,8 +44,6 @@ class SessionPlayerActivity : AppCompatActivity() {
         ui = ActivitySessionPlayerBinding.inflate(layoutInflater)
         setContentView(ui.root)
         dir = File(intent.getStringExtra(EXTRA_DIR) ?: "")
-        loadActions()
-        ui.seek.max = if (n > 0) n - 1 else 0
         ui.seek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(sb: SeekBar, p: Int, fromUser: Boolean) {
                 if (fromUser) { idx = p; render(p) }
@@ -54,7 +52,15 @@ class SessionPlayerActivity : AppCompatActivity() {
             override fun onStopTrackingTouch(sb: SeekBar) {}
         })
         ui.playBtn.setOnClickListener { setPlaying(!playing) }
-        if (n > 0) render(0) else ui.overlay.text = "Không đọc được actions.csv"
+        // actions.csv có thể hàng vạn dòng → đọc trên thread nền (UI thread sẽ jank/ANR).
+        ui.overlay.text = "Đang đọc actions.csv…"
+        Thread {
+            loadActions()
+            runOnUiThread {
+                ui.seek.max = if (n > 0) n - 1 else 0
+                if (n > 0) render(0) else ui.overlay.text = "Không đọc được actions.csv"
+            }
+        }.start()
     }
 
     private fun loadActions() {
