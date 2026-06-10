@@ -1,9 +1,112 @@
 # HANDOFF — đọc cái này trước khi tiếp tục
 
-> Tóm tắt tình hình cho phiên sau. Cập nhật: **2026-06-10**.
+> Tóm tắt tình hình cho phiên sau. Cập nhật: **2026-06-11**.
 > Nền đầy đủ: [../CLAUDE.md](../CLAUDE.md) · [../README.md](../README.md) · [PLAN.md](PLAN.md) ·
 > [LeWorldModel.md](LeWorldModel.md) · [../robot/android/README.md](../robot/android/README.md) ·
 > [../robot/android/DRIVE_SETUP.md](../robot/android/DRIVE_SETUP.md). Cập nhật file này mỗi khi trạng thái đổi.
+
+## ▶️ 2026-06-11 — PLAN SAU KHI RETRAIN 384 XONG (session sau: làm mục này theo thứ tự A→B→C)
+
+> Viết sau buổi rà soát sâu vs code Meta (`reference/vjepa2/`) + paper, trả lời user về
+> frames/PE-RoPE/input/augmentation. Run 384/P2 lúc viết: **ep7 val 0.6083** (0.7937→0.6083 giảm
+> đều, ~2.87h/ep, patience 12) → dự kiến xong ~**2026-06-13**. **Deadline 06-15 → Phase A là đường
+> găng; B/C là hậu-deadline.** KHÔNG restart run đang chạy vì bất kỳ lý do gì bên dưới.
+
+**Căn cứ mới đã VERIFY 2026-06-11 (đối chiếu code thật cả 2 phía, không suy diễn):**
+- **Frames:** Meta AC paper train **16f@4fps=4s** (paper dòng 795) nhưng config CÔNG BỐ chỉ **8f=2s**
+  (`configs/train/vitg16/droid-256px-8f.yaml`); ta 4f@220ms — **Δt khớp Meta (250ms)**, context ngắn hơn.
+  **CEM inference Meta chỉ dùng 1 frame context** (`notebooks/utils/mpc_utils.py:48`), ta history=2 →
+  context dài chủ yếu giúp LÚC HỌC (block-causal train mọi context length 1..T), không phải lúc chạy.
+  Encoder cả 2 phía đều encode TỪNG frame (Meta nhân đôi frame thành tubelet tĩnh, `vjepa_droid/train.py:410`)
+  → bài "pretrain 16→64 frames tốt hơn" KHÔNG chuyển giao sang AC (encoder frozen + per-frame).
+- **Augmentation:** RRC trong config công bố của Meta là **DEGENERATE** — `random_resize_scale` ghim
+  [1.777,1.777] → với video 16:9, `_get_param_spatial_crop` (cần aspect≥3.16) fail cả 10 lần → **LUÔN
+  fallback center-crop cố định** (h=720, w=1.35·720, squash 256²), hflip=false ⇒ **zero randomness**.
+  (Paper *nói* RRC aspect 0.75–1.35 — code công bố kể khác.) → việc ta KHÔNG augment (cache latent
+  offline, đổi lấy 50–100× tốc độ) không phải lệch đáng kể so với recipe reproduce được; ghi vào
+  `VJEPA2_AC_CAR.md` §5b làm căn cứ "no-aug".
+- **RoPE:** Meta = 3D-RoPE trong Q·K **mọi layer** (`src/models/utils/modules.py:114-263`), head_dim chia
+  3 khối t/h/w (+dư không xoay), **a/s token chỉ xoay temporal** (dòng 184-206), spatial snap về grid
+  (`*= grid_size/H`, dòng 180-181), KHÔNG có abs-PE nào trong predictor. **Không patch RoPE vào ckpt
+  learned-PE được** (đổi hình học Q·K = phá weights) → RoPE = retrain (Phase C), không phải "fix".
+- **Cooldown T=4→8 HỢP LỆ trên best.pt hiện tại:** `temporal_pos` đã cấp sẵn `max_frames=16` slot
+  (slot 4..15 còn ~init std0.02, WD tích lũy ~0.4% — dùng làm init OK); mask/dataset generic theo T.
+  Chi phí ~2.9× FLOPs/window (seq 2312→4624, attention ~43% FLOPs) ≈ **8-9h/ep @batch32** → 2-3 ep ≈
+  1 GPU-ngày. Kỳ vọng gain NHỎ-VỪA, **không có ablation công bố nào** cho AC-context (Meta còn cắt 16→8
+  và deploy 1-frame) → làm SAU deadline, đo A/B nghiêm túc (B5).
+- **LN-rollout:** fix đã trên disk (`engine/train_ac_car.py:65`), lệch đã định lượng 0.58% term rollout
+  → run hiện tại không restart; mọi run sau (B/C) tự có fix. Input run hiện tại đã xác nhận đúng cấu trúc
+  Meta: interleave (a_t,s_t,z_t)→ẑ_{t+1}, L1 TF+2-step, per-token LN; khác CÓ CHỦ Ý: action = LỆNH stick
+  [steer,throttle×6.67,domain] (xe không có pose → không làm Δstate như Meta được; CEM phải xuất lệnh servo),
+  state 12-D IMU+prev-action thay pose 7-D.
+
+### Phase A — NGAY khi train xong (đường găng deadline; mục tiêu xong trước 06-15)
+- **A1. Verify run:** `tail -20 wandb/latest-run/files/output.log` — lấy best ep/val + dòng cuối
+  `rollout@1 … (×identity …)`; so v1 (ratio 0.826) và ep4 (0.816). Nếu process chết giữa chừng:
+  `best.pt` vẫn hợp lệ (ghi mỗi epoch).
+- **A2. Offline goal-reaching + A/B policy warm-start** (GPU đã rảnh):
+  ```bash
+  PYTHONPATH=src python -u scripts/eval_goal_reaching_ac.py --distances 1 2 4 8 --n-windows 60
+  PYTHONPATH=src python -u scripts/eval_goal_reaching_ac.py --distances 1 2 4 8 --n-windows 60 \
+    --policy checkpoints/policy_prior/best.pt
+  # nếu warm-start giúp: thử thêm --samples 64 --iters 2 (đo được phép giảm trễ closed-loop không)
+  ```
+  So bảng v1 (CEM/rnd 0.74–0.80, Δsteer 0.055@d1, Δthrot ≤0.064). d=16 bỏ (quá chậm, subgoal thật d≤8).
+- **A3. Cài APK v0.5-pro + test P0 an toàn** (APK chưa từng cài; kê xe lên giá, bánh hổng):
+  `~/Android/Sdk/platform-tools/adb install -r robot/android/app/build/outputs/apk/debug/app-debug.apk`
+  rồi `python scripts/bench_relay_test.py --once --hold 1.2` → echo phải RAMP về 0 trong ~0.5–0.9s
+  (keep-alive an toàn). Test luôn `--stale-s`/`--off-route-m` nếu kịp.
+- **A4. Chạy thật BÃI THOÁNG** (full-nav web hoặc goal đơn; graph 209-session đã rebuild):
+  ```bash
+  PYTHONPATH=src python scripts/route_web.py            # web :8060 (Tailscale)
+  PYTHONPATH=src python scripts/inference_loop.py --web --pulse \
+    --policy checkpoints/policy_prior/best.pt --throttle-cap 0.065 --reach-m 6
+  ```
+  Ghi log + quay video; đếm: mét tự đi, số recovery, số can thiệp. Mục tiêu: vượt mốc 26m (06-09).
+- **A5. Chốt bảng số liệu báo cáo:** (1) ratio@1/@3 v1-vs-384, (2) eval_goal_reaching d=1..8 (±policy),
+  (3) π policy offline (med|Δsteer| theo d), (4) graph 33.590 node / 1 component / localize 2.0m / <8m 86%,
+  (5) chạy thật (mét + can thiệp), (6) bảng deviations vs Meta (§5b + finding RRC-degenerate ở trên).
+  **KHÔNG khởi động B/C trước khi A xong.**
+
+### Phase B — Cooldown T=8 (+auto_steps 3) trên best.pt (~1 GPU-ngày; CHỈ sau A, hậu deadline)
+- **B1. Patch `engine/train_ac_car.py`** (chưa có init_from/resume — đã check): sau `build_model`+GC-enable,
+  TRƯỚC `torch.compile` (dòng ~170-175), thêm:
+  ```python
+  if tcfg.get("init_from"):
+      sd = torch.load(tcfg["init_from"], map_location=device)["model"]
+      model.load_state_dict({k.replace("_orig_mod.", "", 1): v for k, v in sd.items()})
+      print(f"[ac_car] init_from {tcfg['init_from']}")
+  ```
+- **B2. (cùng patch, tuỳ chọn) auto_steps=3 trong `_losses`:** gate `tcfg.get("auto_steps", 2)`; sau p2
+  thêm bước p3 (re-LN p2 → cat ctx → predict, L1 vs `z[:,3]`, cần `z.size(1)>=4`). Các bước rollout dùng
+  seq ngắn (1..k×578) nên rẻ hơn nhiều so với tăng T — đây là knob nhắm thẳng drift d=8.
+- **B3. Config mới `configs/train/vjepa_ac_car_cooldown8.yaml`** = copy `vjepa_ac_car.yaml`, đổi:
+  `horizon: 8`, `max_gap: 2` (**bắt buộc** — span 14 row, chưa đo tỉ lệ dính gap), `batch_size: 32`,
+  `lr: 7.0e-5` (~0.3×), `warmup_frac: 0.0`, `epochs: 3`, `patience: 3`, `compile: false` (tránh
+  recompile storm với T=8/1/2/3), `auto_steps: 3`, `init_from: checkpoints/vjepa_ac_car/vjepa_ac_car/best.pt`,
+  `out_dir: checkpoints/vjepa_ac_car_cd8`. Model config GIỮ NGUYÊN (`max_frames: 16` đã đủ).
+- **B4. BẮT BUỘC copy split** (frozen_split đọc cạnh out_dir, nếu thiếu sẽ TỰ SINH SPLIT KHÁC → eval sai):
+  `mkdir -p checkpoints/vjepa_ac_car_cd8/vjepa_ac_car && cp checkpoints/vjepa_ac_car/vjepa_ac_car/split.json
+  checkpoints/vjepa_ac_car_cd8/vjepa_ac_car/` (backup repo: `docs/split_vjepa_ac_car.json`).
+- **B5. Luật quyết định (A/B cùng protocol):** final_eval ratio@1/@3 + eval_goal_reaching d=1..8 trên CÙNG
+  split. **GIỮ ckpt cooldown CHỈ KHI d=4/8 cải thiện mà d=1 không xấu đi**; ngược lại giữ best.pt cũ.
+  Ghi kết quả vào đây kể cả negative (vẫn là ablation tốt cho báo cáo). Inference vẫn `history=2`
+  (`--history 4` chỉ thử offline — trễ CEM tăng theo seq).
+
+### Phase C — v3 retrain RoPE + T=8 (hậu deadline; ~0.5 ngày code + 3-4 GPU-ngày)
+- **C1.** Vendor từ `reference/vjepa2/src/models/utils/modules.py` (MIT): `rotate_queries_or_keys` +
+  `ACRoPEAttention` + `ACBlock` (+ `build_action_block_causal_attention_mask` từ cùng file) →
+  `src/jepa_wm/models/rope_modules.py`. head_dim 64 → d/h/w = 20/20/20 + 4 dim không xoay; `grid_size=24`
+  (24×24 @384px; snap cho phép chạy 256px sau này).
+- **C2.** `VJEPA2ACCar(use_rope=True)`: thay `nn.TransformerEncoder` bằng stack ACBlock; **BỎ
+  `temporal_pos` + `token_pos`** (Meta không có abs-PE trong predictor); GIỮ patch/action/state_embed +
+  norm + head + mask; a/s token đi nhánh temporal-RoPE (modules.py:184-206). Thêm flag vào
+  `configs/model/` + registry.
+- **C3.** Train T=8 / stride 2 / auto_steps 3, CÙNG split, đo đúng protocol B5. Đây là run "faithful-PE"
+  cho paper (đóng nốt deviation pos-emb ở §5b).
+- **C4. Backlog sau C:** ablate prev-action (state 12→10, đã hẹn 06-09); multi-crop offline aug K=2-3
+  (~9 GPU-h + ~190GB đĩa) — ưu tiên THẤP NHẤT (recipe công bố Meta thực chất không random; phone remount
+  giữa 181 session đã là augmentation tự nhiên). Đòn bẩy lớn nhất vẫn là THÊM DATA.
 
 ## 📋 2026-06-10 (đợt 3) — RÀ SOÁT vs META + PAPER PACK + APP v0.5-pro (không đụng GPU)
 
