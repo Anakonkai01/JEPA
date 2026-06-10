@@ -5,6 +5,46 @@
 > [LeWorldModel.md](LeWorldModel.md) · [../robot/android/README.md](../robot/android/README.md) ·
 > [../robot/android/DRIVE_SETUP.md](../robot/android/DRIVE_SETUP.md). Cập nhật file này mỗi khi trạng thái đổi.
 
+## 📋 2026-06-10 (đợt 3) — RÀ SOÁT vs META + PAPER PACK + APP v0.5-pro (không đụng GPU)
+
+**1. Rà soát ML vs code/paper Meta gốc (`reference/vjepa2/`) — KẾT LUẬN: faithful, không có bug P0 mới.**
+Đã đối chiếu từng phần với `src/models/ac_predictor.py`, `app/vjepa_droid/train.py` (config
+`droid-256px-8f.yaml`: auto_steps=2, loss_exp=1, normalize_reps=true), `notebooks/utils/mpc_utils.py`:
+- ✅ Khớp Meta: interleave `[a,s,patch]`/frame, block-causal, predict tuyệt-đối (residual=false),
+  L1 teacher-forcing + 2-step rollout (= auto_steps 2), per-token LN cả dataset lẫn re-LN khi rollout,
+  CEM energy L1 final-patch, ImageNet mean/std. Lệch CÓ CHỦ Ý đã ghi ở `docs/VJEPA2_AC_CAR.md` §5b
+  (pos-emb học được thay RoPE, depth 12/512 thay 24/1024, state IMU thay pose).
+- Lệch nhỏ chấp nhận: Meta CEM trả **mean** + momentum, ta trả best-elite (có EMA steer bù);
+  resize 640×360→vuông (méo aspect nhưng nhất quán train↔infer).
+- Fix docstring stale (ac_clip/train_ac_car nói "z-score lat_mean/std" — thực tế per-token LN).
+
+**2. CEM nâng cấp theo PiJEPA (đã đọc paper, xem mục 3): `CEMPlannerAC` giờ có σ PER-DIM**
+(`sigma0 = min(init_std, nửa-box)` — trước σ=0.5 trên box ga [0,0.08] → ~94% sample dính biên =
+bang-bang) **+ warm-start σ NHỎ khi có `mu_init`** (`warm_sigma = max(warm_std·nửa-box, min_std_d)`,
+PiJEPA Alg.1 clamp σ∈[0.01,0.05] quanh prior) + `min_std` per-dim. `inference_loop --warm-std`
+(default 0.15). ✅ smoke-test CPU pass. **Việc sau train:** A/B `eval_goal_reaching_ac --policy …`
+(warm σ mới sẽ làm CEM hội tụ nhanh hơn → thử giảm samples/iters tiếp).
+
+**3. Paper pack đã TẢI về `docs/` (lần sau khỏi tải):** `PiJEPA_…pdf` (arXiv:2603.25981 — "Policy-
+Guided World Model Planning…", warm-start MPPI từ policy prior trên JEPA-WM; ta làm đúng tinh thần,
+khác: CEM thay MPPI, BC-MLP thay Octo), `V-JEPA_Revisiting…pdf` (V-JEPA 1, 2404.08471),
+`ViNG…pdf` (2012.09812) + `ViKiNG…pdf` (2202.11271) (nền của nav graph).
+
+**4. App Android v0.5-pro (build OK, APK `app-debug.apk` — CHƯA cài, user chốt chỉ build):**
+- **Fix logic:** SessionPlayer đọc actions.csv trên thread nền (hết ANR session dài);
+  SessionList `drive.stop()` trong onDestroy (hết leak 1 thread/lần mở); Uploader bỏ qua session
+  đã `.uploaded` (hết gửi trùng); PcLink queue đầy → bỏ frame CŨ giữ MỚI (closed-loop bớt trễ);
+  `imageToJpeg` crop+scale+rotate 1 lần createBitmap (đỡ ~4× pixel, mát máy hơn khi stream).
+- **Drive upload RESUME byte-offset (yêu cầu user):** lưu URI resumable vào `.drive_upload_uri`
+  cạnh session + giữ zip trong cache giữa các retry + `Zips` ghi entry time = mtime (zip
+  deterministic) → rớt 5G giữa zip lớn → lần sau hỏi offset (308/Range) gửi TIẾP, không từ 0.
+  Session URI hết hạn (404/410) → tự init lại.
+- **UX/HUD mới (user chọn ưu tiên closed-loop):** HUD HTML màu — REC đỏ đậm, telem xanh/đỏ,
+  mode **AUTO** xanh dương nổi bật, và dòng mới `PC↓ lái/ga · tuổi-lệnh · FRESH/RAMP/STALE`
+  (quan sát relay keep-alive ngay trên màn khi chạy AUTO). Version 0.5-pro (versionCode 5).
+- Cài khi tiện: `~/Android/Sdk/platform-tools/adb install -r robot/android/app/build/outputs/apk/debug/app-debug.apk`
+  (v0.4-safe chưa từng cài — v0.5 bao gồm cả keep-alive an toàn của v0.4).
+
 ## 🔎 2026-06-10 — RETRAIN 384 ĐANG CHẠY + RÀ SOÁT CODE TOÀN PIPELINE (fix P0 cho inference/eval)
 
 **Retrain 384/P2 ĐANG CHẠY** (start 2026-06-09 23:41, PID xem `nvidia-smi`): ep0 train 0.9345 /
