@@ -1,9 +1,9 @@
 """Training loop for VJEPA2ACCar — the faithful V-JEPA-2-AC car controller.
 
 Patch-token AC predictor on frozen V-JEPA 2.1 features. Objective = L1 teacher-forcing
-+ 2-step rollout (V-JEPA 2 paper eq. 2-4). Patch tokens z-scored per-dim (stats sampled
-from a few train sessions, since the full cache is ~66 GB); state z-scored too. Stats
-saved in the checkpoint for inference (planning).
++ 2-step rollout (V-JEPA 2 paper eq. 2-4, droid config auto_steps=2). Patch tokens get
+per-token LayerNorm in the dataset (= Meta's normalize_reps); state is z-scored with
+train-set stats, saved in the checkpoint for inference (planning).
 
 Entry: scripts/train_ac_car.py.
 """

@@ -113,15 +113,25 @@ class CEMPlannerAC:
                  action_scale=(1.0, 6.67), horizon: int = 4, n_samples: int = 128,
                  n_elite: int = 16, n_iter: int = 4, throttle_min=-0.16, throttle_max=0.15,
                  history: int = 2, init_std: float = 0.5, min_std: float = 0.05,
-                 prev_action_idx=None, domain=None, device: str = "cuda"):
+                 warm_std: float = 0.15, prev_action_idx=None, domain=None, device: str = "cuda"):
         self.model = model.eval()
         self.dyn = dynamics
         self.sm = state_mean.to(device).float(); self.ss = state_std.to(device).float()
         self.ascale = torch.as_tensor(action_scale, dtype=torch.float32, device=device)
         self.H = horizon; self.n_samples = n_samples; self.n_elite = n_elite; self.n_iter = n_iter
-        self.history = history; self.init_std = init_std; self.min_std = min_std
+        self.history = history
         self.low = torch.tensor([-1.0, throttle_min], device=device)
         self.high = torch.tensor([1.0, throttle_max], device=device)
+        # Per-dim sigmas. A scalar init_std=0.5 on a throttle box like [0, 0.08] puts ~94% of
+        # samples ON the clamp edges (bang-bang exploration) — so cap each dim's sigma at half
+        # its box width. min_std likewise can't exceed a quarter box (or it can never anneal).
+        half_box = (self.high - self.low) / 2
+        self.sigma0 = torch.minimum(torch.full_like(half_box, init_std), half_box)
+        self.min_std_d = torch.minimum(torch.full_like(half_box, min_std), half_box / 4)
+        # PiJEPA (arXiv:2603.25981, Alg.1): with a policy-prior warm start, the sampling sigma is
+        # SMALL (clamped to [0.01, 0.05] in their [-1,1] space) so CEM refines around the prior
+        # instead of re-exploring the whole box. warm_std is a fraction of each half-box.
+        self.warm_sigma = torch.maximum(warm_std * half_box, self.min_std_d)
         # P2: nếu state có prev-action (2 cột cuối), truyền tuple chỉ số → rollout set chúng = action
         # ứng viên của bước trước (khớp lúc train: state[t] chứa action[t-1]). None = state không có prev-action.
         self.prev_idx = list(prev_action_idx) if prev_action_idx is not None else None
@@ -166,17 +176,18 @@ class CEMPlannerAC:
             mu = torch.as_tensor(mu_init, dtype=torch.float32, device=self.device)
             mu = (mu.view(1, 2).expand(self.H, 2) if mu.dim() == 1 else mu).clone()
             mu = torch.max(torch.min(mu, self.high), self.low)
+            sigma = self.warm_sigma.expand(self.H, 2).clone()    # PiJEPA: refine around the prior
         else:
             mu = torch.zeros(self.H, 2, device=self.device)
             mu[:, 1] = (self.low[1] + self.high[1]) / 2                             # throttle mid-box
-        sigma = torch.full((self.H, 2), self.init_std, device=self.device)
+            sigma = self.sigma0.expand(self.H, 2).clone()
         best_s, best_seq = None, None
         for _ in range(self.n_iter):
             eps = torch.randn(self.n_samples, self.H, 2, device=self.device)
             samp = torch.max(torch.min(mu + sigma * eps, self.high), self.low)
             sc = self.score(z0, s0_raw, goal, samp, domain=domain)
             elite = torch.topk(sc, self.n_elite, largest=False).indices
-            mu = samp[elite].mean(0); sigma = samp[elite].std(0).clamp_min(self.min_std)
+            mu = samp[elite].mean(0); sigma = torch.maximum(samp[elite].std(0), self.min_std_d)
             if best_s is None or sc[elite[0]] < best_s:
                 best_s, best_seq = sc[elite[0]], samp[elite[0]]
         first = best_seq[0].detach().cpu()

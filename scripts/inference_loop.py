@@ -334,6 +334,9 @@ def main():
     ap.add_argument("--policy", default=None,
                     help="GoalPolicyPrior ckpt (train_policy_prior.py) — PiJEPA-style warm-start CEM mu "
                          "từ policy BC → ít iter/sample hơn, lái mượt hơn. None = CEM thuần.")
+    ap.add_argument("--warm-std", type=float, default=0.15,
+                    help="sigma CEM khi có --policy warm-start, theo tỉ lệ nửa-box mỗi chiều "
+                         "(PiJEPA clamp σ nhỏ quanh prior). Chỉ có tác dụng khi mu_init được truyền.")
     ap.add_argument("--pulse", action=argparse.BooleanOptionalAction, default=False,
                     help="pulse mode (sense-plan-act): áp action --pulse-move giây rồi NGẮT GA (giữ lái) "
                          "trong lúc encode+CEM → drift lúc tính ≈ 0, frame để plan gần như tĩnh. "
@@ -389,8 +392,8 @@ def main():
     planner = CEMPlannerAC(model, dyn, state_mean, state_std, action_scale=ascale,
                            horizon=args.horizon, n_samples=args.samples, n_elite=args.elite,
                            n_iter=args.iters, throttle_min=0.0,           # forward-only (no surprise reverse)
-                           throttle_max=args.throttle_cap, prev_action_idx=prev_idx,
-                           domain=domain, device=args.device)
+                           throttle_max=args.throttle_cap, warm_std=args.warm_std,
+                           prev_action_idx=prev_idx, domain=domain, device=args.device)
 
     policy = None
     if args.policy:

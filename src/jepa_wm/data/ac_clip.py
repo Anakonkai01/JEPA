@@ -4,7 +4,7 @@ Each item is a length-``horizon`` clip sampled at ``frame_stride`` rows (≈ V-J
 4 fps: our ~9 fps × stride 2 ≈ 220 ms/step, so consecutive steps differ enough that the
 predictor can't cheat with identity — the LeWM frame_skip lesson).
 
-  item = { "tokens":  (T, N, D) float32   patch maps (z-scored by lat_mean/std),
+  item = { "tokens":  (T, N, D) float32   patch maps (per-token LayerNorm, như Meta normalize_reps),
            "states":  (T, S) float32      [speed, yaw_rate, …] (z-scored),
            "actions": (T, A) float32      [steer, throttle] × action_scale }
 
