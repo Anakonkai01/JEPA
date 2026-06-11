@@ -5,6 +5,35 @@
 > [LeWorldModel.md](LeWorldModel.md) · [../robot/android/README.md](../robot/android/README.md) ·
 > [../robot/android/DRIVE_SETUP.md](../robot/android/DRIVE_SETUP.md). Cập nhật file này mỗi khi trạng thái đổi.
 
+## 🏆 2026-06-11 CHIỀU-TỐI — A4 CÔNG VIÊN: KỶ LỤC ~40m TỰ ĐI (cd4 + route-cache), 5 fix chạy-thật liên tiếp
+
+**Debug tại trận qua live_status/log, 5 run, mỗi run lộ 1 tầng lỗi mới (commit 7ce1274→165a22e):**
+1. **Standstill-attractor policy BC**: đứng yên → policy đề xuất ga ~0 + warm σ 0.01 → CEM ra ga 0.008
+   < ma sát tĩnh → kẹt/recovery-lùi vô hạn. Fix: **kickstart** mu ga ≥0.75·cap khi GPS speed < stuck.
+2. **Ma sát tĩnh > cap**: pulse 0.45s @0.07 không đề-pa nổi (recovery lùi 0.11 thì đi được!) → kick
+   0.12/0.8s. Sau đó phát hiện **--pulse coast ga-0 1.4s không giữ trớn** → bỏ pulse, chạy liên tục.
+3. **Doppler speed = 0.00 cả khi đang bò** → recovery cũ false-positive lùi xoá tiến độ → tạm
+   --no-recover; cuối buổi viết **recovery v2 displacement-based** (lúc kẹt thật GPS đông cứng ±0.2m
+   — tín hiệu sạch; stuck = dịch <0.6m/cửa sổ stuck_s, pos_hist re-arm sau cú lùi). + halted giờ gỡ
+   được bằng ▶ Run (trước phải restart). + **ga cruise 2 tầng** (kick 0.12 đứng yên / sàn 0.07 khi
+   lăn <0.5m/s — hết surge-coast).
+4. **Re-Dijkstra mỗi tick từ cur localize-flicker** → subgoal nhảy giữa session song song (lệch ≤8m)
+   → xe lượn. Fix: **route-cache** (plan 1 lần/goal, bám chuỗi cố định, advance = pop; replan chỉ khi
+   đổi goal/lạc >off_route_m).
+5. **Target đông cứng** (sub = node xuất phát, lệch GPS-node > advance_m không bao giờ pop) → xe servo
+   về ảnh điểm xuất phát, "không quẹo". Fix: drop sg[0] + luật pop 2 vế (≤advance_m HOẶC sub kế gần
+   hơn). + **OFF-ROUTE deadlock** (gate localize 15m > off_route 10m → node 10-15m kẹt neutral mãi)
+   → ép re-localize gate=off_route trước khi neutral.
+
+**Kết quả run cuối: d 56.7→16.7m ≈ 40m tự đi liên tục, subgoal advance mượt route 15→3 (VƯỢT MỐC 26m).**
+Còn lại: (a) 2 lần **chui bụi cỏ mép đường ghiền tại chỗ ~27s** ở ga 0.12 (vì --no-recover; v2 đã viết,
+CHƯA test trên xe); (b) thoát cỏ bằng đánh lái ±1.0 → view xoay → localize văng → **replan storm**, d
+17→46m, user Ctrl+C; (c) xe vẫn lượn ±1m quanh tuyến (chu kỳ 1.36s + EMA 0.6 ì — thử --steer-smooth 0.4).
+Lệnh chuẩn lần tới (recovery v2 BẬT): `--web --reach-m 6 --stuck-s 3 --steer-smooth 0.4 --checkpoint
+checkpoints/vjepa_ac_car_cd4/vjepa_ac_car/best.pt --policy checkpoints/policy_prior/best.pt`.
+KHÔNG dùng 1-2m subgoal-spacing (< GPS noise ±2m; ảnh goal ≈ ảnh hiện tại → ga chết). **Nhớ resume cd4
+tối nay** (lệnh ở mục PAUSE dưới; còn ~2 epoch ≈ 6h).
+
 ## ⏸️ 2026-06-11 16:54 — PAUSE cd4 GIỮA ep2 ĐỂ RA CÔNG VIÊN CHẠY THẬT (A4) — cd4 ĐANG THẮNG, DÙNG NÓ
 
 - **Pause OK** (user ra công viên, cần GPU): SIGTERM PID 9700 → `paused @ ep 2 gstep 5647`, last.pt
