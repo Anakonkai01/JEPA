@@ -565,9 +565,15 @@ def main():
                             continue
 
                         # SAFETY off-route (mode graph): localize lệch GPS xe quá xa = lạc / localize
-                        # sai → neutral thay vì lái theo route bịa (A4). Chỉ khi có GPS fix.
+                        # sai. Trước khi neutral, ÉP localize lại trong bán kính off_route quanh GPS
+                        # (gate mặc định 15m > off_route 10m → node visual 10-15m từng gây DEADLOCK:
+                        # neutral → xe đứng → cảnh y nguyên → localize y nguyên, lặp vô hạn 06-11).
+                        # Vẫn lệch sau khi ép = quanh GPS không có node nào (lạc thật) → neutral.
                         if wp_mode == "graph" and car_xy is not None:
                             loc_err = float(np.linalg.norm(car_xy - graph.XY[cur]))
+                            if loc_err > args.off_route_m:
+                                cur = graph.localize(nav, gps_prior=gps, gate_m=args.off_route_m)
+                                loc_err = float(np.linalg.norm(car_xy - graph.XY[cur]))
                             if loc_err > args.off_route_m:
                                 emit(0.0, 0.0); prev_steer = 0.0
                                 print(f"[infer] OFF-ROUTE: localize lệch GPS {loc_err:.1f}m > "
@@ -612,17 +618,23 @@ def main():
                                 if not route:
                                     emit(0.0, 0.0)
                                     print(f"[infer] no route {cur}->{goal}; neutral"); time.sleep(period); continue
-                                nav_subs, nav_goal = graph.extract_subgoals(route, spacing_m=spacing), goal
+                                sg = graph.extract_subgoals(route, spacing_m=spacing)
+                                # bỏ node xuất phát (= chỗ xe đang đứng; lệch localize-GPS có thể
+                                # >advance_m → nếu giữ, nó làm target vĩnh viễn: xe servo về ảnh
+                                # điểm xuất phát, không quẹo — bug chạy thật 06-11)
+                                nav_subs, nav_goal = (sg[1:] if len(sg) > 1 else sg), goal
                                 print(f"[infer] route mới: {len(nav_subs)} subgoal (cur{cur}->goal{goal})", flush=True)
                             subs = nav_subs
-                            # FIX B: nhắm subgoal đầu tiên còn cách xe > advance_m (bỏ hẳn subgoal đã
-                            # qua khỏi cache — không quay lại) → target luôn nằm PHÍA TRƯỚC.
+                            # FIX B: bỏ hẳn subgoal đã QUA khỏi cache — "qua" = tới gần (≤advance_m)
+                            # HOẶC subgoal kế đã gần hơn (vượt qua với độ lệch ngang lớn) → target
+                            # luôn nằm PHÍA TRƯỚC, tiến độ đơn điệu (pop không quay lại).
                             if car_xy is not None:
-                                while (len(nav_subs) > 1 and float(np.linalg.norm(
-                                        car_xy - graph.XY[nav_subs[0]])) <= args.advance_m):
+                                def _d(n):
+                                    return float(np.linalg.norm(car_xy - graph.XY[n]))
+                                while len(nav_subs) > 1 and (_d(nav_subs[0]) <= args.advance_m
+                                                             or _d(nav_subs[1]) < _d(nav_subs[0])):
                                     nav_subs.pop(0)
-                                far0 = float(np.linalg.norm(car_xy - graph.XY[nav_subs[0]])) > args.advance_m
-                                target = nav_subs[0] if far0 else goal
+                                target = nav_subs[0] if _d(nav_subs[0]) > args.advance_m else goal
                             else:
                                 target = subs[1] if len(subs) >= 2 else subs[-1]
                             gd = f"{gps_dist:.1f}m" if gps_dist is not None else "no-gps"
