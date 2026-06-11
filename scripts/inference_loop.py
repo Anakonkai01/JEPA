@@ -494,13 +494,18 @@ def main():
             reader = FrameReader(conn); reader.start()
             last_seq, reached, prev_steer = -1, False, 0.0
             last_frame_t = time.time()
-            stuck_since, recover_times, halted = None, [], False
+            stuck_since, recover_times, halted, halted_route = None, [], False, None
             try:
                 while reader.alive:
                     if halted:                            # quá recover-max lần kẹt → đứng yên chờ người
                         emit(0.0, 0.0)
                         if web is not None:
+                            web.poll()                    # vẫn nghe web: ▶ Run route mới = gỡ halt
                             web.status(state="halted")
+                            if web.route is not None and web.route is not halted_route:
+                                halted, recover_times, stuck_since = False, [], None
+                                print("[infer] ▶ route mới từ web — gỡ DỪNG HẲN, chạy tiếp", flush=True)
+                                continue
                         time.sleep(0.5); continue
                     t0 = time.time()
                     seq, item = reader.latest()
@@ -666,6 +671,7 @@ def main():
                             recover_times = [t for t in recover_times if now - t < 60.0]
                             if len(recover_times) >= args.recover_max:
                                 halted = True
+                                halted_route = web.route if web is not None else None
                                 emit(0.0, 0.0)
                                 print(f"[infer] 🛑 KẸT {args.recover_max} lần/60s — DỪNG HẲN, cần người "
                                       f"(gạt CH9 về manual để lấy xe).", flush=True)
