@@ -357,6 +357,9 @@ def main():
                          "quá --stuck-s giây → lùi + đánh lái ngược --recover-s giây → replan. "
                          "(maneuver giống ~160 sự kiện va-lùi-chỉnh người lái trong data)")
     ap.add_argument("--stuck-speed", type=float, default=0.15, help="dưới tốc độ này (m/s) coi là không nhúc nhích")
+    ap.add_argument("--stuck-m", type=float, default=0.6,
+                    help="kẹt = dịch chuyển GPS < ngần này (mét) trong cửa sổ --stuck-s giây "
+                         "(detector dịch-chuyển, thay doppler speed vốn báo 0 khi bò chậm)")
     ap.add_argument("--stuck-s", type=float, default=2.0, help="kẹt liên tục quá ngần này (giây) → recovery")
     ap.add_argument("--recover-throttle", type=float, default=-0.11,
                     help="ga lùi lúc recovery (clamp cứng [-0.16,0] ở controller)")
@@ -498,8 +501,9 @@ def main():
             reader = FrameReader(conn); reader.start()
             last_seq, reached, prev_steer = -1, False, 0.0
             last_frame_t = time.time()
-            stuck_since, recover_times, halted, halted_route = None, [], False, None
+            recover_times, halted, halted_route = [], False, None
             nav_subs, nav_goal = None, None               # route cache (Dijkstra 1 lần/goal)
+            pos_hist = []                                 # (t, xy) cho stuck-detector dịch chuyển
             try:
                 while reader.alive:
                     if halted:                            # quá recover-max lần kẹt → đứng yên chờ người
@@ -508,7 +512,8 @@ def main():
                             web.poll()                    # vẫn nghe web: ▶ Run route mới = gỡ halt
                             web.status(state="halted")
                             if web.route is not None and web.route is not halted_route:
-                                halted, recover_times, stuck_since = False, [], None
+                                halted, recover_times = False, []
+                                pos_hist.clear()
                                 print("[infer] ▶ route mới từ web — gỡ DỪNG HẲN, chạy tiếp", flush=True)
                                 continue
                         time.sleep(0.5); continue
@@ -693,16 +698,18 @@ def main():
 
                     # --- STUCK / CRASH RECOVERY: lệnh ga tiến mà xe không nhúc nhích (đâm tường,
                     # lao bờ cỏ, kẹt bánh) → lùi + đánh lái ngược rồi replan (giống người lái trong data).
-                    # Cần GPS fix: speed lấy từ GPS — không fix (trong nhà/bench) thì speed=0 sẽ
-                    # kích hoạt recovery NHẦM, nên tắt khi chưa có fix.
-                    if args.recover and float(meta.get("lat", 0) or 0):
-                        spd = float(meta.get("speed", 0.0) or 0.0)
+                    # Detector v2 theo DỊCH CHUYỂN GPS thật (06-11: doppler speed báo 0.00 cả khi
+                    # đang bò → false positive lùi oan; còn lúc kẹt cỏ thật thì vị trí GPS đông cứng
+                    # ±0.2m — tín hiệu sạch). Kẹt = đang lệnh tiến mà net-displacement < stuck_m
+                    # trong cửa sổ stuck_s giây. Cần GPS fix (trong nhà tự tắt như cũ).
+                    if args.recover and car_xy is not None:
                         now = time.time()
-                        if throt > 0.03 and spd < args.stuck_speed:
-                            stuck_since = stuck_since or now
-                        else:
-                            stuck_since = None
-                        if stuck_since and now - stuck_since > args.stuck_s:
+                        pos_hist.append((now, car_xy))
+                        while pos_hist and now - pos_hist[0][0] > args.stuck_s:
+                            pos_hist.pop(0)
+                        moved = float(np.linalg.norm(car_xy - pos_hist[0][1]))
+                        span = now - pos_hist[0][0]
+                        if throt > 0.03 and span >= args.stuck_s * 0.7 and moved < args.stuck_m:
                             recover_times = [t for t in recover_times if now - t < 60.0]
                             if len(recover_times) >= args.recover_max:
                                 halted = True
@@ -713,13 +720,14 @@ def main():
                                 continue
                             recover_times.append(now)
                             rev_steer = max(-1.0, min(1.0, -prev_steer))
-                            print(f"[infer] 🔁 RECOVERY #{len(recover_times)}: kẹt {now-stuck_since:.1f}s "
-                                  f"(spd {spd:.2f}) → lùi {args.recover_s:.1f}s steer {rev_steer:+.2f} "
+                            print(f"[infer] 🔁 RECOVERY #{len(recover_times)}: dịch {moved:.2f}m/"
+                                  f"{span:.1f}s → lùi {args.recover_s:.1f}s steer {rev_steer:+.2f} "
                                   f"throt {args.recover_throttle:+.2f}", flush=True)
                             hold(0.0, 0.0, 0.3)                       # khựng lại, nhả ESC
                             hold(rev_steer, args.recover_throttle, args.recover_s)
                             hold(0.0, 0.0, 0.3)                       # dừng → frame mới gần như tĩnh
-                            stuck_since, prev_steer = None, 0.0       # reset EMA lái, replan từ đầu
+                            pos_hist.clear()                          # re-arm detector sau cú lùi
+                            prev_steer = 0.0                          # reset EMA lái, replan từ đầu
                             continue                                  # bỏ pacing, lấy frame mới ngay
 
                     if args.pulse:
