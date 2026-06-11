@@ -1,0 +1,138 @@
+#!/usr/bin/env python3
+"""Energy-landscape probe — E(steer) quét [-1,1] trên window VAL thật (ban ngày).
+
+Trả lời "đánh lái yếu / energy có tín hiệu lái không" TÁCH BẠCH khỏi chuyện
+closed-loop (trễ, GPS, ánh sáng): với goal = patch map d bước phía trước, giữ
+throttle = teacher, quét steer HẰNG theo horizon → mỗi window in argmin-steer vs
+steer người lái + độ tương phản (E_max−E_min)/E_min. Landscape phẳng (contrast ~0)
+= CEM không có gì để bám → lái yếu là tại model/goal; contrast rõ + argmin đúng
+phía = model ổn, vấn đề nằm ở closed-loop.
+
+    PYTHONPATH=src python scripts/probe_energy.py \
+        --checkpoint checkpoints/vjepa_ac_car_cd4/vjepa_ac_car/best.pt -d 4
+"""
+from __future__ import annotations
+
+import argparse
+from pathlib import Path
+
+import numpy as np
+import torch
+
+from jepa_wm.data.ac_clip import ACClipDataset
+from jepa_wm.data.dataset import frozen_split
+from jepa_wm.models import build_model
+from jepa_wm.planning import CEMPlannerAC
+from jepa_wm.planning.dynamics import CarDynamics
+
+
+def _strip_compile(sd):
+    return {k.replace("_orig_mod.", "", 1): v for k, v in sd.items()}
+
+
+def _spark(vals, width=41):
+    """Đường năng lượng ASCII: thấp = '.', cao = '#' (8 mức)."""
+    v = np.asarray(vals)
+    v = (v - v.min()) / (v.max() - v.min() + 1e-12)
+    chars = " .:-=+*#"
+    return "".join(chars[int(x * (len(chars) - 1))] for x in v)
+
+
+def main():
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--checkpoint", default="checkpoints/vjepa_ac_car_cd4/vjepa_ac_car/best.pt")
+    ap.add_argument("-d", "--distance", type=int, default=4, help="goal = d bước phía trước")
+    ap.add_argument("--n-windows", type=int, default=24)
+    ap.add_argument("--grid", type=int, default=21, help="số điểm quét steer trong [-1,1]")
+    ap.add_argument("--turn-only", action="store_true",
+                    help="chỉ lấy window người lái đang quẹo (|steer| > 0.15)")
+    ap.add_argument("--history", type=int, default=2)
+    ap.add_argument("--dt", type=float, default=0.22)
+    ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    ap.add_argument("--seed", type=int, default=0)
+    args = ap.parse_args()
+
+    ckpt = torch.load(args.checkpoint, map_location=args.device, weights_only=False)
+    cfg = ckpt["cfg"]
+    model = build_model(cfg["model"]).to(args.device)
+    model.load_state_dict(_strip_compile(ckpt["model"]))
+    model.eval()
+    state_mean = ckpt["state_mean"].to(args.device).float()
+    state_std = ckpt["state_std"].to(args.device).float()
+
+    d_ = cfg["data"]
+    roots = d_.get("roots")
+    use_domain = roots is not None and (len(roots) > 1 or any(int(r.get("domain_id", 0)) != 0 for r in roots))
+    cols = tuple(d_.get("state_columns", ["speed", "gx", "gy", "gz", "ax", "ay", "az", "rx", "ry", "rz"]))
+    stride = d_.get("frame_stride", 2)
+    ascale = tuple(d_.get("action_scale", [1.0, 6.67]))
+    speed_idx = cols.index("speed") if "speed" in cols else 0
+    yaw_idx = cols.index("gz") if "gz" in cols else 1
+    prev_idx = (cols.index("prev_steer"), cols.index("prev_throttle")) if "prev_steer" in cols else None
+
+    for r in roots:
+        r["_sessions"] = sorted(p.stem for p in Path(r["patch_dir"]).glob("*.npy"))
+    sessions = sorted(s for r in roots for s in r["_sessions"])
+    split_path = Path(args.checkpoint).parent / "split.json"
+    train_s, val_s, sinfo = frozen_split(split_path, sessions, val_frac=d_.get("val_frac", 0.2),
+                                         seed=cfg.get("seed", 0), save=False)
+    train_set, val_set = set(train_s), set(val_s)
+    dyn = CarDynamics.fit([(r["raw_dir"], [s for s in r["_sessions"] if s in train_set]) for r in roots],
+                          dt=args.dt, stride=stride, speed_idx=speed_idx, yaw_idx=yaw_idx)
+    d = args.distance
+    ds = ACClipDataset(roots=[{"patch_dir": r["patch_dir"], "raw_dir": r["raw_dir"],
+                               "sessions": [s for s in r["_sessions"] if s in val_set],
+                               "domain_id": r.get("domain_id", 0)} for r in roots],
+                       horizon=d + 1, frame_stride=stride, state_columns=cols,
+                       action_scale=(1.0, 1.0), state_mean=None, max_gap=d_.get("max_gap"))
+    planner = CEMPlannerAC(model, dyn, state_mean, state_std, action_scale=ascale,
+                           horizon=d, history=args.history, prev_action_idx=prev_idx,
+                           device=args.device)
+
+    rng = np.random.default_rng(args.seed)
+    order = rng.permutation(len(ds))
+    grid = torch.linspace(-1.0, 1.0, args.grid)
+    print(f"[probe] {args.checkpoint} | d={d} ({d * stride * 0.11:.1f}s) | {sinfo and 'FROZEN split'} "
+          f"| grid {args.grid} điểm steer, throttle = teacher")
+    print(f"{'win':>5} {'tea_steer':>9} {'argminE':>8} {'contrast':>9}  E(steer) -1 … +1   (^ = teacher)")
+
+    derr, signs, contrasts, shown = [], [], [], 0
+    for i in order:
+        item = ds[int(i)]
+        a_raw = item["actions"].float()
+        tea = float(a_raw[:d, 0].mean())
+        if args.turn_only and abs(tea) < 0.15:
+            continue
+        z = item["tokens"].to(args.device).float()
+        s0 = item["states"][0].to(args.device).float()
+        dom = float(a_raw[0, -1]) if use_domain else None
+        thr = float(a_raw[:d, 1].mean())
+        seqs = torch.zeros(args.grid, d, 2, device=args.device)
+        seqs[:, :, 0] = grid[:, None].to(args.device)
+        seqs[:, :, 1] = thr
+        with torch.no_grad():
+            E = planner.score(z[:1], s0, z[d], seqs, domain=dom).cpu().numpy()
+        k = int(np.argmin(E))
+        best = float(grid[k])
+        contrast = float((E.max() - E.min()) / (E.min() + 1e-9))
+        derr.append(abs(best - tea))
+        if abs(tea) > 0.15:
+            signs.append(np.sign(best) == np.sign(tea))
+        contrasts.append(contrast)
+        if shown < 8:
+            curve = _spark(E)
+            tpos = int(round((tea + 1) / 2 * (args.grid - 1)))
+            mark = " " * tpos + "^"
+            print(f"{int(i):>5} {tea:>+9.2f} {best:>+8.2f} {contrast:>9.3f}  |{curve}|")
+            print(f"{'':>34}  |{mark:<{args.grid}}|")
+            shown += 1
+        if len(derr) >= args.n_windows:
+            break
+
+    print(f"\n[probe] {len(derr)} window: median |argminE − teacher| = {np.median(derr):.3f}"
+          f" | sign-đúng khi quẹo (|tea|>0.15): {int(np.sum(signs))}/{len(signs)}"
+          f" | median contrast = {np.median(contrasts):.3f}")
+
+
+if __name__ == "__main__":
+    main()

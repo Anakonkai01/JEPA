@@ -5,6 +5,28 @@
 > [LeWorldModel.md](LeWorldModel.md) · [../robot/android/README.md](../robot/android/README.md) ·
 > [../robot/android/DRIVE_SETUP.md](../robot/android/DRIVE_SETUP.md). Cập nhật file này mỗi khi trạng thái đổi.
 
+## 🌙 2026-06-11 TỐI — CHẨN ĐOÁN OFFLINE: ĐÂM-THẲNG LÚC CHẠNG VẠNG = DOMAIN SHIFT ÁNH SÁNG (đã đo), MODEL LÁI TỐT BAN NGÀY + cd4 RESUMED
+
+**Cuối buổi (trời tối) xe đâm thẳng vô cỏ/lề không sửa lái + "lùi quài" → user nghi domain shift, đúng:**
+- **Probe A (localize day-vs-dusk, frame thật `live_frame.jpg` 18:03):** ban ngày top-1 sim 0.998,
+  top-5 (loại session gốc) CHỤM ~3m quanh vị trí thật; frame tối top-1 0.971, top-5 dính chùm
+  0.968-0.969 nhưng VĂNG ~70m khắp công viên → encoder lúc tối chỉ match "đường tối chung chung",
+  localize ≈ random trong GPS gate; CEM so ảnh-tối với subgoal-ban-ngày → energy = chênh sáng,
+  không phải vị trí → lái như random. **Graph + 209 session đều ban ngày → CHỈ TEST BAN NGÀY**
+  (muốn chạy tối: thu thêm session tối + rebuild graph — backlog).
+- **Probe B (`scripts/probe_energy.py` MỚI — quét E(steer) [-1,1], throttle=teacher, d=4, 24 turn-window
+  val ban ngày, cd4 ckpt):** argmin-E đúng HƯỚNG quẹo **23/24**, median |argmin−teacher| 0.14,
+  median contrast (Emax−Emin)/Emin **0.39** — landscape đáy rõ, đúng phía. **Model KHÔNG "đánh lái
+  yếu" offline**; lái yếu closed-loop = trễ 1.36s + EMA + (tối nay) domain shift.
+- **Run #7-#8 tối:** recovery v2 đo dịch 0.15-0.31m/2.7s ở ga đều 0.07-0.12 — xe thật sự gần như
+  không lăn (nghi PIN TỤT ÁP cuối buổi: cùng kick 0.12 đầu chiều chạy 40m). Gate `throt>0.02` của
+  floor ga gây nhấp nhả 0.12/0.00 → đã bỏ (floor vô điều kiện khi theo route, commit afdb6dc).
+  User tắt recovery (`--no-recover`) → xe đâm thẳng (không tự cứu) → nghỉ vì trời tối.
+- **cd4 RESUMED 19:0x (PID 45659): `resume <- last.pt (ep 2, gstep 5647)`** — còn ~1.5 ep ≈ 4-5h.
+  Sáng mai: eval theo luật B5 (mục PAUSE dưới) + **A2 eval_goal_reaching d=1..8 ±policy trên ckpt
+  thắng** (GPU rảnh sau train) + lần chạy thật kế: PIN ĐẦY + BAN NGÀY + recovery v2 bật
+  (`--stuck-s 3`), lệnh chuẩn ở mục A4 dưới.
+
 ## 🏆 2026-06-11 CHIỀU-TỐI — A4 CÔNG VIÊN: KỶ LỤC ~40m TỰ ĐI (cd4 + route-cache), 5 fix chạy-thật liên tiếp
 
 **Debug tại trận qua live_status/log, 5 run, mỗi run lộ 1 tầng lỗi mới (commit 7ce1274→165a22e):**
