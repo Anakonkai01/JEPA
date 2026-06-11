@@ -5,6 +5,28 @@
 > [LeWorldModel.md](LeWorldModel.md) · [../robot/android/README.md](../robot/android/README.md) ·
 > [../robot/android/DRIVE_SETUP.md](../robot/android/DRIVE_SETUP.md). Cập nhật file này mỗi khi trạng thái đổi.
 
+## 🗺️ 2026-06-11 — ROUTE PLANNER: Dijkstra heading-aware + UI chọn hướng (fix "đường vòng vèo / khó chọn node")
+
+**User báo 3 vấn đề trên web planner → đã fix cả 3, KHÔNG cần rebuild graph (CPU-only, không đụng GPU cd4):**
+1. **Đường gợi ý zigzag:** thủ phạm = **251.213 loop-closure edge (vs 33.387 temporal) đều mang weight cứng
+   0.5m** trong khi 2 đầu cách thật trung bình 2.6m (p90 5.1m, max 8m) → Dijkstra xâu "teleport rẻ" thành
+   đường vòng vèo. Fix `nav/graph.py`: `_build_adj` precompute cost per-directed-edge (mét THẬT
+   `max(w,‖XY_u−XY_v‖)` + góc đổi hướng + π khi đi NGƯỢC chiều temporal edge — ảnh subgoal sẽ quay lưng);
+   `plan_route(turn_penalty_m=3.0, switch_penalty_m=1.0)` (=0,0 là về shortest-metres cũ). Đo 8 cặp 60–120m:
+   nhảy session giảm 3–7× (23→6), tổng góc quẹo giảm 2–4×, mét thật ngắn hơn/bằng, 0 đoạn ngược chiều,
+   ~0.06s/leg. Builder từ nay cũng lưu mét thật cho loop edge (`max(loop_weight, dij)`).
+   `inference_loop`/`eval_navigation`/`viz_route` dùng chung `plan_route` → tự hưởng (signature tương thích,
+   `components()` đã sửa theo adj 4-tuple).
+2. **Không thấy hướng đi:** graph vốn LƯU `heading`/node nhưng API+UI không dùng → `/api/graph` trả thêm
+   `heading`; UI: node tô MÀU theo hướng (24 bucket hue, toggle ở legend), mũi tên hướng khi hover/selected/
+   waypoint, subgoal = tam giác chỉ hướng, waypoint list có glyph hướng, preview hiện "hướng đi: ↗ 52°" (la bàn).
+3. **Khó chọn node / không chọn được chiều:** hit-radius 14→22px, node to hơn khi zoom, hover ring + cursor
+   pointer, và **chip "node gần đây theo hướng"** trong preview: gom node ≤6m quanh node đang chọn theo 8 hướng
+   → bấm chip nhảy sang node gần nhất đi đúng chiều mình muốn rồi mới ➕ waypoint.
+- `/api/suggest` nhận thêm `&turn=&switch=` để tune penalty sống. Test: `node --check` JS OK; Flask test-client
+  graph/suggest/index OK; components=1 / blocked / extract_subgoals OK. **CHƯA xem trên browser thật** — buổi
+  A4 tới mở web là thấy; nếu đường vẫn cong chỗ nào thì chỉnh `turn` (to = thẳng/giữ hướng hơn) ngay trên URL.
+
 ## ⚡ 2026-06-11 10:25 — CÚP ĐIỆN giữa ep12 → COOLDOWN T=4 (cd4) ĐANG CHẠY + APK v0.5-pro ĐÃ CÀI
 
 **Sự cố:** run 384/P2 chết vì cúp điện giữa ep12 (last.pt = ep11 ghi 10:11 → chỉ mất ~14').

@@ -50,8 +50,10 @@
   <canvas id="cv"></canvas>
   <div id="legend">
     <div><i style="color:#56708a">●</i> node graph &nbsp; <i style="color:#ffd24d">●</i> waypoint
-         &nbsp; <i style="color:#4da3ff">━</i> đường gợi ý &nbsp; <i style="color:#37c871">●</i> subgoal</div>
-    <div><i style="color:#ff5252">▲</i> xe (live) &nbsp;|&nbsp; kéo = pan, lăn = zoom, click = chọn node, <b>dbl-click = thêm waypoint</b></div>
+         &nbsp; <i style="color:#4da3ff">━</i> đường gợi ý &nbsp; <i style="color:#37c871">▲</i> subgoal (mũi tên = hướng xe nhìn)</div>
+    <div><i style="color:#ff5252">●</i> xe (live) &nbsp;|&nbsp; kéo = pan, lăn = zoom, rê chuột = xem hướng, click = chọn node, <b>dbl-click = thêm waypoint</b></div>
+    <div><label style="pointer-events:auto;cursor:pointer"><input type="checkbox" id="hdcolor" checked onchange="draw()"> màu node = hướng đi</label>
+         &nbsp;<i style="color:hsl(0,65%,55%)">→</i> <i style="color:hsl(90,65%,55%)">↑</i> <i style="color:hsl(180,65%,55%)">←</i> <i style="color:hsl(270,65%,55%)">↓</i></div>
   </div>
 </div>
 
@@ -75,6 +77,11 @@
       <button class="small" onclick="stepSel(1)">1›</button>
       <button class="small" onclick="stepSel(10)">10≫</button>
     </div>
+    <div class="row" style="margin-top:6px">
+      <span class="muted">hướng đi:</span> <b id="selhd" style="color:var(--warn)"></b>
+      <span class="spacer"></span><span class="muted">node gần đây theo hướng:</span>
+    </div>
+    <div class="row wrap" id="dirchips" style="margin-top:4px"></div>
     <div class="row" style="margin-top:6px">
       <button class="acc" style="flex:1" onclick="addWp()">➕ Thêm waypoint</button>
       <button onclick="hideSel()">Đóng</button>
@@ -109,10 +116,19 @@
 <script>
 "use strict";
 // ---------- state ----------
-let N=0, XY=null, SUID=null, EXT=[0,1,0,1];
+let N=0, XY=null, SUID=null, HD=null, EXT=[0,1,0,1];
 let cam={x:0,y:0,scale:5};                 // world(m) -> screen: s=(p-c)*scale (+flip y)
-let sel=null, wps=[], suggest=null, live=null, trail=[];
+let sel=null, hov=null, wps=[], suggest=null, live=null, trail=[];
 let activeRoute=null;
+// node theo bucket hướng (24 × 15°) để tô màu nhanh
+const NHUE=24, BSTYLE=[...Array(NHUE)].map((_,b)=>`hsl(${b*360/NHUE},65%,55%)`);
+let BIDX=null;
+function buildBuckets(){BIDX=Array.from({length:NHUE},()=>[]);if(!HD)return;
+  for(let k=0;k<N;k++){let b=Math.round(HD[k]*NHUE/(2*Math.PI))%NHUE;if(b<0)b+=NHUE;BIDX[b].push(k);}}
+const DIRG=['→','↗','↑','↖','←','↙','↓','↘'];   // heading 0 = Đông (+x), CCW
+function dirBucket8(t){let b=Math.round(t*4/Math.PI)%8;if(b<0)b+=8;return b;}
+function fmtHd(t){const deg=((90-t*180/Math.PI)%360+360)%360;   // la bàn: 0°=Bắc, thuận kim đồng hồ
+  return DIRG[dirBucket8(t)]+' '+deg.toFixed(0)+'°';}
 const cv=document.getElementById('cv'), ctx=cv.getContext('2d');
 const mapEl=document.getElementById('map');
 
@@ -130,6 +146,21 @@ function W2S(x,y){const r=mapEl.getBoundingClientRect();
 function S2W(px,py){const r=mapEl.getBoundingClientRect();
   return [(px-r.width/2)/cam.scale+cam.x, cam.y-(py-r.height/2)/cam.scale];}
 
+// mũi tên hướng th (toạ độ math, y lên trên) tại điểm màn hình (sx,sy)
+function arrow(sx,sy,th,len,color,width){
+  const c=Math.cos(th),s=-Math.sin(th),hx=sx+c*len,hy=sy+s*len;
+  ctx.strokeStyle=color;ctx.lineWidth=width;ctx.beginPath();ctx.moveTo(sx,sy);ctx.lineTo(hx,hy);ctx.stroke();
+  ctx.fillStyle=color;ctx.beginPath();ctx.moveTo(hx+c*7,hy+s*7);
+  ctx.lineTo(hx-s*3.5,hy+c*3.5);ctx.lineTo(hx+s*3.5,hy-c*3.5);ctx.closePath();ctx.fill();}
+// tam giác chỉ hướng (cho subgoal)
+function triNode(sx,sy,th,rr,color){
+  const c=Math.cos(th),s=-Math.sin(th);
+  ctx.fillStyle=color;ctx.beginPath();
+  ctx.moveTo(sx+c*rr*1.8,sy+s*rr*1.8);
+  ctx.lineTo(sx-c*rr-s*rr*0.95,sy-s*rr+c*rr*0.95);
+  ctx.lineTo(sx-c*rr+s*rr*0.95,sy-s*rr-c*rr*0.95);
+  ctx.closePath();ctx.fill();}
+
 function draw(){
   const r=mapEl.getBoundingClientRect(); ctx.clearRect(0,0,r.width,r.height);
   if(!XY) return;
@@ -139,18 +170,26 @@ function draw(){
   while(i<N){let j=i; ctx.beginPath(); const [x0,y0]=W2S(XY[2*i],XY[2*i+1]); ctx.moveTo(x0,y0);
     while(j+1<N && SUID[j+1]===SUID[i]){j++; const[xx,yy]=W2S(XY[2*j],XY[2*j+1]); ctx.lineTo(xx,yy);}
     ctx.stroke(); i=j+1;}
-  // nodes
-  ctx.fillStyle='#56708a';
-  const rad=Math.max(1,Math.min(2.4,cam.scale*0.12));
-  for(let k=0;k<N;k++){const[sx,sy]=W2S(XY[2*k],XY[2*k+1]);
-    if(sx<-5||sy<-5||sx>r.width+5||sy>r.height+5)continue; ctx.fillRect(sx-rad/2,sy-rad/2,rad,rad);}
+  // nodes — màu theo hướng đi (bucket 15°) để thấy "làn" 2 chiều tách nhau
+  const rad=Math.max(1.2,Math.min(4,cam.scale*0.18));
+  const colorHd=HD&&BIDX&&document.getElementById('hdcolor').checked;
+  if(colorHd){
+    for(let b=0;b<NHUE;b++){const arr=BIDX[b];if(!arr.length)continue;
+      ctx.fillStyle=BSTYLE[b];
+      for(const k of arr){const[sx,sy]=W2S(XY[2*k],XY[2*k+1]);
+        if(sx<-5||sy<-5||sx>r.width+5||sy>r.height+5)continue; ctx.fillRect(sx-rad/2,sy-rad/2,rad,rad);}}
+  }else{
+    ctx.fillStyle='#56708a';
+    for(let k=0;k<N;k++){const[sx,sy]=W2S(XY[2*k],XY[2*k+1]);
+      if(sx<-5||sy<-5||sx>r.width+5||sy>r.height+5)continue; ctx.fillRect(sx-rad/2,sy-rad/2,rad,rad);}
+  }
   // suggested path
   if(suggest&&suggest.path&&suggest.path.length>1){
     ctx.lineWidth=3; ctx.strokeStyle='#4da3ff'; ctx.beginPath();
     suggest.path.forEach((n,k)=>{const[sx,sy]=W2S(XY[2*n],XY[2*n+1]); k?ctx.lineTo(sx,sy):ctx.moveTo(sx,sy);});
     ctx.stroke();
-    ctx.fillStyle='#37c871';
-    (suggest.subgoals||[]).forEach(n=>{const[sx,sy]=W2S(XY[2*n],XY[2*n+1]);ctx.beginPath();ctx.arc(sx,sy,4,0,7);ctx.fill();});
+    (suggest.subgoals||[]).forEach(n=>{const[sx,sy]=W2S(XY[2*n],XY[2*n+1]);
+      triNode(sx,sy,HD?HD[n]:0,5,'#37c871');});
   }
   // direct-mode: nối thẳng waypoint
   if(document.getElementById('mode').value==='direct'&&wps.length>1){
@@ -158,14 +197,19 @@ function draw(){
     wps.forEach((n,k)=>{const[sx,sy]=W2S(XY[2*n],XY[2*n+1]); k?ctx.lineTo(sx,sy):ctx.moveTo(sx,sy);});
     ctx.stroke(); ctx.setLineDash([]);
   }
-  // waypoints
+  // waypoints (mũi tên = hướng node đã chọn)
   wps.forEach((n,k)=>{const[sx,sy]=W2S(XY[2*n],XY[2*n+1]);
+    if(HD)arrow(sx,sy,HD[n],17,'#ffd24d',2.5);
     ctx.fillStyle='#ffd24d'; ctx.beginPath(); ctx.arc(sx,sy,8,0,7); ctx.fill();
     ctx.fillStyle='#1a1a1a'; ctx.font='bold 11px sans-serif'; ctx.textAlign='center'; ctx.textBaseline='middle';
     ctx.fillText(k+1,sx,sy);});
-  // selected
+  // selected + hover
   if(sel!=null){const[sx,sy]=W2S(XY[2*sel],XY[2*sel+1]);
+    if(HD)arrow(sx,sy,HD[sel],20,'#fff',2);
     ctx.strokeStyle='#fff'; ctx.lineWidth=2; ctx.beginPath(); ctx.arc(sx,sy,9,0,7); ctx.stroke();}
+  if(hov!=null&&hov!==sel){const[sx,sy]=W2S(XY[2*hov],XY[2*hov+1]);
+    if(HD)arrow(sx,sy,HD[hov],16,'#9fc4e8',1.5);
+    ctx.strokeStyle='#9fc4e8'; ctx.lineWidth=1.5; ctx.beginPath(); ctx.arc(sx,sy,7,0,7); ctx.stroke();}
   // live trail + car
   if(trail.length>1){ctx.lineWidth=2;ctx.strokeStyle='#ff525288';ctx.beginPath();
     trail.forEach((p,k)=>{const[sx,sy]=W2S(p[0],p[1]);k?ctx.lineTo(sx,sy):ctx.moveTo(sx,sy);});ctx.stroke();}
@@ -193,7 +237,7 @@ mapEl.addEventListener('wheel',e=>{e.preventDefault();
   const [nx,ny]=S2W(e.clientX-r.left,e.clientY-r.top);
   cam.x+=wx-nx; cam.y+=wy-ny; draw();},{passive:false});
 
-function nearestNode(px,py){const r=mapEl.getBoundingClientRect();let best=-1,bd=14*14;
+function nearestNode(px,py){const r=mapEl.getBoundingClientRect();let best=-1,bd=22*22;
   for(let k=0;k<N;k++){const[sx,sy]=W2S(XY[2*k],XY[2*k+1]);
     if(sx<-5||sy<-5||sx>r.width+5||sy>r.height+5)continue;
     const d=(sx-px)**2+(sy-py)**2; if(d<bd){bd=d;best=k;}}
@@ -201,6 +245,12 @@ function nearestNode(px,py){const r=mapEl.getBoundingClientRect();let best=-1,bd
 function pick(e,addAlso){const r=mapEl.getBoundingClientRect();
   const n=nearestNode(e.clientX-r.left,e.clientY-r.top);
   if(n<0)return; selectNode(n); if(addAlso)addWp();}
+// hover: ring + mũi tên hướng trên node gần con trỏ
+mapEl.addEventListener('mousemove',e=>{if(drag)return;
+  const r=mapEl.getBoundingClientRect();
+  const n=nearestNode(e.clientX-r.left,e.clientY-r.top);
+  const h=n<0?null:n;
+  if(h!==hov){hov=h;mapEl.style.cursor=hov!=null?'pointer':'';draw();}});
 
 // ---------- node preview ----------
 function selectNode(n){sel=n;
@@ -208,7 +258,31 @@ function selectNode(n){sel=n;
   document.getElementById('selid').textContent='#'+n;
   document.getElementById('selinfo').textContent=`(${XY[2*n].toFixed(1)}, ${XY[2*n+1].toFixed(1)}) m`;
   document.getElementById('selimg').src=`/api/node_image/${n}?t=${n}`;
+  if(HD){document.getElementById('selhd').textContent=fmtHd(HD[n]);renderDirChips(n);}
   draw();}
+// các node trong vòng 6 m quanh n, gom theo 8 hướng -> chip bấm để đổi sang
+// node gần nhất đi hướng đó (chọn đúng chiều mình muốn xe chạy)
+function renderDirChips(n){
+  const el=document.getElementById('dirchips'); el.innerHTML='';
+  const R2=6*6, bx=XY[2*n], by=XY[2*n+1];
+  const best=new Array(8).fill(null), cnt=new Array(8).fill(0);
+  for(let k=0;k<N;k++){
+    const dx=XY[2*k]-bx, dy=XY[2*k+1]-by, d2=dx*dx+dy*dy;
+    if(d2>R2)continue;
+    const b=dirBucket8(HD[k]); cnt[b]++;
+    if(!best[b]||d2<best[b].d2)best[b]={n:k,d2};
+  }
+  const myb=dirBucket8(HD[n]);
+  for(let b=0;b<8;b++){
+    if(!cnt[b])continue;
+    const btn=document.createElement('button');
+    btn.className='small'+(b===myb?' acc':'');
+    btn.textContent=`${DIRG[b]} ${cnt[b]}`;
+    btn.title='chuyển sang node gần nhất đi hướng '+DIRG[b];
+    btn.onclick=()=>selectNode(best[b].n);
+    el.appendChild(btn);
+  }
+}
 function stepSel(d){if(sel==null)return;let n=sel+d;
   n=Math.max(0,Math.min(N-1,n));
   // ở lại trong cùng session để duyệt ảnh liền mạch
@@ -224,7 +298,8 @@ function clearWps(){wps=[];suggest=null;renderWps();draw();document.getElementBy
 function renderWps(){const el=document.getElementById('wplist');
   el.innerHTML=wps.length?'':'<span class="muted">double-click trên map (hoặc chọn node → ➕) để thêm waypoint. Waypoint cuối = GOAL.</span>';
   wps.forEach((n,i)=>{const div=document.createElement('div');div.className='wp';
-    div.innerHTML=`<b>${i+1}</b> node ${n} <span class="spacer"></span>
+    const hd=HD?` <span style="color:var(--warn)" title="hướng đi">${DIRG[dirBucket8(HD[n])]}</span>`:'';
+    div.innerHTML=`<b>${i+1}</b> node ${n}${hd} <span class="spacer"></span>
       <button class="small" onclick="selectNode(${n})">ảnh</button>
       <button class="small" onclick="moveWp(${i},-1)">↑</button>
       <button class="small" onclick="moveWp(${i},1)">↓</button>
@@ -291,6 +366,7 @@ async function pollLive(){
 (async function(){
   try{const g=await jget('/api/graph');
     N=g.n; XY=new Float64Array(g.xy.flat()); SUID=new Int32Array(g.suid); EXT=g.extent;
+    HD=g.heading?new Float32Array(g.heading):null; buildBuckets();
     cam.x=(EXT[0]+EXT[1])/2; cam.y=(EXT[2]+EXT[3])/2;
     const r=mapEl.getBoundingClientRect();
     cam.scale=Math.min(r.width/(EXT[1]-EXT[0]+20),r.height/(EXT[3]-EXT[2]+20));

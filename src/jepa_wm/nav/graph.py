@@ -8,10 +8,12 @@ latent (visual place), GPS in local metres, and travel heading. Edges:
   * loop-closure — k-NN in latent space across *different* sessions, kept only
                    when GPS agrees (``gps_dist < gps_gate_m``) so perceptual
                    aliasing (two look-alike spots far apart) is rejected. These
-                   are "same physical place seen twice" links, weight ~0.
+                   are "same physical place seen twice" links, weight = metres.
 
-Routing is Dijkstra over edge metres; ``extract_subgoals`` turns a node path into
-a sequence of frame images ~``spacing_m`` apart for a local CEM controller.
+Routing is Dijkstra over edge metres plus heading penalties (turning, going
+against the recorded direction of travel, hopping sessions — see
+``plan_route``); ``extract_subgoals`` turns a node path into a sequence of
+frame images ~``spacing_m`` apart for a local CEM controller.
 
 The layer is action-agnostic (place + GPS only), so it mixes servo domains
 (KDS + TowerPro) freely. Build via ``build_topograph`` / ``scripts/build_graph.py``.
@@ -113,12 +115,43 @@ class TopoGraph:
 
     # ---- adjacency ----------------------------------------------------
     def _build_adj(self):
+        """Adjacency with per-direction routing costs precomputed.
+
+        Each directed half-edge u->v stores ``(v, metres, ang, loop)``:
+
+        * ``metres`` — true geometric length. Loop closures used to carry a
+          fixed ~0 weight while their endpoints sit up to ``gps_gate_m`` apart;
+          Dijkstra then treated them as free teleports and chained them into
+          geometric zigzags. Routing now pays the real distance.
+        * ``ang``    — heading change |h_u−h_v|, plus (temporal edges only) the
+          mismatch between the travel direction u->v and h_u: ≈0 when the trail
+          is traversed the way the human drove it, ≈π when traversed backwards
+          (subgoal images would face away from travel — allowed but expensive).
+        * ``loop``   — cross-session edge flag (session-switch penalty).
+        """
         M = len(self.Zn)
-        self.adj: list[list[tuple[int, float]]] = [[] for _ in range(M)]
-        for s, d, w in self.edges:
-            s, d = int(s), int(d)
-            self.adj[s].append((d, float(w)))
-            self.adj[d].append((s, float(w)))
+        e = np.asarray(self.edges, dtype=np.float64).reshape(-1, 3)
+        src = e[:, 0].astype(np.int64)
+        dst = e[:, 1].astype(np.int64)
+        d = self.XY[dst].astype(np.float64) - self.XY[src].astype(np.float64)
+        metres = np.maximum(e[:, 2], np.hypot(d[:, 0], d[:, 1]))
+        loop = self.suid[src] != self.suid[dst]
+        h = self.heading.astype(np.float64)
+
+        def wrap(a):
+            return np.abs((a + np.pi) % (2 * np.pi) - np.pi)
+
+        turn = wrap(h[src] - h[dst])
+        fwd = np.arctan2(d[:, 1], d[:, 0])
+        ang_uv = turn + np.where(loop, 0.0, wrap(fwd - h[src]))
+        ang_vu = turn + np.where(loop, 0.0, wrap(fwd + np.pi - h[dst]))
+
+        self.adj: list[list[tuple[int, float, float, bool]]] = [[] for _ in range(M)]
+        for k in range(len(e)):
+            s, t = int(src[k]), int(dst[k])
+            m, lp = float(metres[k]), bool(loop[k])
+            self.adj[s].append((t, m, float(ang_uv[k]), lp))
+            self.adj[t].append((s, m, float(ang_vu[k]), lp))
 
     # ---- persistence --------------------------------------------------
     def save(self, path):
@@ -173,11 +206,20 @@ class TopoGraph:
         return int(np.argmax(sims))
 
     # ---- routing ------------------------------------------------------
-    def plan_route(self, start: int, goal: int, blocked=None) -> list[int] | None:
-        """Dijkstra over edge metres -> list of node ids, or None if disjoint.
-        ``blocked`` node ids are skipped (leave-one-session-out routing)."""
+    def plan_route(self, start: int, goal: int, blocked=None, *,
+                   turn_penalty_m: float = 3.0,
+                   switch_penalty_m: float = 1.0) -> list[int] | None:
+        """Dijkstra -> list of node ids, or None if disjoint.
+
+        Edge cost = true metres + ``turn_penalty_m``·(heading change, +π when a
+        temporal edge is traversed against the direction it was driven) +
+        ``switch_penalty_m`` per cross-session hop. The penalties keep routes
+        straight and direction-consistent (subgoal images face the direction of
+        travel); both at 0 reverts to plain shortest-metres. ``blocked`` node
+        ids are skipped (leave-one-session-out routing)."""
         M = len(self.Zn)
         block = set(int(b) for b in blocked) if blocked is not None else set()
+        tp, sp = float(turn_penalty_m), float(switch_penalty_m)
         dist = [math.inf] * M
         prev = [-1] * M
         dist[start] = 0.0
@@ -188,10 +230,10 @@ class TopoGraph:
                 break
             if du > dist[u]:
                 continue
-            for v, w in self.adj[u]:
+            for v, m, ang, loop in self.adj[u]:
                 if v in block:
                     continue
-                nd = du + w
+                nd = du + m + tp * ang + (sp if loop else 0.0)
                 if nd < dist[v]:
                     dist[v] = nd; prev[v] = u
                     heapq.heappush(pq, (nd, v))
@@ -228,7 +270,7 @@ class TopoGraph:
             stack = [s0]; seen[s0] = True; comp = []
             while stack:
                 u = stack.pop(); comp.append(u)
-                for v, _ in self.adj[u]:
+                for v, *_ in self.adj[u]:
                     if not seen[v]:
                         seen[v] = True; stack.append(v)
             comps.append(comp)
@@ -252,7 +294,10 @@ def build_topograph(roots, *, node_stride: int = 5, knn: int = 8,
         knn: max loop-closure edges per node.
         gps_gate_m: reject a loop-closure if the two nodes' GPS differ by more.
         sim_min: minimum cosine for a loop-closure candidate.
-        loop_weight: metres assigned to a loop-closure edge (same place ~= 0).
+        loop_weight: minimum metres for a loop-closure edge (the true GPS
+            distance between its endpoints is used when larger — a constant
+            small weight would let Dijkstra teleport sideways for free and
+            zigzag across parallel trails).
         max_jump_m: drop a node whose GPS is > this from BOTH temporal neighbours
             (isolated spike = impossible teleport at ~0.5s/node). 0 disables.
         min_node_speed: drop frames where GPS speed < this (m/s) — the car sitting
@@ -384,7 +429,7 @@ def build_topograph(roots, *, node_stride: int = 5, knn: int = 8,
                     break
                 dij = float(np.linalg.norm(XY[i] - XY[j]))
                 if dij < gps_gate_m:
-                    edges.append((i, j, loop_weight)); n_loop += 1; cnt += 1
+                    edges.append((i, j, max(loop_weight, dij))); n_loop += 1; cnt += 1
                     if cnt >= knn:
                         break
                 else:

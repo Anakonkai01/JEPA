@@ -59,6 +59,7 @@ def api_graph():
         "n": len(G.Zn),
         "xy": xy.tolist(),
         "suid": np.asarray(G.suid).astype(int).tolist(),
+        "heading": np.round(G.heading.astype(np.float64), 3).tolist(),
         "extent": [float(xy[:, 0].min()), float(xy[:, 0].max()),
                    float(xy[:, 1].min()), float(xy[:, 1].max())],
     })
@@ -78,12 +79,18 @@ def api_node_image(node: int):
 
 @app.get("/api/suggest")
 def api_suggest():
-    """?wps=12,805,99&spacing=4[&from=live] -> Dijkstra nối tuần tự các waypoint."""
+    """?wps=12,805,99&spacing=4[&from=live][&turn=3&switch=1] -> Dijkstra nối
+    tuần tự các waypoint (turn/switch = penalty m/rad đổi-hướng & m/lần đổi-session)."""
     try:
         wps = [int(v) for v in request.args.get("wps", "").split(",") if v.strip()]
     except ValueError:
         return jsonify({"error": "wps phải là id node"}), 400
     spacing = float(request.args.get("spacing", 4.0))
+    plan_kw = {}
+    if "turn" in request.args:
+        plan_kw["turn_penalty_m"] = float(request.args["turn"])
+    if "switch" in request.args:
+        plan_kw["switch_penalty_m"] = float(request.args["switch"])
     if request.args.get("from") == "live":      # nối từ vị trí xe hiện tại (nếu đang live)
         st = _read_live()
         if st and st.get("cur") is not None:
@@ -92,7 +99,7 @@ def api_suggest():
         return jsonify({"path": wps, "subgoals": wps, "legs": [], "length_m": 0.0})
     full, subs, legs, total = [], [], [], 0.0
     for a, b in zip(wps[:-1], wps[1:]):
-        leg = G.plan_route(int(a), int(b))
+        leg = G.plan_route(int(a), int(b), **plan_kw)
         if leg is None:
             return jsonify({"error": f"không có đường {a} -> {b} trên graph"}), 422
         seg = leg if not full else leg[1:]
