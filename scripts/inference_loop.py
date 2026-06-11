@@ -909,15 +909,16 @@ def main():
                     # xen kẽ → không tích trớn → dịch <0.6m/3s → recovery v2 lùi oan ("lùi quài").
                     # Tier chọn theo spd_est (max doppler/GPS-displacement) — doppler 0.00 khi bò
                     # từng xếp xe-đang-lăn vào tier kick → surge 0.12 giữa cua.
-                    if float(meta.get("lat", 0) or 0) != 0:
+                    if args.floor_no_gps:
+                        # indoor: CHỈ floor cruise, CẤM kick — đặt TRƯỚC nhánh GPS vì trong nhà
+                        # phone vẫn hay còn GPS rác (lat≠0 gần cửa sổ) → từng kích kick 0.12
+                        # trên sàn trơn thay vì cruise 0.04 (chạy thật 06-12)
+                        throt = max(throt, args.cruise_throttle)
+                    elif float(meta.get("lat", 0) or 0) != 0:
                         if spd_est < args.stuck_speed:
                             throt = max(throt, args.kick_throttle); kick = True
                         elif spd_est < args.cruise_speed:
                             throt = max(throt, args.cruise_throttle)
-                    elif args.floor_no_gps:
-                        # indoor: không có tín hiệu đứng-yên tin được (không GPS) → chỉ floor
-                        # cruise, không kick (kick 0.12 liên tục trên sàn trơn = quá nhanh)
-                        throt = max(throt, args.cruise_throttle)
                     emit(steer, throt)                                 # once (phone keeps-alive) or holder (dongle)
                     print(f"[infer] seq{seq} {tag} steer{steer:+.2f}(raw{raw_steer:+.2f}) throt{throt:+.2f} "
                           f"({time.time()-t0:.2f}s enc{t_enc-t0:.2f} nav{t_tgt-t_enc:.2f} "
