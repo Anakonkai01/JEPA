@@ -5,6 +5,24 @@
 > [LeWorldModel.md](LeWorldModel.md) · [../robot/android/README.md](../robot/android/README.md) ·
 > [../robot/android/DRIVE_SETUP.md](../robot/android/DRIVE_SETUP.md). Cập nhật file này mỗi khi trạng thái đổi.
 
+## ⏸️ 2026-06-11 16:54 — PAUSE cd4 GIỮA ep2 ĐỂ RA CÔNG VIÊN CHẠY THẬT (A4) — cd4 ĐANG THẮNG, DÙNG NÓ
+
+- **Pause OK** (user ra công viên, cần GPU): SIGTERM PID 9700 → `paused @ ep 2 gstep 5647`, last.pt
+  full-state 16:54, GPU trống. **TỐI VỀ RESUME = chạy lại đúng lệnh train cũ** (lệnh chuẩn + env
+  allocator ở mục cd4 bên dưới; `resume: auto` đã bật — tự nối optimizer/LR/gstep, làm lại ep2 từ đầu).
+- **cd4 ep0-1 val 0.5864 → 0.5760** (vượt best ep9 0.6001 của run 384 ngay từ ep0 — cosine-tail đúng).
+- **eval_ratio_ac cd4-ep1 (cùng FROZEN split, 2000 window): ratio@1 0.753 / @2 0.712 / @3 0.706** —
+  thắng ep9 (0.782/0.746) trên CẢ val + ratio → theo luật B5, **checkpoint chạy thật/báo cáo hiện tại =
+  `checkpoints/vjepa_ac_car_cd4/vjepa_ac_car/best.pt`**. Goal-reaching offline (A2) chưa đo — đo sau buổi
+  chạy nếu cần; A4 hôm nay là test thật. Lệnh chạy:
+  ```bash
+  PYTHONPATH=src python scripts/route_web.py     # web :8060, UI mới chọn hướng
+  PYTHONPATH=src python scripts/inference_loop.py --web --pulse \
+    --checkpoint checkpoints/vjepa_ac_car_cd4/vjepa_ac_car/best.pt \
+    --policy checkpoints/policy_prior/best.pt --throttle-cap 0.065 --reach-m 6
+  ```
+  (A3 `bench_relay_test --once --hold 1.2` vẫn CHƯA test — làm trước khi thả bánh xuống đất.)
+
 ## 🗺️ 2026-06-11 — ROUTE PLANNER: Dijkstra heading-aware + UI chọn hướng (fix "đường vòng vèo / khó chọn node")
 
 **User báo 3 vấn đề trên web planner → đã fix cả 3, KHÔNG cần rebuild graph (CPU-only, không đụng GPU cd4):**
