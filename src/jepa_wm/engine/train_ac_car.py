@@ -305,7 +305,8 @@ def train(cfg: dict) -> dict:
 
     raw_sd = torch.load(out_dir / "best.pt", map_location=device)["model"]
     sd = {k.replace("_orig_mod.", "", 1): v for k, v in raw_sd.items()}
-    model.load_state_dict(sd)
+    # model may be torch.compile-wrapped here (keys want _orig_mod.) — load the inner module
+    getattr(model, "_orig_mod", model).load_state_dict(sd)
     H = cfg.get("eval", {}).get("horizon", 3)
     mod, idn = final_eval(model, val_ds, device, H)
     ratio1 = mod[1] / max(idn[1], 1e-9)

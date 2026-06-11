@@ -361,6 +361,9 @@ def main():
                     help="kẹt = dịch chuyển GPS < ngần này (mét) trong cửa sổ --stuck-s giây "
                          "(detector dịch-chuyển, thay doppler speed vốn báo 0 khi bò chậm)")
     ap.add_argument("--stuck-s", type=float, default=2.0, help="kẹt liên tục quá ngần này (giây) → recovery")
+    ap.add_argument("--stuck-recent-m", type=float, default=0.25,
+                    help="chỉ coi là kẹt nếu tick GẦN NHẤT cũng không nhúc nhích (< ngần này mét) — "
+                         "chặn 'lùi oan' đúng lúc xe vừa đề-pa (net-disp cửa sổ còn nhỏ nhưng xe ĐANG lăn)")
     ap.add_argument("--recover-throttle", type=float, default=-0.11,
                     help="ga lùi lúc recovery (clamp cứng [-0.16,0] ở controller)")
     ap.add_argument("--recover-s", type=float, default=1.2, help="thời gian lùi mỗi lần recovery (giây)")
@@ -706,14 +709,26 @@ def main():
                     # đang bò → false positive lùi oan; còn lúc kẹt cỏ thật thì vị trí GPS đông cứng
                     # ±0.2m — tín hiệu sạch). Kẹt = đang lệnh tiến mà net-displacement < stuck_m
                     # trong cửa sổ stuck_s giây. Cần GPS fix (trong nhà tự tắt như cũ).
+                    # v2.1 (06-11 đêm, validate OFFLINE bằng replay 340' GPS người lái —
+                    # /tmp/replay_stuck_v2.py): v2 net-disp-từ-đầu-cửa-sổ bắn OAN 0.86 lần/phút
+                    # (72% trigger xe đang/đi tiếp >1m) vì không phân biệt "kẹt 3s" với "đứng 2s
+                    # rồi VỪA đề-pa"; còn prune >stuck_s làm span tối đa = 1 tick 1.36s < 0.7×2.0s
+                    # → default --stuck-s 2.0 KHÔNG BAO GIỜ bắn. Fix 3 vế: (1) giữ 1 mẫu GIÀ hơn
+                    # stuck_s → span luôn đủ; (2) phải ĐANG ĐẨY (throt>0.03) suốt cửa sổ — cú kick
+                    # được trọn stuck_s chứng tỏ vô dụng rồi mới lùi; (3) tick gần nhất cũng phải
+                    # đứng yên (< stuck_recent_m). Replay: oan 0.86→0.06/phút (~14×), giữ true-stuck.
                     if args.recover and car_xy is not None:
                         now = time.time()
-                        pos_hist.append((now, car_xy))
-                        while pos_hist and now - pos_hist[0][0] > args.stuck_s:
+                        pos_hist.append((now, car_xy, throt > 0.03))
+                        while len(pos_hist) > 2 and now - pos_hist[1][0] > args.stuck_s:
                             pos_hist.pop(0)
                         moved = float(np.linalg.norm(car_xy - pos_hist[0][1]))
                         span = now - pos_hist[0][0]
-                        if throt > 0.03 and span >= args.stuck_s * 0.7 and moved < args.stuck_m:
+                        recent = (float(np.linalg.norm(car_xy - pos_hist[-2][1]))
+                                  if len(pos_hist) >= 2 else 9.9)
+                        pushing_all = all(p[2] for p in pos_hist)
+                        if (pushing_all and span >= args.stuck_s * 0.7 and moved < args.stuck_m
+                                and recent < args.stuck_recent_m):
                             recover_times = [t for t in recover_times if now - t < 60.0]
                             if len(recover_times) >= args.recover_max:
                                 halted = True

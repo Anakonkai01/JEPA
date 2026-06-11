@@ -5,6 +5,52 @@
 > [LeWorldModel.md](LeWorldModel.md) · [../robot/android/README.md](../robot/android/README.md) ·
 > [../robot/android/DRIVE_SETUP.md](../robot/android/DRIVE_SETUP.md). Cập nhật file này mỗi khi trạng thái đổi.
 
+## ✅ 2026-06-11 ĐÊM — cd4 XONG + THẮNG B5; RECOVERY v2 CÓ 2 BUG (đo bằng REPLAY OFFLINE) → v2.1; GPS noise đã đo
+
+**1. cd4 HOÀN THÀNH (không phải fail!):** chạy đủ 3 epoch, val 0.5864→0.5760→**0.5693 (ep2 = best)**.
+Crash cuối log chỉ là bước final-eval SAU train: load best.pt vào model đã torch.compile (thiếu prefix
+`_orig_mod.`) — đã fix `engine/train_ac_car.py` (load vào `getattr(model,"_orig_mod",model)`); best.pt
+nguyên vẹn (atomic save đúng nghĩa). **eval_ratio cd4-ep2 (FROZEN split, 2000 window): ratio@1 0.744 /
+@2 0.703 / @3 0.697** — thắng ep9 (0.782/0.746) trên CẢ val lẫn ratio → **B5: ckpt chính thức =
+`checkpoints/vjepa_ac_car_cd4/vjepa_ac_car/best.pt`**. A2 goal-reaching d=1..8 ±policy đang chạy nền
+(`logs/eval_goal_cd4.log` / `eval_goal_cd4_policy.log`). Loss "đi ngang 0.5x" = floor identity/aleatoric
+như đã chẩn đoán — KHÔNG train thêm trước deadline, đòn bẩy là data (hậu deadline: B/C).
+
+**2. RECOVERY v2 — 2 bug tìm thấy bằng replay offline 340' GPS người lái (180 session,
+`scripts/replay_stuck_detector.py` — KHÔNG cần xe/công viên/GPU):**
+- **Bug A: default `--stuck-s 2.0` KHÔNG BAO GIỜ bắn** — prune `> stuck_s` + tick vòng lặp 1.36s →
+  span tối đa 1.36s < ngưỡng 0.7×2.0=1.4s. Detector chết im lặng (tối qua bắn được là nhờ stuck-s 3).
+- **Bug B: ngữ nghĩa net-displacement-từ-đầu-cửa-sổ bắn OAN 0.86 lần/phút** (72% trigger là xe đang
+  đi tiếp >1m trong 3s kế) — không phân biệt "kẹt 3s" với "đứng 2s rồi VỪA đề-pa" → đúng hiện tượng
+  "xe tiến lên xong nó lùi".
+- **v2.1 (đã vào `inference_loop.py`, validate cùng replay): oan 0.86 → 0.06/phút (stuck-s 2.0) /
+  0.015 (3.0)**. 3 vế: (1) giữ 1 mẫu GIÀ hơn stuck_s → span luôn đủ (Bug A hết, mọi stuck-s dùng được);
+  (2) phải ĐANG ĐẨY (throt>0.03) suốt cửa sổ — cú kick được trọn stuck_s rồi mới lùi; (3) tick gần nhất
+  cũng đứng yên (`--stuck-recent-m` 0.25). Lưu ý đọc số: TRUE-retention trong replay thấp là artifact
+  (người lái kẹt thì NHẢ GA ngay nên hiếm mẫu "đẩy liên tục 3s khi kẹt"; chạy thật floor ga giữ lệnh đẩy
+  → kẹt cỏ thật sẽ vẫn bắn sau ~stuck_s). **CHƯA test trên xe** — lần chạy tới giữ `--stuck-s 3`.
+- **GPS đáng tin tới đâu (user hỏi, đã ĐO — `scripts/measure_gps_noise.py`, 57 đoạn đứng-yên-chắc-chắn):**
+  tuyệt đối: scatter median 0.44m / p90 1.0m / max 3.2m → KHÔNG dùng được cho giữ-làn (đường 2-3m);
+  hệ hiện tại cũng KHÔNG dùng GPS đánh lái (lái 100% vision). Tương đối cửa sổ 3s: drift median 0.10m /
+  p90 0.56m → đủ sạch cho stuck-detect (9.6% cửa sổ 3s vượt 0.6m = miss-rate chấp nhận được);
+  advance/pop 3m là borderline 1-2σ (cải tiến sau: pop theo along-track + visual-confirm).
+- **"Đạt goal" hiện = GPS < reach_m (6m)** — cả mặt đường LẪN 2 lề cỏ đều nằm trong vòng 6m → xe nằm
+  trong bụi vẫn báo reached là ĐÚNG THEO ĐỊNH NGHĨA hiện tại, không phải bug đo. Muốn chặt hơn: goal
+  CUỐI thêm visual-confirm (cosine/energy threshold), nhưng trần chính xác METRIC là GPS ±1m; còn việc
+  Ở GIỮA ĐƯỜNG là của vision-control (subgoal images vốn nằm giữa đường), không phải của reach-check.
+
+**3. Trả lời "sao model không TỰ lùi dù có data recovery":** by-design lúc inference — CEM box ga =
+[0, cap] (`inference_loop.py` `throttle_min=0.0`, "no surprise reverse") + floor ga vô điều kiện +
+kickstart clamp mu ≥0.75·cap khi đứng yên → reverse bị CẤM ở planner; data recovery vẫn ăn vào WM
+(val giảm mạnh nhờ nó) + policy prior, và node lùi/kẹt bị LỌC khỏi graph có chủ ý (subgoal nhìn-vào-tường
+sẽ lái xe vào tường). Option sau deadline: stuck-detector bắn → re-plan 1 LẦN với box [-0.16, cap]
+(recovery do model chọn hướng, thay lùi mù `-prev_steer`).
+
+**4. Việc còn mở cho buổi chạy tới (BAN NGÀY + PIN ĐẦY):** lệnh chuẩn như mục A4 + `--stuck-s 3`;
+cân nhắc đảo thứ tự floor/turn_slow trong `inference_loop.py` (hiện floor đè turn_slow → vào cua gắt
+ở tốc thấp vẫn ăn nguyên kick 0.12 — đúng chỗ dễ văng vào lề); route khó = vẽ thêm waypoint trên web
+(Dijkstra penalty tune bằng `&turn=&switch=`).
+
 ## 🌙 2026-06-11 TỐI — CHẨN ĐOÁN OFFLINE: ĐÂM-THẲNG LÚC CHẠNG VẠNG = DOMAIN SHIFT ÁNH SÁNG (đã đo), MODEL LÁI TỐT BAN NGÀY + cd4 RESUMED
 
 **Cuối buổi (trời tối) xe đâm thẳng vô cỏ/lề không sửa lái + "lùi quài" → user nghi domain shift, đúng:**
