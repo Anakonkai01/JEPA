@@ -346,6 +346,10 @@ def main():
                          "controller vẫn clamp +0.15). Recovery lùi 0.11 đi được -> tiến ~0.12.")
     ap.add_argument("--kick-s", type=float, default=0.8,
                     help="thời lượng pulse đề-pa (mode --pulse; pulse thường = --pulse-move)")
+    ap.add_argument("--cruise-throttle", type=float, default=0.07,
+                    help="sàn ga khi đang lăn dưới --cruise-speed (giữ trớn đều, hết surge-coast)")
+    ap.add_argument("--cruise-speed", type=float, default=0.5,
+                    help="m/s; trên tốc độ này thì thả ga cho planner quyết hoàn toàn")
     ap.add_argument("--pulse-move", type=float, default=0.45,
                     help="pulse: thời gian chạy mỗi nhịp (giây) ≈ 1-2 bước model (dt 0.22)")
     ap.add_argument("--recover", action=argparse.BooleanOptionalAction, default=True,
@@ -495,6 +499,7 @@ def main():
             last_seq, reached, prev_steer = -1, False, 0.0
             last_frame_t = time.time()
             stuck_since, recover_times, halted, halted_route = None, [], False, None
+            nav_subs, nav_goal = None, None               # route cache (Dijkstra 1 lần/goal)
             try:
                 while reader.alive:
                     if halted:                            # quá recover-max lần kẹt → đứng yên chờ người
@@ -593,17 +598,31 @@ def main():
                             gd = f"{gps_dist:.1f}m" if gps_dist is not None else "no-gps"
                             tag = f"cur{cur}->WP{target} d={gd} direct"
                         else:
-                            route = graph.plan_route(cur, goal)
-                            if not route:
-                                emit(0.0, 0.0)
-                                print(f"[infer] no route {cur}->{goal}; neutral"); time.sleep(period); continue
-                            subs = graph.extract_subgoals(route, spacing_m=spacing)
-                            # FIX B: nhắm subgoal đầu tiên còn cách xe > advance_m (bỏ qua subgoal đã tới
-                            # gần) → target luôn nằm PHÍA TRƯỚC, chống kẹt local-minimum (CEM hết "tưởng tới rồi").
+                            # ROUTE CACHE (A4 06-11): KHÔNG re-Dijkstra mỗi tick — localize flicker
+                            # giữa các session song song (lệch ngang tới 8m) làm route/subgoal đổi
+                            # liên tục → xe lượn. Plan 1 lần mỗi goal rồi BÁM chuỗi subgoal cố định,
+                            # advance theo GPS; chỉ replan khi đổi goal / lạc tuyến (> off_route_m).
+                            need_plan = nav_goal != goal or not nav_subs
+                            if not need_plan and car_xy is not None:
+                                d_near = min(float(np.linalg.norm(car_xy - graph.XY[s]))
+                                             for s in nav_subs + [goal])
+                                need_plan = d_near > args.off_route_m
+                            if need_plan:
+                                route = graph.plan_route(cur, goal)
+                                if not route:
+                                    emit(0.0, 0.0)
+                                    print(f"[infer] no route {cur}->{goal}; neutral"); time.sleep(period); continue
+                                nav_subs, nav_goal = graph.extract_subgoals(route, spacing_m=spacing), goal
+                                print(f"[infer] route mới: {len(nav_subs)} subgoal (cur{cur}->goal{goal})", flush=True)
+                            subs = nav_subs
+                            # FIX B: nhắm subgoal đầu tiên còn cách xe > advance_m (bỏ hẳn subgoal đã
+                            # qua khỏi cache — không quay lại) → target luôn nằm PHÍA TRƯỚC.
                             if car_xy is not None:
-                                ahead = [s for s in subs[1:]
-                                         if float(np.linalg.norm(car_xy - graph.XY[s])) > args.advance_m]
-                                target = ahead[0] if ahead else goal
+                                while (len(nav_subs) > 1 and float(np.linalg.norm(
+                                        car_xy - graph.XY[nav_subs[0]])) <= args.advance_m):
+                                    nav_subs.pop(0)
+                                far0 = float(np.linalg.norm(car_xy - graph.XY[nav_subs[0]])) > args.advance_m
+                                target = nav_subs[0] if far0 else goal
                             else:
                                 target = subs[1] if len(subs) >= 2 else subs[-1]
                             gd = f"{gps_dist:.1f}m" if gps_dist is not None else "no-gps"
@@ -636,14 +655,18 @@ def main():
                     steer = args.steer_smooth * prev_steer + (1.0 - args.steer_smooth) * raw_steer
                     prev_steer = steer
                     throt = throt * (1.0 - args.turn_slow * min(1.0, abs(steer)))
-                    # BREAKAWAY (chạy thật 06-11): đứng yên mà muốn tiến thì ga ≤cap (0.08) dạng
-                    # pulse 0.45s KHÔNG thắng nổi ma sát tĩnh — xe chỉ nhích nhẹ (recovery lùi
-                    # 0.11 thì đi được, người lái đề-pa tới ~0.15). Đẩy 1 nhịp mạnh + dài hơn;
-                    # lăn bánh rồi (GPS speed ≥ stuck_speed) thì về ga thường ngay.
-                    kick = (throt > 0.02 and float(meta.get("lat", 0) or 0) != 0
-                            and float(meta.get("speed", 0.0) or 0.0) < args.stuck_speed)
-                    if kick:
-                        throt = max(throt, args.kick_throttle)
+                    # BREAKAWAY + CRUISE (chạy thật 06-11): policy/CEM hay ra ga ~0 → xe chạy
+                    # kiểu giật-trớn-giật toàn bằng cú kick (lái stale giữa các cú surge → lượn).
+                    # 2 tầng: đứng yên → kick 0.12 thắng ma sát tĩnh (lùi recovery 0.11 đi được,
+                    # tiến 0.07 pulse thì không); đang lăn dưới cruise_speed → sàn ga cruise 0.07
+                    # giữ trớn ĐỀU để lái được sửa liên tục. Trên cruise_speed → ga planner.
+                    kick = False
+                    spd_now = float(meta.get("speed", 0.0) or 0.0)
+                    if throt > 0.02 and float(meta.get("lat", 0) or 0) != 0:
+                        if spd_now < args.stuck_speed:
+                            throt = max(throt, args.kick_throttle); kick = True
+                        elif spd_now < args.cruise_speed:
+                            throt = max(throt, args.cruise_throttle)
                     emit(steer, throt)                                 # once (phone keeps-alive) or holder (dongle)
                     print(f"[infer] seq{seq} {tag} steer{steer:+.2f}(raw{raw_steer:+.2f}) throt{throt:+.2f} "
                           f"({time.time()-t0:.2f}s)", flush=True)
