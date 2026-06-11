@@ -172,6 +172,10 @@ def train(cfg: dict) -> dict:
     if tcfg.get("gradient_checkpointing", False) and hasattr(model, "gradient_checkpointing_enable"):
         model.gradient_checkpointing_enable()
         print("[ac_car] gradient checkpointing ON (saves VRAM at ~2x slower backward)")
+    if tcfg.get("init_from"):
+        sd = torch.load(tcfg["init_from"], map_location=device, weights_only=False)["model"]
+        model.load_state_dict({k.replace("_orig_mod.", "", 1): v for k, v in sd.items()})
+        print(f"[ac_car] init_from {tcfg['init_from']}")
     if tcfg.get("compile", True) and hasattr(torch, "compile"):
         print("[ac_car] compiling model with torch.compile(default)...")
         model = torch.compile(model, mode="default")

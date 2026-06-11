@@ -5,6 +5,48 @@
 > [LeWorldModel.md](LeWorldModel.md) · [../robot/android/README.md](../robot/android/README.md) ·
 > [../robot/android/DRIVE_SETUP.md](../robot/android/DRIVE_SETUP.md). Cập nhật file này mỗi khi trạng thái đổi.
 
+## ⚡ 2026-06-11 10:25 — CÚP ĐIỆN giữa ep12 → COOLDOWN T=4 (cd4) ĐANG CHẠY + APK v0.5-pro ĐÃ CÀI
+
+**Sự cố:** run 384/P2 chết vì cúp điện giữa ep12 (last.pt = ep11 ghi 10:11 → chỉ mất ~14').
+Ckpt KHÔNG lưu optimizer state + trainer không có resume → không tiếp cosine cũ được (mà cũng
+không nên — xem chẩn đoán). best.pt = **ep9, val 0.6001**.
+
+**Chẩn đoán (xác nhận nghi vấn user "epochs quá lớn → cosine LR giảm chưa kịp → loss đi ngang"):**
+- val ep0-11: 0.7937 0.6984 0.6862 0.6566 0.6407 0.6177 0.6195 0.6083 0.6052 **0.6001(ep9)**
+  0.6044 0.6062 — đi ngang/nhích lên 5 ep cuối trong khi train vẫn giảm (0.5601→0.5538).
+- cosine `epochs: 60` = 7.2 ngày @2.87h/ep → tại ep11 **LR còn ~94% đỉnh** (2.35e-4); kể cả
+  early-stop ~ep21 (patience 12 từ ep9) LR vẫn ~77% → **cosine tail không bao giờ chạy**.
+  epochs=60 đúng là mis-sized vs budget thật; flat = pha "stable" kiểu WSD ở LR cao.
+- Caveat: một phần phẳng là floor thật (identity/aleatoric) — cooldown kỳ vọng ăn thêm VÀI %,
+  không phải phép màu.
+
+**Eval best.pt ep9 (script MỚI `scripts/eval_ratio_ac.py` = final_eval standalone, 2000 window,
+FROZEN split):** **ratio@1 0.782 / ratio@3 0.746** — vượt v1 final (0.826/0.775) và ep4 (0.816).
+→ Số A1 đã có; checkpoint hiện tại đã là model tốt nhất từ trước tới nay.
+
+**Cooldown T=4 `cd4` ĐANG CHẠY (PID 6511, start 10:35, 3 ep ≈ 8.6h → xong ~19:15 tối 06-11):**
+- `configs/train/vjepa_ac_car_cd4.yaml`: epochs 3, lr 1.2e-4 (~0.5× đỉnh) cosine→0,
+  warmup_frac 0.02, `init_from` best.pt ep9, out_dir `checkpoints/vjepa_ac_car_cd4`.
+  KHÔNG đổi gì khác (T=4, batch 64, data, objective y nguyên) → gain quy 100% cho LR-decay
+  (ablation sạch cho báo cáo, trả lời thẳng câu hỏi schedule).
+- **B1 init_from ĐÃ PATCH** vào `engine/train_ac_car.py` (B/C sau dùng được luôn).
+- split.json đã copy sang cd4 (B4) — log xác nhận `FROZEN <- split.json` 167/42.
+- Theo dõi: `tail -f logs/train_ac_car_cd4.log` (nohup trực tiếp env python, không conda-run).
+- ⚠️ Phát hiện: `docs/split_vjepa_ac_car.json` (backup repo cũ) là SPLIT KHÁC (211 ss, val khác
+  hẳn) — **đã refresh = bản live 209 ss (167/42)** mà run 384 + cd4 thực dùng.
+
+**APK v0.5-pro ĐÃ CÀI lên A42** (`versionCode=5` xác nhận qua dumpsys; trước đó máy chưa từng có
+v0.4/v0.5). Còn thiếu phần test của A3: `bench_relay_test.py --once --hold 1.2` (cần phone cắm
+lại ESP32 + CH9 AUTO + xe kê giá — phone đang cắm PC).
+
+**Khi cd4 xong (tối 06-11) — quyết định theo luật B5:**
+1. `PYTHONPATH=src python scripts/eval_ratio_ac.py --checkpoint checkpoints/vjepa_ac_car_cd4/vjepa_ac_car/best.pt`
+   → so 0.782/0.746 của ep9.
+2. A2 goal-reaching d=1..8 (±`--policy`) trên ckpt THẮNG (GPU rảnh sau train).
+3. **Giữ cd4 CHỈ KHI không xấu đi** (val + ratio + goal-reaching); ngược lại giữ best.pt ep9.
+   Ghi kết quả vào đây kể cả negative (vẫn là ablation schedule tốt cho báo cáo).
+4. Tiếp A3-test → A4 chạy thật bãi thoáng → A5 chốt bảng. **KHÔNG khởi động B(T=8)/C trước deadline.**
+
 ## ▶️ 2026-06-11 — PLAN SAU KHI RETRAIN 384 XONG (session sau: làm mục này theo thứ tự A→B→C)
 
 > Viết sau buổi rà soát sâu vs code Meta (`reference/vjepa2/`) + paper, trả lời user về

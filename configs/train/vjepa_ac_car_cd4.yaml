@@ -1,0 +1,40 @@
+# COOLDOWN T=4 từ best.pt (ep9) của run 384 bị cúp điện giữa ep12 (2026-06-11).
+# Run gốc: cosine epochs=60 -> tại ep11 LR còn ~94% đỉnh, val đi ngang 0.60 suốt ep7-11
+# (pha "stable" của WSD — cosine tail không bao giờ tới vì 60ep = 7.2 ngày > deadline).
+# Đây là pha DECAY bù: init_from best.pt, LR ~0.5x đỉnh -> 0 trong 3 epoch (~8.6h).
+# KHÔNG đổi gì khác (T=4, batch, data, objective y nguyên) -> gain quy được 100% cho LR decay.
+# So sánh theo luật B5 (HANDOFF): giữ ckpt cd4 CHỈ KHI eval_ratio + goal-reaching không xấu đi.
+#   PYTHONPATH=src python scripts/train_ac_car.py --config configs/train/vjepa_ac_car_cd4.yaml configs/model/vjepa_ac_car.yaml
+device: cuda
+seed: 0
+
+wandb:
+  enabled: True
+  project: rc-car-jepa
+  group: vjepa_ac_car_cd4
+
+data:
+  roots:
+    - {patch_dir: data/latents_towerpro_patch_384, raw_dir: data/raw_towerpro, domain_id: 1}
+    - {patch_dir: data/latents_kds_patch_384,      raw_dir: data/raw_kds,      domain_id: 0}
+  val_frac: 0.2
+  horizon: 4
+  frame_stride: 2
+  state_columns: [speed, gx, gy, gz, ax, ay, az, rx, ry, rz, prev_steer, prev_throttle]
+  action_scale: [1.0, 6.67]
+
+train:
+  epochs: 3
+  batch_size: 64
+  gradient_checkpointing: true
+  lr: 1.2e-4                      # ~0.5x đỉnh run gốc (2.5e-4); cosine -> 0 trong 3 ep
+  weight_decay: 1.0e-4
+  warmup_frac: 0.02               # ~170 step — Adam moments mới cần vài bước ổn định
+  num_workers: 4
+  patience: 3
+  min_delta: 1.0e-4
+  init_from: checkpoints/vjepa_ac_car/vjepa_ac_car/best.pt   # ep9, val 0.6001, ratio@1 0.782
+  out_dir: checkpoints/vjepa_ac_car_cd4
+
+eval:
+  horizon: 3
