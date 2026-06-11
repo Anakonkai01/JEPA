@@ -43,6 +43,13 @@ state tô màu + dòng `📸 subgoal i/n | cos | lái/ga`, banner DÍNH khi 🏁
 ckpt cd4 + policy @32/1**: idle → nhận route → bám (cos 0.556 ảnh xa, steer CEM sống) → pop 3/3 đúng
 chỗ → 🏁 → idle; tick 0.36s (enc 0.02 cem 0.33), floor indoor 0.04. Full-nav graph cũ startup PASS.
 
+**5b. FIX chạy-thật indoor đêm 06-12 (lần bật đầu tiên):** app đổi mạng/nền → mở KẾT NỐI MỚI mà
+không FIN cái cũ → loop kẹt recv socket câm mãi, conn mới nằm backlog (ss thấy Recv-Q phình), web báo
+"offline" dù loop sống. Vá 2 chỗ: (1) không frame > `--reconnect-s` 8s → tự ĐÓNG conn, quay về accept
+(tự hồi, khỏi restart — test giả lập A-câm/B-stream PASS); (2) link câm >2s → web hiện state
+**no-frame** + hướng dẫn "mở màn hình camera trong app" (phân biệt với offline = loop chưa chạy).
+Khi chạy: giữ app FOREGROUND, màn hình camera bật — app nền/tắt màn = frame ngừng.
+
 **6. LỆNH INDOOR (teach & repeat lần đầu):**
 ```bash
 PYTHONPATH=src python scripts/route_web.py --graph none          # web :8060

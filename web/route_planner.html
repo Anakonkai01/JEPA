@@ -434,7 +434,8 @@ async function emergencyStop(){try{await jpost('/api/stop');activeRoute=null;
 
 // ---------- live ----------
 const STC={run:'#37c871',idle:'#8294a5',stopped:'#ffb347',reached:'#4da3ff',
-           halted:'#ff5252',timeout:'#ff5252',error:'#ff5252'};
+           halted:'#ff5252',timeout:'#ff5252',error:'#ff5252','no-frame':'#ffb347'};
+const STLBL={'no-frame':'no-frame (phone nối rồi nhưng không có ảnh — mở màn hình camera trong app)'};
 let lastState='';
 async function pollLive(){
   try{live=await jget('/api/live');}catch(e){live={online:false};}
@@ -443,7 +444,7 @@ async function pollLive(){
         sub=document.getElementById('subbox');
   if(live.online){
     dot.style.background=STC[live.state]||'var(--ok)';
-    txt.textContent=(live.state||'online')+(live.route?' — '+live.route:'');
+    txt.textContent=(STLBL[live.state]||live.state||'online')+(live.route?' — '+live.route:'');
     txt.style.color=STC[live.state]||'var(--fg)';
     let s='';
     if(live.mode==='manual'&&live.wp_idx!=null){

@@ -329,6 +329,10 @@ def main():
                     help="cua thì giảm ga: throt *= (1 - k·|steer|). 0=tắt")
     ap.add_argument("--stale-s", type=float, default=0.4,
                     help="không có frame mới quá ngần này (giây) → NEUTRAL (link khựng, đừng giữ lệnh cũ)")
+    ap.add_argument("--reconnect-s", type=float, default=8.0,
+                    help="không có frame mới quá ngần này giây → ĐÓNG kết nối phone hiện tại, quay về "
+                         "accept. App hay mở KẾT NỐI MỚI khi đổi mạng/app nền (kết nối cũ nửa-chết "
+                         "không FIN → loop kẹt đọc mãi, conn mới nằm backlog, web báo offline — 06-12).")
     ap.add_argument("--off-route-m", type=float, default=10.0,
                     help="node localize cách xe (GPS) xa hơn ngần này → coi như LẠC → neutral (đừng lái theo route bịa)")
     ap.add_argument("--reach-m", type=float, default=4.0,
@@ -564,6 +568,7 @@ def main():
             pos_hist = []                                 # (t, xy) cho stuck-detector dịch chuyển
             # route TAY: dwell cosine, đồng hồ timeout per-subgoal, route đang bám (reset khi giao mới)
             manual_hits, manual_last_idx, manual_t0, last_rt_obj = 0, -1, time.time(), None
+            last_nf_status = 0.0                          # throttle ghi status "no-frame" (1Hz)
             try:
                 while reader.alive:
                     if halted:                            # quá recover-max lần kẹt → đứng yên chờ người
@@ -581,8 +586,21 @@ def main():
                     seq, item = reader.latest()
                     if item is None or seq == last_seq:
                         # SAFETY: link/stream khựng > stale_s → neutral (đừng để keep-alive giữ lệnh cũ)
-                        if time.time() - last_frame_t > args.stale_s:
+                        now = time.time()
+                        if now - last_frame_t > args.stale_s:
                             emit(0.0, 0.0); prev_steer = 0.0
+                        # ngưỡng status TÁCH khỏi stale_s (0.4s): idle ngủ 0.5s/tick sẽ flap
+                        if (web is not None and now - last_frame_t > 2.0
+                                and now - last_nf_status > 1.0):
+                            last_nf_status = now              # web hiện "no-frame" thay vì offline mù mờ
+                            web.status(state="no-frame", seq=last_seq)
+                        if now - last_frame_t > args.reconnect_s:
+                            # phone mở kết nối MỚI khi đổi mạng/app nền mà không FIN cái cũ →
+                            # reader kẹt recv vô hạn, conn mới chờ ở backlog → đóng conn này,
+                            # vòng ngoài accept() nhận conn mới ngay (tự hồi, khỏi restart).
+                            print(f"[infer] không có frame {args.reconnect_s:.0f}s → đóng kết nối, "
+                                  f"chờ phone nối lại…", flush=True)
+                            break
                         time.sleep(0.01); continue
                     last_seq = seq; last_frame_t = time.time()
                     meta, rgb = item
