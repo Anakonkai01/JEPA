@@ -64,7 +64,8 @@ def main():
 
     H = args.horizon or cfg.get("eval", {}).get("horizon", 3)
     src = f"FROZEN <- {split_path}" if sinfo["frozen"] else "deterministic (no split.json!)"
-    print(f"[eval_ratio] {args.checkpoint} (ep {ckpt['epoch']}, val {ckpt['val']:.4f})")
+    val_s = f"{ckpt['val']:.4f}" if ckpt.get("val") is not None else "mid-epoch"
+    print(f"[eval_ratio] {args.checkpoint} (ep {ckpt['epoch']}, val {val_s})")
     print(f"[eval_ratio] {len(val_s)} val sessions [{src}] | {len(ds)} windows -> "
           f"{min(len(ds), args.max_n)} sampled | horizon {H}")
     mod, idn = final_eval(model, ds, args.device, H, max_n=args.max_n)

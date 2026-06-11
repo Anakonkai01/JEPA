@@ -24,7 +24,7 @@ không nên — xem chẩn đoán). best.pt = **ep9, val 0.6001**.
 FROZEN split):** **ratio@1 0.782 / ratio@3 0.746** — vượt v1 final (0.826/0.775) và ep4 (0.816).
 → Số A1 đã có; checkpoint hiện tại đã là model tốt nhất từ trước tới nay.
 
-**Cooldown T=4 `cd4` ĐANG CHẠY (PID 6511, start 10:35, 3 ep ≈ 8.6h → xong ~19:15 tối 06-11):**
+**Cooldown T=4 `cd4` ĐANG CHẠY (PID 9700, start 10:59, 3 ep ≈ 8.6h → xong ~20:00 tối 06-11):**
 - `configs/train/vjepa_ac_car_cd4.yaml`: epochs 3, lr 1.2e-4 (~0.5× đỉnh) cosine→0,
   warmup_frac 0.02, `init_from` best.pt ep9, out_dir `checkpoints/vjepa_ac_car_cd4`.
   KHÔNG đổi gì khác (T=4, batch 64, data, objective y nguyên) → gain quy 100% cho LR-decay
@@ -34,6 +34,38 @@ FROZEN split):** **ratio@1 0.782 / ratio@3 0.746** — vượt v1 final (0.826/0
 - Theo dõi: `tail -f logs/train_ac_car_cd4.log` (nohup trực tiếp env python, không conda-run).
 - ⚠️ Phát hiện: `docs/split_vjepa_ac_car.json` (backup repo cũ) là SPLIT KHÁC (211 ss, val khác
   hẳn) — **đã refresh = bản live 209 ss (167/42)** mà run 384 + cd4 thực dùng.
+- ⚠️ **OOM launch #1 (PID 6511, 10:35)**: inductor backward materialize attention
+  (64,8,2312,2312) bf16 = 5.1GiB, pool phân mảnh 5.77GiB reserved-unallocated (run vốn sát trần
+  15.7/16.3 + sd init_from nằm GPU). Fix: init_from load `map_location="cpu"` + `del sd`, và chạy
+  với **`PYTORCH_ALLOC_CONF=expandable_segments:True`** → launch #2 qua khỏi điểm chết, GPU 100%.
+  **Từ nay mọi run batch64/384 NÊN bật flag này.** Launch #3 (PID 9700) = relaunch lần cuối để
+  lấy trainer mới có RESUME (mục dưới); mất ~45' ep0 — chấp nhận, đổi lấy run pause/resume được.
+
+**🆕 TRAINER CÓ PAUSE/RESUME ĐẦY ĐỦ (yêu cầu user 06-11, đã e2e-test save→pause→resume trên CPU):**
+- `last.pt`/`best.pt` giờ lưu **FULL state** (model + optimizer + gstep + best/since) — file ~470MB.
+  Save **ATOMIC** (tmp+rename) → cúp điện giữa lúc lưu không phá ckpt cũ. Script eval/inference cũ
+  không ảnh hưởng (chỉ đọc key cũ).
+- `train.resume: auto` (đã bật trong config cd4): **chạy lại đúng lệnh cũ là tự nối tiếp** —
+  weights + optimizer + bước LR + early-stop counter; không có last.pt thì rơi về `init_from`/fresh.
+  `resume: <path>` để chỉ định file. Ckpt format cũ (weights-only) resume được nhưng optimizer mới.
+- `train.save_steps: 600` (~36'): lưu giữa epoch → cúp điện chỉ mất ≤36' thay vì cả epoch (2.87h).
+  Resume từ ckpt giữa-epoch = làm lại epoch đó (reshuffle) nhưng gstep/LR đi tiếp — chấp nhận.
+- **PAUSE để lấy GPU đem xe ra chạy: `kill <PID>`** (SIGTERM/Ctrl+C) → train hoàn tất step hiện tại,
+  lưu last.pt, in `paused @ ep .. gstep ..`, thoát code 0. Chạy thử xong → chạy lại đúng lệnh train
+  cũ → in `resume <- ...` và đi tiếp. (Nếu signal rơi lúc đang VAL: pause có hiệu lực ở step đầu
+  epoch kế — trễ tối đa vài phút.)
+- **ĐỔI CHIẾN LƯỢC TRAIN:** sửa yaml (lr/epochs/...) rồi resume — optimizer giữ, schedule tính lại
+  theo cfg mới từ gstep hiện tại; hoặc `init_from: <ckpt>` + `resume` tắt = lấy weights, optimizer
+  mới hoàn toàn (như cd4 làm từ best.pt ep9).
+- Lệnh chuẩn (THÊM env allocator):
+  ```bash
+  PYTORCH_ALLOC_CONF=expandable_segments:True PYTHONPATH=src nohup \
+    ~/miniforge3/envs/ai/bin/python -u scripts/train_ac_car.py \
+    --config configs/train/vjepa_ac_car_cd4.yaml configs/model/vjepa_ac_car.yaml \
+    > logs/train_ac_car_cd4.log 2>&1 &
+  ```
+- Fix kèm: DataLoader `pin_memory` chỉ bật khi cuda (trước đây run CPU cũng đòi CUDA mem → crash
+  khi GPU bận).
 
 **APK v0.5-pro ĐÃ CÀI lên A42** (`versionCode=5` xác nhận qua dumpsys; trước đó máy chưa từng có
 v0.4/v0.5). Còn thiếu phần test của A3: `bench_relay_test.py --once --hold 1.2` (cần phone cắm

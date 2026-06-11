@@ -10,6 +10,7 @@ Entry: scripts/train_ac_car.py.
 from __future__ import annotations
 
 import math
+import signal
 import time
 from pathlib import Path
 
@@ -52,6 +53,13 @@ def _cosine_warmup(step, total, warmup, base_lr):
         return base_lr * (step + 1) / max(1, warmup)
     prog = (step - warmup) / max(1, total - warmup)
     return 0.5 * base_lr * (1 + math.cos(math.pi * min(1.0, prog)))
+
+
+def _save_ckpt(path: Path, payload: dict):
+    """Atomic save — a power cut mid-save must not corrupt the previous checkpoint."""
+    tmp = path.with_suffix(".pt.tmp")
+    torch.save(payload, tmp)
+    tmp.replace(path)
 
 
 def _losses(model, b, device):
@@ -164,7 +172,8 @@ def train(cfg: dict) -> dict:
     nw = tcfg.get("num_workers", 4)
     train_sampler = SessionBatchSampler(train_ds.index, bs, shuffle=True, drop_last=True, seed=cfg.get("seed", 0))
     val_sampler = SessionBatchSampler(val_ds.index, bs, shuffle=False, drop_last=False)
-    train_dl = DataLoader(train_ds, batch_sampler=train_sampler, num_workers=nw, pin_memory=True)
+    train_dl = DataLoader(train_ds, batch_sampler=train_sampler, num_workers=nw,
+                          pin_memory=device.startswith("cuda"))
     val_dl = DataLoader(val_ds, batch_sampler=val_sampler, num_workers=nw)
 
     model = build_model(cfg["model"]).to(device)
@@ -172,9 +181,28 @@ def train(cfg: dict) -> dict:
     if tcfg.get("gradient_checkpointing", False) and hasattr(model, "gradient_checkpointing_enable"):
         model.gradient_checkpointing_enable()
         print("[ac_car] gradient checkpointing ON (saves VRAM at ~2x slower backward)")
-    if tcfg.get("init_from"):
-        sd = torch.load(tcfg["init_from"], map_location=device, weights_only=False)["model"]
+    # resume: continue a run — weights + optimizer + LR step + early-stop counters from
+    # last.pt ("auto" = resume if out_dir/last.pt exists else start fresh, so re-running
+    # the SAME command after a power cut or pause just picks up where it left off; a path
+    # resumes from that file). Weights-only ckpts degrade gracefully (fresh optimizer).
+    # init_from: weights only, fresh optimizer/schedule (cooldown / strategy change).
+    resume_ck, resume_path = None, None
+    if tcfg.get("resume"):
+        r = tcfg["resume"]
+        resume_path = out_dir / "last.pt" if r in (True, "auto", "last") else Path(r)
+        if resume_path.exists():
+            resume_ck = torch.load(resume_path, map_location="cpu", weights_only=False)
+        elif r != "auto":
+            raise FileNotFoundError(f"resume checkpoint not found: {resume_path}")
+    if resume_ck is not None:
+        model.load_state_dict({k.replace("_orig_mod.", "", 1): v for k, v in resume_ck["model"].items()})
+        print(f"[ac_car] resume <- {resume_path} (ep {resume_ck['epoch']}, gstep {resume_ck.get('gstep', '?')})")
+    elif tcfg.get("init_from"):
+        # load on CPU — a GPU-resident copy survives the whole train() scope and the
+        # ~150MB + fragmentation is enough to OOM batch64 (peak is within 0.6GB of the cap)
+        sd = torch.load(tcfg["init_from"], map_location="cpu", weights_only=False)["model"]
         model.load_state_dict({k.replace("_orig_mod.", "", 1): v for k, v in sd.items()})
+        del sd
         print(f"[ac_car] init_from {tcfg['init_from']}")
     if tcfg.get("compile", True) and hasattr(torch, "compile"):
         print("[ac_car] compiling model with torch.compile(default)...")
@@ -189,8 +217,44 @@ def train(cfg: dict) -> dict:
                      group=wcfg.get("group", "vjepa_ac_car"), name="vjepa_ac_car", config=cfg,
                      reinit="finish_previous") if wcfg.get("enabled", False) and wandb else None
 
-    best, best_ep, since, gstep = float("inf"), -1, 0, 0
-    for epoch in range(tcfg["epochs"]):
+    best, best_ep, since, gstep, start_ep = float("inf"), -1, 0, 0, 0
+    if resume_ck is not None:
+        if "optimizer" in resume_ck:
+            opt.load_state_dict(resume_ck["optimizer"])
+            gstep = resume_ck.get("gstep", 0)
+            best, best_ep = resume_ck.get("best", best), resume_ck.get("best_ep", -1)
+            since = resume_ck.get("since", 0)
+            # mid-epoch ckpt -> redo that epoch (reshuffled); gstep/LR carry on (overshoot
+            # past total_steps just floors the cosine at 0)
+            start_ep = resume_ck["epoch"] + (0 if resume_ck.get("mid_epoch") else 1)
+        else:
+            best = resume_ck.get("val") or float("inf")
+            start_ep = resume_ck["epoch"] + 1
+            print(f"[ac_car]   ⚠️ weights-only ckpt: fresh optimizer/schedule (best={best:.4f})")
+        del resume_ck
+
+    # pause cleanly on SIGTERM/SIGINT (kill <pid> / Ctrl+C): finish the current step,
+    # save a full mid-epoch last.pt, exit 0 — resume with train.resume=auto.
+    stop = {"req": False}
+
+    def _on_signal(signum, _frame):
+        stop["req"] = True
+        print(f"[ac_car] signal {signum} — finishing step, saving last.pt, then exiting...", flush=True)
+
+    signal.signal(signal.SIGTERM, _on_signal)
+    signal.signal(signal.SIGINT, _on_signal)
+
+    def _payload(epoch, val, mid_epoch=False):
+        p = {"epoch": epoch, "model": model.state_dict(), "cfg": cfg, "val": val,
+             "state_mean": state_mean.cpu(), "state_std": state_std.cpu(),
+             "optimizer": opt.state_dict(), "gstep": gstep,
+             "best": best, "best_ep": best_ep, "since": since}
+        if mid_epoch:
+            p["mid_epoch"] = True
+        return p
+
+    save_steps = tcfg.get("save_steps")
+    for epoch in range(start_ep, tcfg["epochs"]):
         train_sampler.set_epoch(epoch)
         model.train(); t0 = time.time(); tl = 0.0
         for b in train_dl:
@@ -206,6 +270,14 @@ def train(cfg: dict) -> dict:
                 run.log({"train/loss": loss.item(), "train/tf": tf.item(), "train/rollout": ro.item(),
                          "train/lr": lr}, step=gstep)
             gstep += 1
+            if stop["req"] or (save_steps and gstep % save_steps == 0):
+                _save_ckpt(out_dir / "last.pt", _payload(epoch, None, mid_epoch=True))
+                if stop["req"]:
+                    print(f"[ac_car] paused @ ep {epoch} gstep {gstep} — last.pt saved; "
+                          f"re-run with train.resume=auto to continue", flush=True)
+                    if run:
+                        run.finish()
+                    return {"paused": True, "epoch": epoch, "gstep": gstep}
 
         model.eval(); vl = 0.0
         with torch.no_grad():
@@ -218,17 +290,18 @@ def train(cfg: dict) -> dict:
             run.log({"val/loss": vl, "epoch": epoch}, step=gstep)
         print(f"[ac_car] ep {epoch:3d} | train {tl/len(train_dl):.4f} | val {vl:.4f} | {time.time()-t0:.0f}s", flush=True)
 
-        ckpt = {"epoch": epoch, "model": model.state_dict(), "cfg": cfg, "val": vl,
-                "state_mean": state_mean.cpu(), "state_std": state_std.cpu()}
-        torch.save(ckpt, out_dir / "last.pt")
-        if vl < best - tcfg.get("min_delta", 0.0):
+        improved = vl < best - tcfg.get("min_delta", 0.0)
+        if improved:
             best, best_ep, since = vl, epoch, 0
-            torch.save(ckpt, out_dir / "best.pt")
         else:
             since += 1
-            if since >= tcfg.get("patience", 12):
-                print(f"[ac_car] early-stop (best {best:.4f} @ ep {best_ep})", flush=True)
-                break
+        ckpt = _payload(epoch, vl)
+        _save_ckpt(out_dir / "last.pt", ckpt)
+        if improved:
+            _save_ckpt(out_dir / "best.pt", ckpt)
+        elif since >= tcfg.get("patience", 12):
+            print(f"[ac_car] early-stop (best {best:.4f} @ ep {best_ep})", flush=True)
+            break
 
     raw_sd = torch.load(out_dir / "best.pt", map_location=device)["model"]
     sd = {k.replace("_orig_mod.", "", 1): v for k, v in raw_sd.items()}

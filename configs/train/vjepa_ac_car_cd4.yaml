@@ -34,6 +34,8 @@ train:
   patience: 3
   min_delta: 1.0e-4
   init_from: checkpoints/vjepa_ac_car/vjepa_ac_car/best.pt   # ep9, val 0.6001, ratio@1 0.782
+  resume: auto                    # có last.pt trong out_dir -> nối tiếp (ưu tiên hơn init_from)
+  save_steps: 600                 # ~36' — cúp điện/pause chỉ mất <=36' thay vì cả epoch
   out_dir: checkpoints/vjepa_ac_car_cd4
 
 eval:
