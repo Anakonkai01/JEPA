@@ -325,6 +325,10 @@ def main():
                     help="nhắm subgoal đầu tiên còn cách xe > ngần này (mét) → bỏ qua subgoal đã tới gần, chống kẹt")
     ap.add_argument("--steer-smooth", type=float, default=0.6,
                     help="EMA lái: steer = α·cũ + (1-α)·mới. Cao = mượt hơn (chống zigzag/văng đường). 0=tắt")
+    ap.add_argument("--steer-gain", type=float, default=1.0,
+                    help="NHÂN steer sau EMA trước khi gửi (clamp ±1) — chữa 'đánh lái yếu' khi model/"
+                         "policy ra góc nhỏ (BC park thiên góc bé; indoor OOD). 1.3-1.5 = mạnh hơn "
+                         "30-50%. Lưu ý: gain làm lệch so với action model tin → tăng nhỏ từng nấc.")
     ap.add_argument("--turn-slow", type=float, default=0.5,
                     help="cua thì giảm ga: throt *= (1 - k·|steer|). 0=tắt")
     ap.add_argument("--stale-s", type=float, default=0.4,
@@ -895,7 +899,8 @@ def main():
                     raw_steer, throt = float(raw_steer), float(throt)
                     # EMA làm mượt lái (chống zigzag/văng đường) + cua thì giảm ga
                     steer = args.steer_smooth * prev_steer + (1.0 - args.steer_smooth) * raw_steer
-                    prev_steer = steer
+                    prev_steer = steer                     # EMA giữ giá trị CHƯA gain (không kép)
+                    steer = max(-1.0, min(1.0, steer * args.steer_gain))
                     throt = throt * (1.0 - args.turn_slow * min(1.0, abs(steer)))
                     # BREAKAWAY + CRUISE (chạy thật 06-11): policy/CEM hay ra ga ~0 → xe chạy
                     # kiểu giật-trớn-giật toàn bằng cú kick (lái stale giữa các cú surge → lượn).
