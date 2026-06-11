@@ -341,6 +341,11 @@ def main():
                     help="pulse mode (sense-plan-act): áp action --pulse-move giây rồi NGẮT GA (giữ lái) "
                          "trong lúc encode+CEM → drift lúc tính ≈ 0, frame để plan gần như tĩnh. "
                          "Chống dao động/văng route khi trễ ~0.4s.")
+    ap.add_argument("--kick-throttle", type=float, default=0.12,
+                    help="ga đề-pa khi xe đứng yên mà planner muốn tiến (thắng ma sát tĩnh; "
+                         "controller vẫn clamp +0.15). Recovery lùi 0.11 đi được -> tiến ~0.12.")
+    ap.add_argument("--kick-s", type=float, default=0.8,
+                    help="thời lượng pulse đề-pa (mode --pulse; pulse thường = --pulse-move)")
     ap.add_argument("--pulse-move", type=float, default=0.45,
                     help="pulse: thời gian chạy mỗi nhịp (giây) ≈ 1-2 bước model (dt 0.22)")
     ap.add_argument("--recover", action=argparse.BooleanOptionalAction, default=True,
@@ -626,6 +631,14 @@ def main():
                     steer = args.steer_smooth * prev_steer + (1.0 - args.steer_smooth) * raw_steer
                     prev_steer = steer
                     throt = throt * (1.0 - args.turn_slow * min(1.0, abs(steer)))
+                    # BREAKAWAY (chạy thật 06-11): đứng yên mà muốn tiến thì ga ≤cap (0.08) dạng
+                    # pulse 0.45s KHÔNG thắng nổi ma sát tĩnh — xe chỉ nhích nhẹ (recovery lùi
+                    # 0.11 thì đi được, người lái đề-pa tới ~0.15). Đẩy 1 nhịp mạnh + dài hơn;
+                    # lăn bánh rồi (GPS speed ≥ stuck_speed) thì về ga thường ngay.
+                    kick = (throt > 0.02 and float(meta.get("lat", 0) or 0) != 0
+                            and float(meta.get("speed", 0.0) or 0.0) < args.stuck_speed)
+                    if kick:
+                        throt = max(throt, args.kick_throttle)
                     emit(steer, throt)                                 # once (phone keeps-alive) or holder (dongle)
                     print(f"[infer] seq{seq} {tag} steer{steer:+.2f}(raw{raw_steer:+.2f}) throt{throt:+.2f} "
                           f"({time.time()-t0:.2f}s)", flush=True)
@@ -672,7 +685,7 @@ def main():
                         # PULSE (sense-plan-act): cho xe CHẠY pulse_move giây với action vừa chốt,
                         # rồi NGẮT GA (giữ lái) — vòng sau encode+CEM trên cảnh gần như đứng yên,
                         # drift trong lúc tính ≈ 0 (trễ không còn ăn vào độ chính xác).
-                        hold(steer, throt, args.pulse_move)
+                        hold(steer, throt, args.kick_s if kick else args.pulse_move)
                         emit(steer, 0.0)                              # coast trong lúc tính
                     else:
                         dtw = period - (time.time() - t0)
