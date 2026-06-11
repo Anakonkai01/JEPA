@@ -610,6 +610,14 @@ def main():
                         with torch.no_grad():
                             mu0 = policy(cur_pool.float().unsqueeze(0), target_pool.float().unsqueeze(0),
                                          s_z, domain if pol_meta["use_domain"] else None)[0]
+                        # Kickstart chống "standstill attractor" của BC prior: người lái lúc đứng yên
+                        # đa số cũng ga ~0 → policy đề xuất ga ~0, mà warm-start σ nhỏ (~0.01) quanh 0
+                        # thì CEM không thoát ra được (ga ~0.01 < ma sát tĩnh → xe đứng im / recovery
+                        # lùi vô hạn). Xe đang đứng yên → ép mu ga ≥ 0.75·cap cho pulse đầu đủ lực;
+                        # lăn bánh rồi thì policy điều ga bình thường.
+                        if float(meta.get("speed", 0.0) or 0.0) < args.stuck_speed:
+                            mu0 = mu0.clone()
+                            mu0[..., 1] = mu0[..., 1].clamp(min=0.75 * args.throttle_cap)
                     # bf16 autocast quanh CEM (mặc định fp32 → chậm); model train bf16 nên nhất quán.
                     with torch.autocast("cuda", dtype=torch.bfloat16, enabled=args.device.startswith("cuda")):
                         raw_steer, throt = planner.plan(z0, s0, target_tokens, mu_init=mu0)
