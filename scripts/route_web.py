@@ -41,7 +41,7 @@ def _safe_name(name: str) -> str:
     return name
 
 
-def _atomic_write(path: Path, payload: dict):
+def _atomic_write(path: Path, payload):
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(payload, ensure_ascii=False, indent=1))
     tmp.replace(path)
@@ -54,6 +54,8 @@ def index():
 
 @app.get("/api/graph")
 def api_graph():
+    if G is None:                      # manual-only mode (không có graph — vd indoor)
+        return jsonify({"n": 0, "xy": [], "suid": [], "heading": [], "extent": [0, 1, 0, 1]})
     xy = np.round(G.XY.astype(np.float64), 2)
     return jsonify({
         "n": len(G.Zn),
@@ -67,7 +69,7 @@ def api_graph():
 
 @app.get("/api/node_image/<int:node>")
 def api_node_image(node: int):
-    if not (0 <= node < len(G.Zn)):
+    if G is None or not (0 <= node < len(G.Zn)):
         return jsonify({"error": "node out of range"}), 404
     p = G.frame_path(node)
     if not p.is_absolute():
@@ -81,6 +83,8 @@ def api_node_image(node: int):
 def api_suggest():
     """?wps=12,805,99&spacing=4[&from=live][&turn=3&switch=1] -> Dijkstra nối
     tuần tự các waypoint (turn/switch = penalty m/rad đổi-hướng & m/lần đổi-session)."""
+    if G is None:
+        return jsonify({"error": "không có graph"}), 400
     try:
         wps = [int(v) for v in request.args.get("wps", "").split(",") if v.strip()]
     except ValueError:
@@ -112,6 +116,72 @@ def api_suggest():
     return jsonify({"path": full, "subgoals": subs, "legs": legs, "length_m": round(total, 1)})
 
 
+# ---------------- route TAY (teach & repeat): chụp subgoal từ live_frame ----------------
+def _manual_dir(name: str) -> Path:
+    return ROUTES_DIR / "manual" / name
+
+
+def _manual_meta(name: str) -> list[dict]:
+    p = _manual_dir(name) / "meta.json"
+    if not p.exists():
+        return []
+    try:
+        return json.loads(p.read_text())
+    except Exception:
+        return []
+
+
+@app.post("/api/manual/snap")
+def api_manual_snap():
+    """Chụp live_frame.jpg hiện tại làm subgoal kế của route tay <name> (kèm xy nếu xe có GPS).
+    Lái xe bằng remote tới chỗ muốn làm subgoal rồi bấm — teach & repeat kiểu ViNG."""
+    body = request.get_json(force=True)
+    name = _safe_name(body["name"])
+    frame = ROUTES_DIR / "live_frame.jpg"
+    if not frame.exists() or time.time() - frame.stat().st_mtime > 3.0:
+        return jsonify({"error": "không có frame mới — phone/inference_loop --web chưa stream"}), 409
+    meta = _manual_meta(name)
+    d = _manual_dir(name)
+    d.mkdir(parents=True, exist_ok=True)
+    i = len(meta)
+    img = d / f"{i:03d}.jpg"
+    img.write_bytes(frame.read_bytes())
+    st = _read_live()
+    xy = st.get("xy") if st and time.time() - st.get("ts", 0) < 3.0 else None
+    meta.append({"img": f"manual/{name}/{img.name}", "xy": xy})
+    _atomic_write(d / "meta.json", meta)          # type: ignore[arg-type]
+    return jsonify({"ok": True, "i": i, "img": meta[-1]["img"], "xy": xy, "n": len(meta)})
+
+
+@app.post("/api/manual/undo")
+def api_manual_undo():
+    body = request.get_json(force=True)
+    name = _safe_name(body["name"])
+    meta = _manual_meta(name)
+    if not meta:
+        return jsonify({"error": "route tay rỗng"}), 404
+    last = meta.pop()
+    try:
+        (ROUTES_DIR / last["img"]).unlink(missing_ok=True)
+    except OSError:
+        pass
+    _atomic_write(_manual_dir(name) / "meta.json", meta)  # type: ignore[arg-type]
+    return jsonify({"ok": True, "n": len(meta)})
+
+
+@app.get("/api/manual/<name>")
+def api_manual_get(name: str):
+    return jsonify(_manual_meta(_safe_name(name)))
+
+
+@app.get("/api/manual_image/<name>/<int:i>")
+def api_manual_image(name: str, i: int):
+    p = _manual_dir(_safe_name(name)) / f"{i:03d}.jpg"
+    if not p.exists():
+        return jsonify({"error": "missing"}), 404
+    return send_file(p, mimetype="image/jpeg", max_age=0)
+
+
 @app.get("/api/routes")
 def api_routes_list():
     out = []
@@ -132,12 +202,26 @@ def api_routes_save():
     body = request.get_json(force=True)
     try:
         name = _safe_name(body["name"])
-        wps = [int(v) for v in body["waypoints"]]
         mode = body.get("mode", "graph")
     except (KeyError, ValueError, TypeError) as e:
         return jsonify({"error": f"route không hợp lệ: {e}"}), 400
+    if mode == "manual":                          # route tay: subgoal = ảnh đã chụp (meta.json)
+        subs = _manual_meta(name)
+        if not subs:
+            return jsonify({"error": "chưa chụp subgoal nào (📸 trước rồi mới lưu)"}), 400
+        _atomic_write(ROUTES_DIR / f"{name}.json", {
+            "mode": "manual", "subgoals": subs, "waypoints": [],
+            "created": time.strftime("%Y-%m-%d %H:%M:%S"),
+        })
+        return jsonify({"ok": True, "name": name, "n": len(subs)})
     if mode not in ("graph", "direct"):
-        return jsonify({"error": "mode phải là graph|direct"}), 400
+        return jsonify({"error": "mode phải là graph|direct|manual"}), 400
+    if G is None:
+        return jsonify({"error": "không có graph — chỉ dùng được route tay (manual)"}), 400
+    try:
+        wps = [int(v) for v in body["waypoints"]]
+    except (KeyError, ValueError, TypeError) as e:
+        return jsonify({"error": f"route không hợp lệ: {e}"}), 400
     if not wps:
         return jsonify({"error": "route rỗng"}), 400
     bad = [w for w in wps if not (0 <= w < len(G.Zn))]
@@ -170,7 +254,8 @@ def api_activate():
     r = json.loads(p.read_text())
     _atomic_write(ROUTES_DIR / "active.json", {
         "cmd": "run", "name": name, "mode": r.get("mode", "graph"),
-        "waypoints": r["waypoints"], "spacing": r.get("spacing", 4.0), "ts": time.time(),
+        "waypoints": r.get("waypoints", []), "subgoals": r.get("subgoals", []),
+        "spacing": r.get("spacing", 4.0), "ts": time.time(),
     })
     return jsonify({"ok": True, "name": name})
 
@@ -218,8 +303,12 @@ def main():
     ap.add_argument("--host", default="0.0.0.0")
     args = ap.parse_args()
     ROUTES_DIR.mkdir(parents=True, exist_ok=True)
-    G = TopoGraph.load(args.graph)
-    print(f"[web] graph {args.graph}: {len(G.Zn)} nodes | routes -> {ROUTES_DIR}")
+    if args.graph and args.graph != "none" and Path(args.graph).exists():
+        G = TopoGraph.load(args.graph)
+        print(f"[web] graph {args.graph}: {len(G.Zn)} nodes | routes -> {ROUTES_DIR}")
+    else:
+        print(f"[web] KHÔNG có graph ({args.graph}) → manual-only mode (route tay / indoor); "
+              f"routes -> {ROUTES_DIR}")
     print(f"[web] mở http://<PC>:{args.port} (cùng mạng/Tailscale)")
     app.run(host=args.host, port=args.port, threaded=True)
 

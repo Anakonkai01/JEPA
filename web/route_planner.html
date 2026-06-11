@@ -43,6 +43,15 @@
   #legend { position:absolute; left:10px; top:10px; background:#000a; border-radius:8px;
             padding:8px 10px; font-size:12px; color:var(--dim); pointer-events:none; }
   #legend i { font-style:normal; }
+  #snapbtn { flex:1; padding:14px; font-size:17px; }
+  #thumbs { display:flex; gap:4px; overflow-x:auto; padding:4px 0; }
+  #thumbs .th { position:relative; flex:0 0 auto; cursor:pointer; }
+  #thumbs img { height:54px; border-radius:6px; display:block; border:1px solid var(--line); }
+  #thumbs .th span { position:absolute; left:3px; top:2px; font-size:11px; color:#fff;
+                     text-shadow:0 0 3px #000; }
+  #liveevt { display:none; margin:4px 0; padding:6px 8px; border-radius:8px; font-weight:600;
+             border:1px solid; font-size:13px; }
+  #subbox img { width:100%; border-radius:8px; background:#000; display:block; }
 </style>
 </head>
 <body>
@@ -51,7 +60,7 @@
   <div id="legend">
     <div><i style="color:#56708a">●</i> node graph &nbsp; <i style="color:#ffd24d">●</i> waypoint
          &nbsp; <i style="color:#4da3ff">━</i> đường gợi ý &nbsp; <i style="color:#37c871">▲</i> subgoal (mũi tên = hướng xe nhìn)</div>
-    <div><i style="color:#ff5252">●</i> xe (live) &nbsp;|&nbsp; kéo = pan, lăn = zoom, rê chuột = xem hướng, click = chọn node, <b>dbl-click = thêm waypoint</b></div>
+    <div><i style="color:#ff5252">●</i> xe (live) &nbsp; <i style="color:#ff5252">┄</i> vết xe (xoá: nút 🧹 ở Live) &nbsp;|&nbsp; kéo = pan, lăn = zoom, click = chọn node, <b>dbl-click = thêm waypoint</b></div>
     <div><label style="pointer-events:auto;cursor:pointer"><input type="checkbox" id="hdcolor" checked onchange="draw()"> màu node = hướng đi</label>
          &nbsp;<i style="color:hsl(0,65%,55%)">→</i> <i style="color:hsl(90,65%,55%)">↑</i> <i style="color:hsl(180,65%,55%)">←</i> <i style="color:hsl(270,65%,55%)">↓</i></div>
   </div>
@@ -62,9 +71,42 @@
 
   <div class="card" id="livebox">
     <h3>Live</h3>
-    <div class="row"><span id="livedot" class="dot" style="background:var(--dim)"></span><span id="livetxt" class="muted">offline</span></div>
+    <div class="row"><span id="livedot" class="dot" style="background:var(--dim)"></span><span id="livetxt" class="muted">offline</span>
+      <span class="spacer"></span>
+      <button class="small" onclick="resetTrail()" title="xoá vết đường xe đã chạy trên map">🧹 vết xe</button></div>
     <div id="livestat" class="muted" style="margin:4px 0"></div>
-    <img id="liveimg" alt="" style="display:none">
+    <div id="liveevt"></div>
+    <div class="row" style="align-items:flex-start;gap:6px">
+      <div style="flex:3;min-width:0">
+        <img id="liveimg" alt="" style="display:none">
+        <div class="muted" style="text-align:center">camera xe</div>
+      </div>
+      <div style="flex:2;min-width:0;display:none" id="subbox">
+        <img id="subimg" alt="">
+        <div class="muted" style="text-align:center">nhắm 📸 <span id="subidx"></span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card" id="teach">
+    <h3>Route tay — teach &amp; repeat</h3>
+    <div class="muted" style="margin-bottom:6px">Lái remote tới chỗ muốn làm subgoal → dừng →
+      chờ ảnh Live mới → 📸. Lặp tới goal rồi 💾 lưu. Không cần graph/GPS (indoor OK).
+      Vào cua nhớ chụp DÀY (trước cua / giữa cua / sau cua).</div>
+    <div class="row">
+      <input type="text" id="tname" placeholder="tên route tay (vd: nha_bep)">
+      <button class="small" onclick="teachLoad()" title="mở route tay đã chụp dở để chụp tiếp">mở</button>
+    </div>
+    <div class="row" style="margin-top:6px">
+      <button id="snapbtn" class="acc" onclick="snap()">📸 Chụp subgoal</button>
+      <button onclick="snapUndo()" title="xoá ảnh chụp cuối">↩︎</button>
+    </div>
+    <div id="thumbs"></div>
+    <div class="row">
+      <span class="muted" id="tinfo">chưa có ảnh</span>
+      <span class="spacer"></span>
+      <button class="acc" onclick="saveManual()">💾 Lưu route tay</button>
+    </div>
   </div>
 
   <div class="card" id="preview" style="display:none">
@@ -102,7 +144,7 @@
     <div class="row" style="margin-top:6px">
       <input type="text" id="rname" placeholder="tên route (vd: park_vong_ho)">
       <button class="acc" onclick="saveRoute()">💾 Lưu</button>
-      <button onclick="clearWps()">Xoá hết</button>
+      <button onclick="newRoute()" title="xoá sạch editor (waypoint + tên) để vẽ route mới">🆕 Mới</button>
     </div>
   </div>
 
@@ -164,6 +206,9 @@ function triNode(sx,sy,th,rr,color){
 function draw(){
   const r=mapEl.getBoundingClientRect(); ctx.clearRect(0,0,r.width,r.height);
   if(!XY) return;
+  // vết xe — vẽ DƯỚI CÙNG (trước đây đè lên node, khó nhìn); 🧹 ở card Live để xoá
+  if(trail.length>1){ctx.lineWidth=1.5;ctx.strokeStyle='#ff525266';ctx.beginPath();
+    trail.forEach((p,k)=>{const[sx,sy]=W2S(p[0],p[1]);k?ctx.lineTo(sx,sy):ctx.moveTo(sx,sy);});ctx.stroke();}
   // session polylines (suid contiguous ranges)
   ctx.lineWidth=1; ctx.strokeStyle='#2e3c49';
   let i=0;
@@ -183,13 +228,21 @@ function draw(){
     for(let k=0;k<N;k++){const[sx,sy]=W2S(XY[2*k],XY[2*k+1]);
       if(sx<-5||sy<-5||sx>r.width+5||sy>r.height+5)continue; ctx.fillRect(sx-rad/2,sy-rad/2,rad,rad);}
   }
-  // suggested path
+  // suggested path — casing 2 lớp (viền tối + lõi sáng, kiểu bản đồ) + mũi tên chiều đi
   if(suggest&&suggest.path&&suggest.path.length>1){
-    ctx.lineWidth=3; ctx.strokeStyle='#4da3ff'; ctx.beginPath();
-    suggest.path.forEach((n,k)=>{const[sx,sy]=W2S(XY[2*n],XY[2*n+1]); k?ctx.lineTo(sx,sy):ctx.moveTo(sx,sy);});
-    ctx.stroke();
+    const pts=suggest.path.map(n=>W2S(XY[2*n],XY[2*n+1]));
+    ctx.lineJoin='round'; ctx.lineCap='round';
+    ctx.lineWidth=7; ctx.strokeStyle='#0b2b4a'; ctx.beginPath();
+    pts.forEach((p,k)=>k?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1])); ctx.stroke();
+    ctx.lineWidth=3.5; ctx.strokeStyle='#6db4ff'; ctx.beginPath();
+    pts.forEach((p,k)=>k?ctx.lineTo(p[0],p[1]):ctx.moveTo(p[0],p[1])); ctx.stroke();
+    let acc=0;                                    // mũi tên dọc đường mỗi ~90px màn hình
+    for(let k=1;k<pts.length;k++){const dx=pts[k][0]-pts[k-1][0],dy=pts[k][1]-pts[k-1][1];
+      const L=Math.hypot(dx,dy); acc+=L;
+      if(acc>90&&L>1e-3){acc=0;
+        arrow((pts[k][0]+pts[k-1][0])/2,(pts[k][1]+pts[k-1][1])/2,Math.atan2(-dy,dx),9,'#dbeaff',2);}}
     (suggest.subgoals||[]).forEach(n=>{const[sx,sy]=W2S(XY[2*n],XY[2*n+1]);
-      triNode(sx,sy,HD?HD[n]:0,5,'#37c871');});
+      triNode(sx,sy,HD?HD[n]:0,6,'#37c871');});
   }
   // direct-mode: nối thẳng waypoint
   if(document.getElementById('mode').value==='direct'&&wps.length>1){
@@ -210,9 +263,7 @@ function draw(){
   if(hov!=null&&hov!==sel){const[sx,sy]=W2S(XY[2*hov],XY[2*hov+1]);
     if(HD)arrow(sx,sy,HD[hov],16,'#9fc4e8',1.5);
     ctx.strokeStyle='#9fc4e8'; ctx.lineWidth=1.5; ctx.beginPath(); ctx.arc(sx,sy,7,0,7); ctx.stroke();}
-  // live trail + car
-  if(trail.length>1){ctx.lineWidth=2;ctx.strokeStyle='#ff525288';ctx.beginPath();
-    trail.forEach((p,k)=>{const[sx,sy]=W2S(p[0],p[1]);k?ctx.lineTo(sx,sy):ctx.moveTo(sx,sy);});ctx.stroke();}
+  // xe (live) — vết đã vẽ ở dưới cùng
   if(live&&live.online&&live.xy){
     const[sx,sy]=W2S(live.xy[0],live.xy[1]);
     ctx.fillStyle='#ff5252'; ctx.beginPath(); ctx.arc(sx,sy,7,0,7); ctx.fill();
@@ -328,50 +379,120 @@ async function loadRoutes(){const el=document.getElementById('routes');
     el.innerHTML=rs.length?'':'<span class="muted">chưa có route nào</span>';
     rs.forEach(r=>{const div=document.createElement('div');div.className='wp';
       const act=(activeRoute===r.name)?' <span style="color:var(--ok)">●running</span>':'';
-      div.innerHTML=`<b>${r.mode==='direct'?'D':'G'}</b> ${r.name}${act}
-        <span class="muted">(${r.waypoints.length} wp)</span><span class="spacer"></span>
+      const g=r.mode==='manual'?'M':(r.mode==='direct'?'D':'G');
+      const cnt=r.mode==='manual'?`${(r.subgoals||[]).length} 📸`:`${(r.waypoints||[]).length} wp`;
+      div.innerHTML=`<b>${g}</b> ${r.name}${act}
+        <span class="muted">(${cnt})</span><span class="spacer"></span>
         <button class="small" onclick='editRoute(${JSON.stringify(r)})'>sửa</button>
         <button class="small acc" onclick="runRoute('${r.name}')">▶ Run</button>
         <button class="small" onclick="delRoute('${r.name}')">✕</button>`;
       el.appendChild(div);});
   }catch(e){el.textContent='lỗi: '+e.message;}}
-function editRoute(r){wps=r.waypoints.slice();document.getElementById('mode').value=r.mode||'graph';
+function editRoute(r){
+  if(r.mode==='manual'){document.getElementById('tname').value=r.name;teachName=r.name;refreshTeach();
+    toast('route tay "'+r.name+'" mở ở panel Teach — 📸 chụp thêm rồi 💾 lưu lại');return;}
+  wps=r.waypoints.slice();document.getElementById('mode').value=r.mode||'graph';
   document.getElementById('rname').value=r.name;renderWps();refreshSuggest();}
 async function delRoute(n){try{await fetch('/api/routes/'+n,{method:'DELETE'});loadRoutes();}catch(e){toast(e.message);}}
 async function runRoute(n){try{await jpost('/api/activate',{name:n});activeRoute=n;
+  trail=[];setEvt('');                       // route mới = vết mới + xoá banner sự kiện cũ
   toast('▶ đã giao route "'+n+'" cho xe');loadRoutes();}catch(e){toast('lỗi: '+e.message);}}
+
+// ---------- teach & repeat (route tay): chụp live_frame làm subgoal ----------
+let teachName='';
+function tnameVal(){return document.getElementById('tname').value.trim();}
+async function teachLoad(){const n=tnameVal();if(!n)return toast('đặt tên route tay đã');teachName=n;refreshTeach();}
+async function refreshTeach(){if(!teachName)return;
+  try{const m=await jget('/api/manual/'+encodeURIComponent(teachName));renderThumbs(m);}
+  catch(e){toast('lỗi: '+e.message);}}
+function renderThumbs(m){const el=document.getElementById('thumbs');el.innerHTML='';
+  m.forEach((s,i)=>{const d=document.createElement('div');d.className='th';
+    d.innerHTML=`<img src="/api/manual_image/${encodeURIComponent(teachName)}/${i}?t=${Date.now()}"><span>${i+1}${s.xy?'·gps':''}</span>`;
+    d.title=`subgoal ${i+1}${s.xy?' (có GPS)':''} — click xem to`;
+    d.onclick=()=>window.open(`/api/manual_image/${encodeURIComponent(teachName)}/${i}`,'_blank');
+    el.appendChild(d);});
+  document.getElementById('tinfo').textContent=m.length?m.length+' ảnh':'chưa có ảnh';}
+async function snap(){const n=tnameVal();if(!n)return toast('đặt tên route tay đã');teachName=n;
+  try{const r=await jpost('/api/manual/snap',{name:n});
+    toast(`📸 #${r.n}${r.xy?' (có GPS)':''}`);refreshTeach();}
+  catch(e){toast('lỗi: '+e.message,5000);}}
+async function snapUndo(){const n=tnameVal()||teachName;if(!n)return;
+  try{await jpost('/api/manual/undo',{name:n});refreshTeach();}catch(e){toast('lỗi: '+e.message);}}
+async function saveManual(){const n=tnameVal()||teachName;if(!n)return toast('đặt tên route tay đã');
+  try{const r=await jpost('/api/routes',{name:n,mode:'manual'});
+    toast(`💾 route tay "${n}" (${r.n} subgoal) — ▶ Run ở "Route đã lưu"`);loadRoutes();}
+  catch(e){toast('lỗi: '+e.message,5000);}}
+function resetTrail(){trail=[];draw();toast('đã xoá vết xe');}
+function newRoute(){wps=[];suggest=null;document.getElementById('rname').value='';
+  renderWps();document.getElementById('sugginfo').textContent='';draw();}
+function setEvt(msg,color){const el=document.getElementById('liveevt');
+  if(!msg){el.style.display='none';return;}
+  el.style.display='block';el.style.borderColor=color;el.style.color=color;
+  el.style.background=color+'22';el.textContent=msg;}
 async function emergencyStop(){try{await jpost('/api/stop');activeRoute=null;
   toast('⛔ STOP đã gửi');loadRoutes();}catch(e){toast(e.message);}}
 
 // ---------- live ----------
+const STC={run:'#37c871',idle:'#8294a5',stopped:'#ffb347',reached:'#4da3ff',
+           halted:'#ff5252',timeout:'#ff5252',error:'#ff5252'};
+let lastState='';
 async function pollLive(){
   try{live=await jget('/api/live');}catch(e){live={online:false};}
   const dot=document.getElementById('livedot'),txt=document.getElementById('livetxt'),
-        st=document.getElementById('livestat'),img=document.getElementById('liveimg');
+        st=document.getElementById('livestat'),img=document.getElementById('liveimg'),
+        sub=document.getElementById('subbox');
   if(live.online){
-    dot.style.background='var(--ok)';
-    txt.textContent=live.state||'online';
-    let s=`node ${live.cur??'?'} | wp ${live.wp_idx!=null?(live.wp_idx+1)+'/'+live.wp_total:'-'}`;
+    dot.style.background=STC[live.state]||'var(--ok)';
+    txt.textContent=(live.state||'online')+(live.route?' — '+live.route:'');
+    txt.style.color=STC[live.state]||'var(--fg)';
+    let s='';
+    if(live.mode==='manual'&&live.wp_idx!=null){
+      s=`📸 subgoal ${live.wp_idx+1}/${live.wp_total}`;
+      if(live.cos!=null)s+=` | cos ${live.cos.toFixed(3)}`;
+    }else{
+      s=`node ${live.cur??'?'} | wp ${live.wp_idx!=null?(live.wp_idx+1)+'/'+live.wp_total:'-'}`;
+    }
     if(live.gps_dist!=null)s+=` | còn ${live.gps_dist.toFixed(1)} m`;
     if(live.steer!=null)s+=` | lái ${live.steer.toFixed(2)} ga ${live.throt.toFixed(2)}`;
     st.textContent=s;
+    if(live.state!==lastState){               // banner sự kiện DÍNH tới khi chạy route mới
+      if(live.state==='reached')setEvt('🏁 XONG route'+(live.route?' "'+live.route+'"':''),'#37c871');
+      else if(live.state==='timeout')setEvt('⏱ DỪNG: subgoal quá lâu không đạt — chỉnh chỗ xe / Run lại','#ff5252');
+      else if(live.state==='halted')setEvt('🛑 KẸT nhiều lần — xe DỪNG HẲN, cần người tới chỗ xe','#ff5252');
+      else if(live.state==='error')setEvt('⚠ route lỗi (thiếu ảnh subgoal?) — xem log inference_loop','#ff5252');
+      else if(live.state==='run')setEvt('');
+      lastState=live.state;
+    }
     if(live.route&&live.route!==activeRoute){activeRoute=live.route;loadRoutes();}
     img.style.display='block'; img.src='/api/live_frame?ts='+Date.now();
-    if(live.xy){trail.push(live.xy); if(trail.length>200)trail.shift();}
+    if(live.mode==='manual'&&live.state==='run'&&live.route&&live.wp_idx!=null){
+      const u=`/api/manual_image/${encodeURIComponent(live.route)}/${live.wp_idx}`;
+      if(sub._u!==u){sub._u=u;document.getElementById('subimg').src=u;}
+      document.getElementById('subidx').textContent=(live.wp_idx+1)+'/'+live.wp_total;
+      sub.style.display='block';
+    }else sub.style.display='none';
+    if(live.xy){trail.push(live.xy); if(trail.length>400)trail.shift();}
   }else{dot.style.background='var(--dim)';txt.textContent='offline (inference_loop --web chưa chạy)';
-    st.textContent='';img.style.display='none';}
+    txt.style.color='var(--dim)';st.textContent='';img.style.display='none';sub.style.display='none';}
   draw();}
 
 // ---------- init ----------
 (async function(){
+  renderWps(); loadRoutes(); setInterval(pollLive,800);
   try{const g=await jget('/api/graph');
-    N=g.n; XY=new Float64Array(g.xy.flat()); SUID=new Int32Array(g.suid); EXT=g.extent;
+    N=g.n;
+    if(!N){ // manual-only (route_web --graph none): không có map — teach & repeat thuần ảnh
+      mapEl.style.display='none';
+      const sd=document.getElementById('side');
+      sd.style.width='auto'; sd.style.minWidth='0'; sd.style.flex='1';
+      toast('không có graph — chế độ route tay (teach & repeat), map ẩn',6000);
+      return;}
+    XY=new Float64Array(g.xy.flat()); SUID=new Int32Array(g.suid); EXT=g.extent;
     HD=g.heading?new Float32Array(g.heading):null; buildBuckets();
     cam.x=(EXT[0]+EXT[1])/2; cam.y=(EXT[2]+EXT[3])/2;
     const r=mapEl.getBoundingClientRect();
     cam.scale=Math.min(r.width/(EXT[1]-EXT[0]+20),r.height/(EXT[3]-EXT[2]+20));
-    resize(); renderWps(); loadRoutes();
-    setInterval(pollLive,800);
+    resize();
   }catch(e){toast('không tải được graph: '+e.message,8000);}
 })();
 </script>

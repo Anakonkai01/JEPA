@@ -229,21 +229,26 @@ class WebBridge:
         if cmd.get("cmd") == "stop":
             self.route, self.stopped = None, True
             print("[web] ⛔ STOP từ web → neutral, chờ route mới", flush=True)
-        elif cmd.get("cmd") == "run" and cmd.get("waypoints"):
+        elif cmd.get("cmd") == "run" and (cmd.get("waypoints") or cmd.get("subgoals")):
             self.route = {"name": str(cmd.get("name", "?")), "mode": str(cmd.get("mode", "graph")),
-                          "waypoints": [int(w) for w in cmd["waypoints"]],
+                          "waypoints": [int(w) for w in cmd.get("waypoints") or []],
+                          "subgoals": list(cmd.get("subgoals") or []),
                           "spacing": float(cmd.get("spacing", 4.0))}
             self.wp_idx = 0
             self.stopped = False
+            n = (len(self.route["subgoals"]) if self.route["mode"] == "manual"
+                 else len(self.route["waypoints"]))
             print(f"[web] ▶ route '{self.route['name']}' (mode={self.route['mode']}, "
-                  f"{len(self.route['waypoints'])} waypoint)", flush=True)
+                  f"{n} {'subgoal tay' if self.route['mode'] == 'manual' else 'waypoint'})", flush=True)
 
     def status(self, **kw):
         kw["ts"] = time.time()
         if self.route:
             kw.setdefault("route", self.route["name"])
+            kw.setdefault("mode", self.route["mode"])
             kw.setdefault("wp_idx", self.wp_idx)
-            kw.setdefault("wp_total", len(self.route["waypoints"]))
+            kw.setdefault("wp_total", len(self.route["subgoals"]) if self.route["mode"] == "manual"
+                          else len(self.route["waypoints"]))
         tmp = self.dir / "live_status.tmp"
         tmp.write_text(json.dumps(kw))
         tmp.replace(self.dir / "live_status.json")
@@ -311,6 +316,11 @@ def main():
     ap.add_argument("--throttle-cap", type=float, default=0.08,
                     help="ga TỐI ĐA cho lần chạy (an toàn): box throttle = [0, cap], forward-only")
     ap.add_argument("--subgoal-spacing", type=float, default=4.0, help="metres between subgoals")
+    ap.add_argument("--ctrl-lookahead-m", type=float, default=2.5,
+                    help="target ẢNH cho CEM = node trên route polyline cách xe ngần này (mét, "
+                         "along-track, chỉ-tiến). Subgoal --subgoal-spacing chỉ còn là mốc nav/pop. "
+                         "Goal ảnh 3-7m vượt tầm-với CEM (horizon 0.88s ≈ ~1m) → gradient yếu → "
+                         "understeer ở cua. 0 = tắt (target = subgoal như cũ).")
     ap.add_argument("--advance-m", type=float, default=3.0,
                     help="nhắm subgoal đầu tiên còn cách xe > ngần này (mét) → bỏ qua subgoal đã tới gần, chống kẹt")
     ap.add_argument("--steer-smooth", type=float, default=0.6,
@@ -323,6 +333,18 @@ def main():
                     help="node localize cách xe (GPS) xa hơn ngần này → coi như LẠC → neutral (đừng lái theo route bịa)")
     ap.add_argument("--reach-m", type=float, default=4.0,
                     help="tới đích khi GPS cách goal < ngần này (mét). Robust hơn cosine ở park tự-giống.")
+    ap.add_argument("--manual-reach-cos", type=float, default=0.97,
+                    help="route TAY (teach&repeat): subgoal không có GPS (indoor) coi là ĐẠT khi cosine "
+                         "pooled-latent(view hiện tại, ảnh subgoal) ≥ ngưỡng này. Log in cos mỗi tick "
+                         "để tune; park tự-giống thì đừng dựa cosine (dùng GPS).")
+    ap.add_argument("--manual-near-cos", type=float, default=0.95,
+                    help="route TAY không GPS, luật pop thứ 2: ĐÃ TỚI GẦN (cos ≥ near) mà subgoal KẾ "
+                         "trông gần hơn RÕ RỆT (cos_next > cos + 0.02) → coi như đã qua. Chống kẹt khi "
+                         "ngưỡng tuyệt đối không bao giờ đạt (lệch sáng). Park alias nặng (đo e2e 06-12: "
+                         "cos giữa các CHỖ KHÁC NHAU 0.94–0.97) → outdoor đừng dựa cosine, dùng GPS. 0 = tắt.")
+    ap.add_argument("--manual-timeout-s", type=float, default=60.0,
+                    help="route TAY: 1 subgoal quá ngần này giây không đạt → DỪNG route chờ lệnh web "
+                         "(an toàn indoor: không GPS = không có stuck-recovery). 0 = tắt.")
     ap.add_argument("--rate", type=float, default=5.0, help="max control Hz")
     ap.add_argument("--dongle", action="store_true", help="send via ESP-NOW dongle, not phone relay")
     ap.add_argument("--dt", type=float, default=0.22)
@@ -350,6 +372,10 @@ def main():
                     help="sàn ga khi đang lăn dưới --cruise-speed (giữ trớn đều, hết surge-coast)")
     ap.add_argument("--cruise-speed", type=float, default=0.5,
                     help="m/s; trên tốc độ này thì thả ga cho planner quyết hoàn toàn")
+    ap.add_argument("--floor-no-gps", action="store_true",
+                    help="indoor/không GPS: vẫn áp sàn ga = --cruise-throttle (KHÔNG kick — không có "
+                         "tín hiệu đứng-yên tin được khi thiếu GPS). Chỉnh --cruise-throttle/"
+                         "--throttle-cap theo mặt sàn (sàn nhà trơn hơn cỏ).")
     ap.add_argument("--pulse-move", type=float, default=0.45,
                     help="pulse: thời gian chạy mỗi nhịp (giây) ≈ 1-2 bước model (dt 0.22)")
     ap.add_argument("--recover", action=argparse.BooleanOptionalAction, default=True,
@@ -430,6 +456,24 @@ def main():
             subgoal_cache[node] = encoders.ctrl(img[:, :, ::-1].copy())
         return subgoal_cache[node]
 
+    manual_cache: dict[str, tuple] = {}
+
+    def manual_patch(rel: str) -> tuple:
+        """Ảnh subgoal route TAY (path tương đối thư mục --web)
+        -> (pool raw tensor, LN tokens, pool L2-normalized np — cho cosine-reach)."""
+        p = Path(args.web) / rel
+        # key kèm mtime: undo + 📸 lại ghi đè cùng tên file → không được trả cache cũ
+        key = (rel, p.stat().st_mtime if p.exists() else -1.0)
+        if key not in manual_cache:
+            img = cv2.imread(str(p))
+            if img is None:
+                raise FileNotFoundError(f"manual subgoal missing: {p}")
+            pool, tokens = encoders.ctrl(img[:, :, ::-1].copy())
+            pn = pool.cpu().numpy().astype(np.float32)
+            pn = pn / (np.linalg.norm(pn) + 1e-8)
+            manual_cache[key] = (pool, tokens, pn)
+        return manual_cache[key]
+
     if args.control_only:
         if not args.goal_image:
             ap.error("--control-only cần --goal-image")
@@ -440,8 +484,18 @@ def main():
         print("[infer] CONTROL-ONLY: CEM lái thẳng tới ảnh goal (bỏ graph/nav). Chạy trong nhà OK, "
               "nhưng model train ở park → OOD, action có thể không chuẩn.")
     else:
-        graph = TopoGraph.load(args.graph)
-        if args.goal_node is not None:                         # chọn thẳng node trên graph
+        if args.graph and args.graph != "none" and Path(args.graph).exists():
+            graph = TopoGraph.load(args.graph)
+        elif args.web:
+            print(f"[infer] KHÔNG có graph ({args.graph}) → manual-only: chỉ chạy ROUTE TAY "
+                  f"(teach & repeat) từ web — indoor/chỗ mới. Route graph/direct + goal CLI bị từ chối.")
+        else:
+            ap.error(f"không thấy graph {args.graph} — full-nav cần graph "
+                     f"(hoặc --web route tay, hoặc --control-only)")
+        if graph is None:
+            if args.goal_node is not None or args.goal_xy or args.goal_image:
+                ap.error("--goal-node/--goal-xy/--goal-image cần graph — manual-only chỉ nhận route tay từ web")
+        elif args.goal_node is not None:                       # chọn thẳng node trên graph
             if not (0 <= args.goal_node < len(graph.Zn)):
                 ap.error(f"--goal-node {args.goal_node} ngoài [0,{len(graph.Zn)})")
             goal_node = args.goal_node
@@ -506,7 +560,10 @@ def main():
             last_frame_t = time.time()
             recover_times, halted, halted_route = [], False, None
             nav_subs, nav_goal = None, None               # route cache (Dijkstra 1 lần/goal)
+            nav_route, route_cum, route_seg = None, None, 0   # polyline route + arc-length (lookahead)
             pos_hist = []                                 # (t, xy) cho stuck-detector dịch chuyển
+            # route TAY: dwell cosine, đồng hồ timeout per-subgoal, route đang bám (reset khi giao mới)
+            manual_hits, manual_last_idx, manual_t0, last_rt_obj = 0, -1, time.time(), None
             try:
                 while reader.alive:
                     if halted:                            # quá recover-max lần kẹt → đứng yên chờ người
@@ -529,6 +586,8 @@ def main():
                         time.sleep(0.01); continue
                     last_seq = seq; last_frame_t = time.time()
                     meta, rgb = item
+                    car_xy = None      # gán ở nhánh full-nav khi có GPS; ctrl-only luôn None
+                                       # (trước đây ctrl-only chưa từng gán → recovery NameError)
 
                     if web is not None:
                         web.poll()                        # nhận route mới / STOP từ web
@@ -540,10 +599,105 @@ def main():
 
                     if args.control_only:
                         cur_pool, ctrl_tokens = encoders.ctrl(rgb)     # 1 encode (chỉ control)
+                        t_enc = time.time()
                         target_pool, target_tokens = goal_pool, goal_tokens
                         tag = "ctrl-only"
+                    elif web is not None and web.route and web.route["mode"] == "manual":
+                        # ---------- ROUTE TAY (teach & repeat, kiểu ViNG): bám chuỗi ảnh user 📸
+                        # qua web — không cần graph, chạy được chỗ mới/indoor. Reach: GPS khi cả
+                        # subgoal lẫn xe có toạ độ (teach ngoài trời); không GPS → cosine pooled.
+                        # Cosine TUYỆT ĐỐI từng alias ở park (cao dù còn xa goal) nên thêm luật
+                        # "đã GẦN (≥near) mà subgoal KẾ trông gần hơn = đã qua", dwell 2 tick,
+                        # và timeout an toàn (indoor không GPS = không có stuck-recovery).
+                        rt = web.route
+                        wp_mode, cur = "manual", None
+                        nav, ctrl_tokens = encoders.both(rgb)
+                        t_enc = time.time()
+                        cur_pool = torch.from_numpy(nav).to(args.device)
+                        gps = None
+                        if meta.get("lat", 0) and meta.get("lon", 0):
+                            gps = (float(meta["lat"]), float(meta["lon"]))
+                        car_xy = graph.to_xy(*gps) if (graph is not None and gps is not None) else None
+                        if rt is not last_rt_obj:             # route mới giao → reset dwell/đồng hồ
+                            last_rt_obj, manual_hits, manual_last_idx = rt, 0, -1
+                        subs = rt["subgoals"]
+                        navn = nav / (np.linalg.norm(nav) + 1e-8)
+                        try:
+                            def _mcos(i):                     # cosine(view hiện tại, subgoal i)
+                                return float(navn @ manual_patch(subs[i]["img"])[2])
+
+                            # pop GPS: ảnh chụp có thể dày hơn reach-m → pop hết các sub đã trong bán kính
+                            while (web.wp_idx < len(subs) and car_xy is not None
+                                   and subs[web.wp_idx].get("xy") is not None
+                                   and float(np.linalg.norm(car_xy - np.asarray(
+                                       subs[web.wp_idx]["xy"], np.float32))) < args.reach_m):
+                                print(f"[web] ✓ subgoal tay {web.wp_idx + 1}/{len(subs)} (GPS)", flush=True)
+                                web.wp_idx += 1; manual_hits = 0
+                            cos_v = gps_dist = None
+                            if web.wp_idx < len(subs):
+                                sub = subs[web.wp_idx]
+                                cos_v = _mcos(web.wp_idx)
+                                if sub.get("xy") is not None and car_xy is not None:
+                                    gps_dist = float(np.linalg.norm(car_xy - np.asarray(sub["xy"], np.float32)))
+                                else:
+                                    cos_next = _mcos(web.wp_idx + 1) if web.wp_idx + 1 < len(subs) else None
+                                    # margin 0.02: park đo được cos giữa các chỗ KHÁC nhau lệch ~0.01-0.03
+                                    # → margin nhỏ pop oan (e2e 06-12); cần "gần hơn RÕ RỆT" mới tin
+                                    hit = cos_v >= args.manual_reach_cos or (
+                                        args.manual_near_cos > 0 and cos_next is not None
+                                        and cos_v >= args.manual_near_cos and cos_next > cos_v + 0.02)
+                                    manual_hits = manual_hits + 1 if hit else 0
+                                    if manual_hits >= 2:      # 2 tick liên tiếp — chống alias 1 frame
+                                        nxt = f" next{cos_next:.3f}" if cos_next is not None else ""
+                                        print(f"[web] ✓ subgoal tay {web.wp_idx + 1}/{len(subs)} "
+                                              f"(cos {cos_v:.3f}{nxt})", flush=True)
+                                        web.wp_idx += 1; manual_hits = 0
+                                        if web.wp_idx < len(subs):
+                                            cos_v = _mcos(web.wp_idx)
+                            if web.wp_idx >= len(subs):       # hết chuỗi ảnh → xong route
+                                emit(0.0, 0.0); prev_steer = 0.0
+                                print(f"[web] 🏁 route tay '{rt['name']}' HOÀN THÀNH "
+                                      f"({len(subs)} subgoal)", flush=True)
+                                web.frame(rgb)
+                                st = {"state": "reached", "seq": seq}
+                                if car_xy is not None:
+                                    st["xy"] = [float(car_xy[0]), float(car_xy[1])]
+                                web.status(**st)
+                                web.route = None
+                                continue
+                            if web.wp_idx != manual_last_idx:
+                                manual_last_idx, manual_t0 = web.wp_idx, time.time()
+                            if args.manual_timeout_s > 0 and time.time() - manual_t0 > args.manual_timeout_s:
+                                emit(0.0, 0.0); prev_steer = 0.0
+                                print(f"[web] ⏱ subgoal tay {web.wp_idx + 1}/{len(subs)} quá "
+                                      f"{args.manual_timeout_s:.0f}s không đạt (cos {cos_v:.3f}) "
+                                      f"→ DỪNG, chờ lệnh web", flush=True)
+                                web.frame(rgb)
+                                web.status(state="timeout", seq=seq)
+                                web.route = None
+                                continue
+                            target_pool, target_tokens, _ = manual_patch(subs[web.wp_idx]["img"])
+                        except FileNotFoundError as e:
+                            emit(0.0, 0.0); prev_steer = 0.0
+                            print(f"[web] ⚠ route tay thiếu ảnh ({e}) → STOP route", flush=True)
+                            web.status(state="error", seq=seq)
+                            web.route = None
+                            continue
+                        gd = f" d={gps_dist:.1f}m" if gps_dist is not None else ""
+                        tag = f"manual {web.wp_idx + 1}/{len(subs)} cos{cos_v:.3f}{gd}"
                     else:
+                        if graph is None:                     # manual-only (--graph none): teach/idle
+                            if web.route is not None:
+                                print(f"[web] ⚠ route '{web.route['name']}' mode={web.route['mode']} "
+                                      f"cần graph — chỉ route TAY chạy được khi --graph none", flush=True)
+                                web.route = None
+                            emit(0.0, 0.0)
+                            web.frame(rgb)
+                            web.status(state="idle", seq=seq)
+                            time.sleep(0.5)
+                            continue
                         nav, ctrl_tokens = encoders.both(rgb)          # 1 encode → cả nav + control
+                        t_enc = time.time()
                         cur_pool = torch.from_numpy(nav).to(args.device)
                         gps = None
                         if meta.get("lat", 0) and meta.get("lon", 0):
@@ -631,6 +785,11 @@ def main():
                                 # >advance_m → nếu giữ, nó làm target vĩnh viễn: xe servo về ảnh
                                 # điểm xuất phát, không quẹo — bug chạy thật 06-11)
                                 nav_subs, nav_goal = (sg[1:] if len(sg) > 1 else sg), goal
+                                nav_route = route
+                                route_cum = (np.concatenate([[0.0], np.cumsum(np.linalg.norm(
+                                    np.diff(graph.XY[route], axis=0), axis=1))])
+                                             if len(route) > 1 else np.zeros(1))
+                                route_seg = 0
                                 print(f"[infer] route mới: {len(nav_subs)} subgoal (cur{cur}->goal{goal})", flush=True)
                             subs = nav_subs
                             # FIX B: bỏ hẳn subgoal đã QUA khỏi cache — "qua" = tới gần (≤advance_m)
@@ -645,12 +804,56 @@ def main():
                                 target = nav_subs[0] if _d(nav_subs[0]) > args.advance_m else goal
                             else:
                                 target = subs[1] if len(subs) >= 2 else subs[-1]
+                            # CONTROL-target gần (along-track): subgoal 4m chỉ là mốc NAV/pop;
+                            # CEM horizon 0.88s với ~1m nên ảnh goal 3-7m cho gradient yếu →
+                            # understeer ở cua. Chiếu xe lên polyline route (chỉ-tiến, cửa sổ 40
+                            # segment) → target = node cách ~lookahead m phía trước (quantize 3
+                            # node để target đứng yên vài tick → đỡ churn cache encode subgoal).
+                            if (args.ctrl_lookahead_m > 0 and car_xy is not None
+                                    and nav_route is not None and len(nav_route) >= 2):
+                                P = graph.XY
+                                best_d, best_seg, best_t = 1e18, route_seg, 0.0
+                                for k in range(route_seg, min(route_seg + 40, len(nav_route) - 1)):
+                                    a, b = P[nav_route[k]], P[nav_route[k + 1]]
+                                    ab = b - a
+                                    L2 = float(ab @ ab)
+                                    tt = 0.0 if L2 < 1e-9 else float(np.clip(((car_xy - a) @ ab) / L2, 0.0, 1.0))
+                                    dd = float(np.linalg.norm(car_xy - (a + tt * ab)))
+                                    if dd < best_d:
+                                        best_d, best_seg, best_t = dd, k, tt
+                                route_seg = best_seg              # monotonic — không match lùi
+                                s_along = route_cum[best_seg] + best_t * (route_cum[best_seg + 1] - route_cum[best_seg])
+                                # đi dọc route tới target: dừng ở lookahead m HOẶC khi heading
+                                # route đã xoay ~50° so với điểm chiếu → VÀO CUA TARGET TỰ DÀY LÊN
+                                # (ảnh target luôn còn overlap với view hiện tại; goal "qua góc
+                                # 90°" = không nhìn thấy = energy mù — bug user mô tả 06-11)
+                                h0 = float(graph.heading[nav_route[best_seg]])
+                                j = best_seg + 1
+                                while j < len(nav_route) - 1:
+                                    if route_cum[j] - s_along >= args.ctrl_lookahead_m:
+                                        break
+                                    dh = abs((float(graph.heading[nav_route[j]]) - h0 + np.pi)
+                                             % (2 * np.pi) - np.pi)
+                                    if dh >= 0.9:                 # ~50°
+                                        break
+                                    j += 1
+                                target = nav_route[j]
                             gd = f"{gps_dist:.1f}m" if gps_dist is not None else "no-gps"
                             tag = f"cur{cur}->sub{target}->goal{goal} d={gd} route{len(subs)}"
                         target_pool, target_tokens = subgoal_patch(target)
 
+                    t_tgt = time.time()
                     z0 = ctrl_tokens.unsqueeze(0)                      # (1, N, D) — đã encode ở trên
                     s0 = build_state(meta, cols)
+                    # Tốc độ ước lượng = max(doppler, dịch-chuyển GPS từ pos_hist): doppler báo
+                    # 0.00 khi bò → kick/kickstart từng bắn lúc xe VẪN LĂN (= surge 0.12 giữa cua,
+                    # đúng chỗ dễ văng lề). Đứng yên thật thì cả hai ~0 → kick vẫn nguyên (đề-pa
+                    # cần đủ lực, không bị turn_slow/cruise cắt).
+                    spd_est = float(meta.get("speed", 0.0) or 0.0)
+                    if car_xy is not None and pos_hist:
+                        sp_h = time.time() - pos_hist[0][0]
+                        if sp_h > 0.5:
+                            spd_est = max(spd_est, float(np.linalg.norm(car_xy - pos_hist[0][1])) / sp_h)
                     # PiJEPA-style warm start: policy đề xuất action từ (pooled hiện tại, pooled goal,
                     # state) → khởi tạo mu của CEM (CEM vẫn refine dưới world model).
                     mu0 = None
@@ -664,12 +867,13 @@ def main():
                         # thì CEM không thoát ra được (ga ~0.01 < ma sát tĩnh → xe đứng im / recovery
                         # lùi vô hạn). Xe đang đứng yên → ép mu ga ≥ 0.75·cap cho pulse đầu đủ lực;
                         # lăn bánh rồi thì policy điều ga bình thường.
-                        if float(meta.get("speed", 0.0) or 0.0) < args.stuck_speed:
+                        if spd_est < args.stuck_speed:
                             mu0 = mu0.clone()
                             mu0[..., 1] = mu0[..., 1].clamp(min=0.75 * args.throttle_cap)
                     # bf16 autocast quanh CEM (mặc định fp32 → chậm); model train bf16 nên nhất quán.
                     with torch.autocast("cuda", dtype=torch.bfloat16, enabled=args.device.startswith("cuda")):
                         raw_steer, throt = planner.plan(z0, s0, target_tokens, mu_init=mu0)
+                    t_plan = time.time()
                     raw_steer, throt = float(raw_steer), float(throt)
                     # EMA làm mượt lái (chống zigzag/văng đường) + cua thì giảm ga
                     steer = args.steer_smooth * prev_steer + (1.0 - args.steer_smooth) * raw_steer
@@ -681,27 +885,41 @@ def main():
                     # tiến 0.07 pulse thì không); đang lăn dưới cruise_speed → sàn ga cruise 0.07
                     # giữ trớn ĐỀU để lái được sửa liên tục. Trên cruise_speed → ga planner.
                     kick = False
-                    spd_now = float(meta.get("speed", 0.0) or 0.0)
                     # Sàn ga áp VÔ ĐIỀU KIỆN khi đang lái theo goal (CEM box ga = [0,cap], không
                     # tồn tại "muốn lùi"; tới đích đã neutral ở reach-check phía trên). Gate cũ
                     # `throt>0.02` làm tick planner ra ~0 thì không floor → ga nhấp nhả 0.12/0.00
                     # xen kẽ → không tích trớn → dịch <0.6m/3s → recovery v2 lùi oan ("lùi quài").
+                    # Tier chọn theo spd_est (max doppler/GPS-displacement) — doppler 0.00 khi bò
+                    # từng xếp xe-đang-lăn vào tier kick → surge 0.12 giữa cua.
                     if float(meta.get("lat", 0) or 0) != 0:
-                        if spd_now < args.stuck_speed:
+                        if spd_est < args.stuck_speed:
                             throt = max(throt, args.kick_throttle); kick = True
-                        elif spd_now < args.cruise_speed:
+                        elif spd_est < args.cruise_speed:
                             throt = max(throt, args.cruise_throttle)
+                    elif args.floor_no_gps:
+                        # indoor: không có tín hiệu đứng-yên tin được (không GPS) → chỉ floor
+                        # cruise, không kick (kick 0.12 liên tục trên sàn trơn = quá nhanh)
+                        throt = max(throt, args.cruise_throttle)
                     emit(steer, throt)                                 # once (phone keeps-alive) or holder (dongle)
                     print(f"[infer] seq{seq} {tag} steer{steer:+.2f}(raw{raw_steer:+.2f}) throt{throt:+.2f} "
-                          f"({time.time()-t0:.2f}s)", flush=True)
+                          f"({time.time()-t0:.2f}s enc{t_enc-t0:.2f} nav{t_tgt-t_enc:.2f} "
+                          f"cem{t_plan-t_tgt:.2f})", flush=True)
 
                     if web is not None:                    # live cho web planner (map + camera)
                         web.frame(rgb)
-                        xy = car_xy if car_xy is not None else graph.XY[cur]
-                        web.status(state="run", seq=seq, cur=int(cur), goal=int(goal),
-                                   target=int(target), gps_dist=gps_dist, mode=wp_mode,
-                                   steer=round(steer, 3), throt=round(throt, 3),
-                                   xy=[float(xy[0]), float(xy[1])])
+                        st = {"state": "run", "seq": seq, "mode": wp_mode,
+                              "steer": round(steer, 3), "throt": round(throt, 3)}
+                        if car_xy is not None:
+                            st["xy"] = [float(car_xy[0]), float(car_xy[1])]
+                        elif cur is not None:              # không GPS nhưng có graph → xy node localize
+                            st["xy"] = [float(graph.XY[cur][0]), float(graph.XY[cur][1])]
+                        if gps_dist is not None:
+                            st["gps_dist"] = round(float(gps_dist), 1)
+                        if wp_mode == "manual":            # route tay: subgoal index + cosine (tune ngưỡng)
+                            st["cos"] = round(cos_v, 3)
+                        else:
+                            st.update(cur=int(cur), goal=int(goal), target=int(target))
+                        web.status(**st)
 
                     # --- STUCK / CRASH RECOVERY: lệnh ga tiến mà xe không nhúc nhích (đâm tường,
                     # lao bờ cỏ, kẹt bánh) → lùi + đánh lái ngược rồi replan (giống người lái trong data).

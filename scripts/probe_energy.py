@@ -46,6 +46,16 @@ def main():
     ap.add_argument("--grid", type=int, default=21, help="số điểm quét steer trong [-1,1]")
     ap.add_argument("--turn-only", action="store_true",
                     help="chỉ lấy window người lái đang quẹo (|steer| > 0.15)")
+    ap.add_argument("--frames-dir", default=None,
+                    help="probe trên ẢNH TÙY Ý (vd indoor pre-check): mỗi jpg/png = 1 window "
+                         "1-frame, goal = --goal-image, không cần teacher — đọc argminE + contrast. "
+                         "Contrast ≪ tham chiếu park (0.39) = landscape phẳng = không đủ tín hiệu lái.")
+    ap.add_argument("--goal-image", default=None, help="ảnh goal cho --frames-dir")
+    ap.add_argument("--probe-throttle", type=float, default=0.05,
+                    help="throttle hằng khi quét (mode --frames-dir)")
+    ap.add_argument("--domain-id", type=float, default=1.0,
+                    help="domain token cho mode --frames-dir (1=TowerPro)")
+    ap.add_argument("--image-size", type=int, default=384)
     ap.add_argument("--history", type=int, default=2)
     ap.add_argument("--dt", type=float, default=0.22)
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
@@ -80,14 +90,58 @@ def main():
     dyn = CarDynamics.fit([(r["raw_dir"], [s for s in r["_sessions"] if s in train_set]) for r in roots],
                           dt=args.dt, stride=stride, speed_idx=speed_idx, yaw_idx=yaw_idx)
     d = args.distance
+    planner = CEMPlannerAC(model, dyn, state_mean, state_std, action_scale=ascale,
+                           horizon=d, history=args.history, prev_action_idx=prev_idx,
+                           device=args.device)
+
+    if args.frames_dir:                      # ---- probe trên ảnh thật (indoor pre-check) ----
+        if not args.goal_image:
+            ap.error("--frames-dir cần --goal-image")
+        import torch.nn.functional as F
+        import PIL.Image as Image
+        from jepa_wm.engine.encode import IMAGENET_MEAN, IMAGENET_STD, load_encoder
+        enc = load_encoder(args.device)
+
+        @torch.no_grad()
+        def _tok(p):
+            img = Image.open(p).convert("RGB").resize((args.image_size,) * 2, Image.BILINEAR)
+            x = torch.from_numpy(np.asarray(img, dtype=np.float32)).permute(2, 0, 1) / 255.0
+            x = ((x - IMAGENET_MEAN) / IMAGENET_STD).unsqueeze(0).unsqueeze(2).to(args.device)
+            with torch.autocast("cuda", dtype=torch.bfloat16, enabled=args.device.startswith("cuda")):
+                t = enc(x)
+            t = t.float()[0]
+            return F.layer_norm(t, (t.size(-1),))           # per-token LN như ACClipDataset
+
+        goal_t = _tok(args.goal_image)
+        frames = sorted(Path(args.frames_dir).glob("*.jpg")) + sorted(Path(args.frames_dir).glob("*.png"))
+        if not frames:
+            ap.error(f"không có jpg/png trong {args.frames_dir}")
+        s0 = torch.zeros(len(cols), device=args.device)     # không IMU — như app cũ (zero-fill)
+        dom = float(args.domain_id) if use_domain else None
+        grid = torch.linspace(-1.0, 1.0, args.grid)
+        seqs = torch.zeros(args.grid, d, 2, device=args.device)
+        seqs[:, :, 0] = grid[:, None].to(args.device)
+        seqs[:, :, 1] = args.probe_throttle
+        print(f"[probe] {args.frames_dir} -> goal {args.goal_image} | d={d} | "
+              f"throttle={args.probe_throttle} | steer -1(trái) … +1(phải)")
+        contrasts = []
+        for p in frames:
+            zf = _tok(p)
+            with torch.no_grad():
+                E = planner.score(zf.unsqueeze(0), s0, goal_t, seqs, domain=dom).cpu().numpy()
+            k = int(np.argmin(E))
+            c = float((E.max() - E.min()) / (E.min() + 1e-9))
+            contrasts.append(c)
+            print(f"{p.name:>28} argminE {float(grid[k]):+.2f} contrast {c:>6.3f}  |{_spark(E)}|")
+        print(f"\n[probe] median contrast = {np.median(contrasts):.3f} "
+              f"(tham chiếu park ban ngày ≈ 0.39; ≪0.1 = phẳng → indoor không đủ tín hiệu)")
+        return
+
     ds = ACClipDataset(roots=[{"patch_dir": r["patch_dir"], "raw_dir": r["raw_dir"],
                                "sessions": [s for s in r["_sessions"] if s in val_set],
                                "domain_id": r.get("domain_id", 0)} for r in roots],
                        horizon=d + 1, frame_stride=stride, state_columns=cols,
                        action_scale=(1.0, 1.0), state_mean=None, max_gap=d_.get("max_gap"))
-    planner = CEMPlannerAC(model, dyn, state_mean, state_std, action_scale=ascale,
-                           horizon=d, history=args.history, prev_action_idx=prev_idx,
-                           device=args.device)
 
     rng = np.random.default_rng(args.seed)
     order = rng.permutation(len(ds))

@@ -1,9 +1,115 @@
 # HANDOFF — đọc cái này trước khi tiếp tục
 
-> Tóm tắt tình hình cho phiên sau. Cập nhật: **2026-06-11**.
+> Tóm tắt tình hình cho phiên sau. Cập nhật: **2026-06-12**.
 > Nền đầy đủ: [../CLAUDE.md](../CLAUDE.md) · [../README.md](../README.md) · [PLAN.md](PLAN.md) ·
 > [LeWorldModel.md](LeWorldModel.md) · [../robot/android/README.md](../robot/android/README.md) ·
 > [../robot/android/DRIVE_SETUP.md](../robot/android/DRIVE_SETUP.md). Cập nhật file này mỗi khi trạng thái đổi.
+
+## 📸 2026-06-12 — TEACH & REPEAT: route TAY tự chụp trên web (không cần graph/GPS → indoor/chỗ mới) + 6 fix UI
+
+**Yêu cầu user: tự lái remote + chụp subgoal tại chỗ → tạo route ngay, khỏi phụ thuộc ảnh data cũ**
+(teach ngay trước run = cùng ánh sáng → né luôn domain-shift đã đo 06-11). ĐÃ XONG, e2e pass 2 lần.
+
+**1. Flow teach (laptop, xe để CH9 ≠ AUTO):** mở web → panel "Route tay" → đặt tên → lái xe remote
+tới từng chỗ muốn làm subgoal → DỪNG, chờ ảnh Live mới (≤3s) → **📸 Chụp subgoal** (kèm xy nếu xe
+có GPS+graph; thumbnails xem/↩︎ undo được) → lặp (**vào cua chụp DÀY**: trước/giữa/sau cua) → 💾 Lưu
+→ gạt CH9 AUTO → ▶ Run. Backend: `route_web.py` (`/api/manual/snap|undo|<name>`, `manual_image`,
+save `mode=manual`, activate gửi `subgoals`); ảnh lưu `data/routes/manual/<tên>/NNN.jpg + meta.json`.
+
+**2. Chạy route tay (`inference_loop.py` nhánh manual):** CEM servo thẳng tới ảnh subgoal hiện tại
+(không cần graph/localize/Dijkstra). **Pop subgoal:** có GPS cả 2 phía → `< reach-m` (chuỗi pop được);
+KHÔNG GPS (indoor) → cosine pooled ≥ `--manual-reach-cos` 0.97 **2 tick liên tiếp**, HOẶC luật tương-đối
+"+đã GẦN (≥ `--manual-near-cos` 0.95) mà subgoal KẾ gần hơn RÕ RỆT (+0.02) = đã qua"; hết chuỗi → 🏁
+neutral. **An toàn:** `--manual-timeout-s` 60 (1 subgoal quá lâu → DỪNG chờ web — indoor không GPS là
+không có stuck-recovery), route thiếu ảnh → state error, ⛔ STOP web như cũ.
+- **⚠️ COSINE ALIAS — ĐO ĐƯỢC trong e2e (trả lời nghi vấn user):** cos pooled giữa các CHỖ KHÁC NHAU
+  trong park = **0.939–0.968** (ảnh xám đối chứng: 0.556), còn KHÔNG đơn điệu theo khoảng cách →
+  ngoài trời cosine tuyệt đối vô dụng (đúng nghi ngờ; vì vậy outdoor pop bằng GPS). Indoor kỳ vọng
+  phân biệt tốt hơn (đồ đạc đặc trưng) nhưng **PHẢI tune bằng số thật**: log in `cos` mỗi tick + web
+  hiện live — chạy thử lần đầu nhìn cos lúc ĐỨNG TẠI subgoal vs lúc CÁCH 2-3m rồi chỉnh 2 ngưỡng.
+- Margin luật tương-đối từng để 0.005 → e2e pop oan (chênh cos giữa các chỗ khác nhau chỉ ~0.01-0.03)
+  → siết 0.02 + near 0.95, e2e lần 2 pop đúng 3/3 đều tại cos 1.000.
+
+**3. Manual-only mode (`--graph none` cả 2 script):** không cần file graph — web ẩn map (panel full),
+inference_loop từ chối route graph/direct + goal CLI, chỉ nhận route tay. Đây là mode INDOOR/chỗ mới.
+
+**4. UI web fix (đủ các ý user):** 🆕 Mới (reset editor route); 🧹 vết xe + vết vẽ DƯỚI node (hết che)
++ ▶ Run tự xoá vết cũ; đường route casing 2 lớp + mũi tên chiều đi (hết khó nhìn); **trạng thái rõ**:
+state tô màu + dòng `📸 subgoal i/n | cos | lái/ga`, banner DÍNH khi 🏁 xong / ⏱ timeout / 🛑 kẹt-dừng-hẳn
+/ ⚠ lỗi; **ảnh subgoal ĐANG NHẮM hiện cạnh camera** khi chạy manual; route list hiểu manual (M, "n 📸",
+"sửa" mở lại panel teach để chụp tiếp).
+
+**5. Verify:** route_web test-client 12 case PASS; JS `node --check` PASS; **e2e fake-phone + GPU +
+ckpt cd4 + policy @32/1**: idle → nhận route → bám (cos 0.556 ảnh xa, steer CEM sống) → pop 3/3 đúng
+chỗ → 🏁 → idle; tick 0.36s (enc 0.02 cem 0.33), floor indoor 0.04. Full-nav graph cũ startup PASS.
+
+**6. LỆNH INDOOR (teach & repeat lần đầu):**
+```bash
+PYTHONPATH=src python scripts/route_web.py --graph none          # web :8060
+PYTHONPATH=src python scripts/inference_loop.py --web --graph none \
+  --checkpoint checkpoints/vjepa_ac_car_cd4/vjepa_ac_car/best.pt \
+  --policy checkpoints/policy_prior/best.pt --samples 32 --iters 1 \
+  --floor-no-gps --throttle-cap 0.05 --cruise-throttle 0.04 --steer-smooth 0.4
+```
+Outdoor: lệnh park như cũ (graph mặc định) — teach route tay vẫn dùng được, pop theo GPS `--reach-m`.
+**Còn mở:** ngưỡng cosine indoor chưa đo thật (nhìn log/web rồi chỉnh); model OOD indoor (chạy
+`probe_energy --frames-dir` ảnh nhà trước khi setup xe); A3 bench_relay vẫn NỢ trước khi bánh chạm đất.
+
+## 🚀 2026-06-11 ĐÊM (đợt 2) — TRỄ 1.35s→0.38s (CEM là 97% tick!), lookahead-target heading-aware, A2 đủ bảng, indoor mode
+
+**Plan tổng (user chốt): MỤC TIÊU SỐ 1 = XE CHẠY CHÍNH XÁC** — không đâm lề; mọi thứ khác (sim/3DGS)
+là phương tiện, xếp sau. Plan đầy đủ: `~/.claude/plans/oke-v-y-n-u-enchanted-eclipse.md`.
+
+**1. PHÁT HIỆN TRỄ (smoke e2e fake-phone, desktop 5070 Ti):** tick 1.35s = enc **0.03** + nav 0.04 +
+**cem 1.32 (97%!)** — encoder 384px KHÔNG phải nút thắt (chỉ 30ms sau warmup), CEM 64×2 trên model
+576-token mới là. **`--samples 32 --iters 1` (policy warm-start) → tick 0.38–0.43s (3.5×), không bỏ
+frame nào.** Chất lượng giữ nguyên — ĐÃ ĐO (mục 2, dòng (d)). Laptop ngoài bãi
+sẽ chậm hơn desktop nhưng cùng tỉ lệ cắt (CEM-dominated). Với tick ~0.4s: `--steer-smooth 0.4`.
+
+**2. A2 GOAL-REACHING cd4 ĐỦ BẢNG (60 window, FROZEN split, samples 64/iters 2):**
+| d | CEM/rnd | CEM/tea | Δsteer | Δthrot | (+policy) Δsteer | πΔsteer |
+|---|--------|---------|--------|--------|------------------|---------|
+| 1 | 0.69→0.68 | 0.97→0.96 | 0.046 | 0.025 | **0.040** | 0.044 |
+| 2 | 0.74→0.72 | 0.95→0.92 | 0.157 | 0.041 | **0.078** | 0.024 |
+| 4 | 0.80→0.72 | 1.00→0.92 | 0.284 | 0.073 | **0.105** | 0.011 |
+| 8 | 0.83→0.83 | 0.98→0.98 | 0.364 | 0.083 | **0.106** | 0.034 |
+→ (a) CEM thuần MÙ DẦN theo khoảng cách goal (Δsteer 0.046→0.364) = định lượng đúng nghi vấn user
+"subgoal xa = mù"; (b) **policy warm-start giữ 0.040→0.106 (3.4× @d8) → lệnh chạy BẮT BUỘC --policy**;
+(c) so v1 (0.055@d1→0.304@d8): cd4+policy tốt hơn ~3× ở d=8. Log: `logs/eval_goal_cd4*.log`.
+(d) **@32/1+policy (deploy config, 60 window): Δsteer 0.045/0.086/0.090/0.109, Δthrot ≤0.026,
+CEM/rnd 0.68–0.85, πΔsteer 0.044/0.024/0.011/0.034 — NGANG 64/2+policy (0.040/0.078/0.105/0.106)
+→ cắt trễ 3.5× KHÔNG mất chất lượng action, CHỐT 32/1** (`logs/eval_goal_cd4_policy_s32i1.log`).
+
+**3. CONTROL-TARGET MỚI: along-track lookahead + HEADING-CAP (`--ctrl-lookahead-m` 2.5, 0=tắt)** —
+trả lời câu hỏi user "vào cua cần subgoal dày hơn? 2 cua 90° thì sao?": ĐÚNG. Subgoal 4m cũ mù ở cua
+(ảnh target qua góc = mất overlap với view hiện tại → energy không có tín hiệu). Fix trong
+`inference_loop.py`: chiếu xe lên polyline route (chỉ-tiến, monotonic), target = node cách ~2.5m
+ALONG-TRACK, **dừng sớm nếu heading route xoay ≥~50°** → vào cua target tự DÀY lên, luôn còn overlap;
+qua cua tự duỗi về 2.5m. Subgoal `--subgoal-spacing` 4m chỉ còn là mốc nav/pop/web. Route node dày
+~0.3–1m nên target advance mượt từng node (không phải waypoint đường-thẳng — node = frame người lái
+từng CHỤP TẠI ĐÓ trên quỹ đạo cong).
+
+**4. Fix kèm trong `inference_loop.py` (smoke-test pass cả 2 mode):**
+- **`car_xy` NameError ở `--control-only`** (chưa từng gán → recovery crash tick đầu) — init None/tick.
+- **Tier kick/cruise theo `spd_est` = max(doppler, dịch-chuyển GPS từ pos_hist)** — doppler 0.00 khi bò
+  từng xếp xe-đang-lăn vào tier kick → surge 0.12 giữa cua (= "nhanh nhất đúng chỗ nguy hiểm nhất").
+  Kickstart policy cũng dùng spd_est. (KHÔNG đảo floor/turn_slow như plan phác — đảo máy móc sẽ cắt
+  kick đứng-yên-thật xuống dưới ma sát tĩnh 0.07 → kẹt lại; tier đúng mới là gốc rễ.)
+- **`--floor-no-gps`**: indoor (không GPS) floor = cruise only (không kick — thiếu tín hiệu đứng-yên).
+- **Timing breakdown trong log**: `(0.38s enc0.03 nav0.01 cem0.33)` — từ nay nhìn log là biết nút thắt.
+- `scripts/probe_energy.py --frames-dir <dir> --goal-image <jpg>`: probe E(steer) trên ẢNH TÙY Ý
+  (indoor pre-check trước khi setup xe; tham chiếu contrast park ≈ 0.39).
+
+**5. LỆNH CHẠY MỚI (park, ban ngày, pin đầy):**
+```bash
+PYTHONPATH=src python scripts/inference_loop.py --web --reach-m 6 --stuck-s 3 \
+  --samples 32 --iters 1 --steer-smooth 0.4 \
+  --checkpoint checkpoints/vjepa_ac_car_cd4/vjepa_ac_car/best.pt \
+  --policy checkpoints/policy_prior/best.pt --throttle-cap 0.065
+```
+Indoor smoke (control-only): thêm `--control-only --goal-image <jpg> --floor-no-gps --throttle-cap 0.05
+--cruise-throttle 0.04`; trước đó chạy probe_energy --frames-dir để khỏi setup chay. A3 bench_relay_test
+vẫn NỢ — làm trước khi bánh chạm đất.
 
 ## ✅ 2026-06-11 ĐÊM — cd4 XONG + THẮNG B5; RECOVERY v2 CÓ 2 BUG (đo bằng REPLAY OFFLINE) → v2.1; GPS noise đã đo
 
