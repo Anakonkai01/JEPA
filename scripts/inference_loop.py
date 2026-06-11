@@ -679,7 +679,11 @@ def main():
                     # giữ trớn ĐỀU để lái được sửa liên tục. Trên cruise_speed → ga planner.
                     kick = False
                     spd_now = float(meta.get("speed", 0.0) or 0.0)
-                    if throt > 0.02 and float(meta.get("lat", 0) or 0) != 0:
+                    # Sàn ga áp VÔ ĐIỀU KIỆN khi đang lái theo goal (CEM box ga = [0,cap], không
+                    # tồn tại "muốn lùi"; tới đích đã neutral ở reach-check phía trên). Gate cũ
+                    # `throt>0.02` làm tick planner ra ~0 thì không floor → ga nhấp nhả 0.12/0.00
+                    # xen kẽ → không tích trớn → dịch <0.6m/3s → recovery v2 lùi oan ("lùi quài").
+                    if float(meta.get("lat", 0) or 0) != 0:
                         if spd_now < args.stuck_speed:
                             throt = max(throt, args.kick_throttle); kick = True
                         elif spd_now < args.cruise_speed:
