@@ -1028,7 +1028,12 @@ def main():
                     # để vẫn lăn (ma sát lăn < ma sát tĩnh). Kick giữ NGUYÊN lực (đề-pa cần đủ
                     # torque; tier spd_est đã chặn kick giữa cua). Model ra ga ÂM (--throttle-min
                     # <0 = muốn lùi) → floors/kick đứng ngoài, không đè quyết định model.
-                    floor_k = max(0.6, 1.0 - args.turn_slow * min(1.0, abs(steer)))
+                    # Nhịp rời rạc (--pulse/--step): MỖI nhịp xuất phát từ đứng yên (settle chờ
+                    # hết trớn) → sàn ga phải thắng MA SÁT TĨNH cả khi đánh lái (scrub còn nặng
+                    # hơn) — giảm-sàn-theo-cua chỉ dành cho chạy liên tục đang lăn (06-12: sàn nhà
+                    # user đo cần >0.07 mới lăn; cruise là số ma-sát-LĂN, đặt theo mặt sàn).
+                    floor_k = 1.0 if (args.step or args.pulse) else \
+                        max(0.6, 1.0 - args.turn_slow * min(1.0, abs(steer)))
                     if throt >= 0.0:
                         if args.floor_no_gps:
                             # indoor: CHỈ floor cruise, CẤM kick — đặt TRƯỚC nhánh GPS vì trong nhà
