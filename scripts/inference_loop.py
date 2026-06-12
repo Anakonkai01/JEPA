@@ -332,6 +332,19 @@ def main():
                          "along-track, chỉ-tiến). Subgoal --subgoal-spacing chỉ còn là mốc nav/pop. "
                          "Goal ảnh 3-7m vượt tầm-với CEM (horizon 0.88s ≈ ~1m) → gradient yếu → "
                          "understeer ở cua. 0 = tắt (target = subgoal như cũ).")
+    ap.add_argument("--heading-cap-deg", type=float, default=50.0,
+                    help="lookahead DỪNG SỚM khi heading route xoay quá ngần này (độ) → vào cua "
+                         "target tự dày lên, luôn còn overlap với view hiện tại (chống 'goal qua "
+                         "góc 90° = energy mù' = lỗi vỡ-cua đo được). Áp cho cả route graph LẪN "
+                         "route tay. Nhỏ hơn (vd 35) = bắt đầu quẹo sớm hơn / target gần hơn ở cua.")
+    ap.add_argument("--lock-cos", type=float, default=0.30,
+                    help="GIỮ-LÁI-XUYÊN-VÙNG-MÙ (route tay): khi centered-cos tới control-target "
+                         "TỤT dưới ngần này (= mất lock giữa cua, CEM ra noise) → đóng băng lái ở cú "
+                         "quẹo cuối lúc còn lock (cam kết hoàn tất cua) thay vì để xe chệch khỏi. "
+                         "0 = tắt. Cao hơn (0.4) = giữ sớm hơn; thấp hơn (0.2) = ít can thiệp.")
+    ap.add_argument("--lock-hold-s", type=float, default=4.0,
+                    help="giữ lái xuyên vùng mù tối đa ngần này (giây); quá mà cos chưa hồi (lạc thật "
+                         "/ giữ sai chiều) → DỪNG neutral chờ web (khỏi veer đi xa). Cua gắt cần lâu → nâng.")
     ap.add_argument("--advance-m", type=float, default=3.0,
                     help="nhắm subgoal đầu tiên còn cách xe > ngần này (mét) → bỏ qua subgoal đã tới gần, chống kẹt")
     ap.add_argument("--steer-smooth", type=float, default=0.6,
@@ -614,7 +627,11 @@ def main():
             pos_hist = []                                 # (t, xy) cho stuck-detector dịch chuyển
             # route TAY: dwell cosine, đồng hồ timeout per-subgoal, route đang bám (reset khi giao mới)
             manual_hits, manual_last_idx, manual_t0, last_rt_obj = 0, -1, time.time(), None
+            man_seen = False                              # LATCH "ảnh đã khớp subgoal hiện tại" (pop khi đi qua)
             man_center, man_vecs = None, None             # centered-cosine route tay (probe_reach 06-12)
+            man_cum, man_head, man_ctrl_idx = None, None, -1  # polyline arc-len + heading route tay (lookahead heading-aware)
+            head_cap_rad = float(np.deg2rad(args.heading_cap_deg))
+            hold_steer, hold_t0, manual_ctrl_cos = None, None, None  # giữ-lái-xuyên-vùng-mù (commit-through-turn)
             man_block_idx, goal_block_id = -1, None       # log "GPS tới nhưng ảnh chưa khớp" 1 lần/subgoal
             last_nf_status = 0.0                          # throttle ghi status "no-frame" (1Hz)
             try:
@@ -687,6 +704,8 @@ def main():
                         subs = rt["subgoals"]
                         if rt is not last_rt_obj:             # route mới giao → reset dwell/đồng hồ
                             last_rt_obj, manual_hits, manual_last_idx = rt, 0, -1
+                            man_seen = False
+                            hold_steer, hold_t0 = None, None  # reset giữ-lái-xuyên-vùng-mù
                             # CENTERED cosine (probe_reach 06-12): cos pooled THÔ saturate trong nhà
                             # (mọi cặp 0.89–0.99, kề-vs-xa chênh ~0.04 → "cosine nào cũng cao");
                             # TRỪ MEAN pooled các subgoal route rồi mới cos → kề ~+0.5 / xa ~−0.4,
@@ -702,6 +721,22 @@ def main():
                                                 for p in _pools]
                             except FileNotFoundError:
                                 pass                          # ảnh thiếu → nhánh dưới báo lỗi như cũ
+                            # POLYLINE route tay (cho lookahead heading-aware) — KHÔNG cần GPS LIVE:
+                            # arc-length + heading dựng từ xy TEACH (ghi 1 lần lúc quay), GPS noise
+                            # live không chạm control target. Heading lấy CENTRAL-DIFF (baseline ~2
+                            # subgoal ≈ 2.6m) cho đỡ nhiễu GPS teach. Thiếu xy (indoor) → bỏ lookahead.
+                            man_cum, man_head, man_ctrl_idx = None, None, -1
+                            if (args.ctrl_lookahead_m > 0 and len(subs) >= 2
+                                    and all(s.get("xy") is not None for s in subs)):
+                                mxy = np.asarray([s["xy"] for s in subs], np.float32)   # (N,2) graph-frame mét
+                                man_cum = np.concatenate([[0.0], np.cumsum(
+                                    np.linalg.norm(np.diff(mxy, axis=0), axis=1))]).astype(np.float32)
+                                N = len(mxy)
+                                hd = np.zeros(N, np.float32)
+                                for k in range(N):
+                                    a = mxy[max(0, k - 1)]; b = mxy[min(N - 1, k + 1)]
+                                    hd[k] = np.arctan2(b[1] - a[1], b[0] - a[0])
+                                man_head = hd
                         if man_center is not None:
                             _v = nav - man_center
                             navn = _v / (np.linalg.norm(_v) + 1e-8)
@@ -713,27 +748,55 @@ def main():
                                     return float(navn @ man_vecs[i])
                                 return float(navn @ manual_patch(subs[i]["img"])[2])
 
-                            # pop GPS: ảnh chụp có thể dày hơn reach-m → pop hết các sub đã trong bán kính.
-                            # --pop-confirm-cos: GPS (noise ±0.4-1m) chỉ là CỔNG THÔ — ảnh phải khớp
-                            # (centered-cos ≥ ngưỡng) mới được pop ("trong bụi cỏ vẫn báo đạt" 06-12)
+                            # pop GPS: route TAY dày (~1m) << reach-m → vòng cũ pop HẾT sub trong bán
+                            # kính 1 TICK (startup: xe ở sg0 mà sg0..sg5 đều <6m + ảnh giống >cos →
+                            # NHẢY wp_idx=5 khi XE CHƯA NHÚC NHÍCH → target lookahead ra sg7 ngoài
+                            # overlap → rail lái + KẸT + lùi). FIX: chỉ pop khi xe đã ĐI QUA subgoal
+                            # (subgoal KẾ gần hơn) — trừ subgoal CUỐI (=goal, pop theo reach thuần).
+                            # ⚠ LATCH (06-12 park, đo log: kẹt 1/30 d→20m): ccos ĐỈNH lúc xe Ở
+                            # subgoal (lúc đó "kế gần hơn" CHƯA đúng → break), còn "đã đi qua"
+                            # chỉ đúng SAU khi qua (lúc đó view đã sang cảnh sau → ccos tụt dưới
+                            # ngưỡng) → 2 điều kiện lệch pha, AND cùng tick = không bao giờ pop;
+                            # d vượt reach-m là cửa sổ pop ĐÓNG VĨNH VIỄN. Fix: man_seen NHỚ
+                            # "ảnh đã khớp" (bất kỳ tick nào) → pop lúc đi qua dù ccos đã tụt,
+                            # và đã latch thì bỏ luôn cổng reach-m (GPS lệch >reach hết kẹt).
+                            def _mdist(i):
+                                return float(np.linalg.norm(car_xy - np.asarray(subs[i]["xy"], np.float32)))
                             while (web.wp_idx < len(subs) and car_xy is not None
-                                   and subs[web.wp_idx].get("xy") is not None
-                                   and float(np.linalg.norm(car_xy - np.asarray(
-                                       subs[web.wp_idx]["xy"], np.float32))) < args.reach_m):
-                                if args.pop_confirm_cos > 0:
+                                   and subs[web.wp_idx].get("xy") is not None):
+                                if args.pop_confirm_cos > 0 and not man_seen:
                                     cc = _mcos(web.wp_idx)
-                                    if cc < args.pop_confirm_cos:
+                                    if cc >= args.pop_confirm_cos:
+                                        man_seen = f"ảnh khớp ccos {cc:.3f}"
+                                    else:
+                                        # GEO-CONFIRM (06-12 sg7: xe ĐÈ LÊN mốc d=0.1m mà ccos đỉnh
+                                        # 0.48 < 0.5 — Ở CUA heading repeat lệch teach → ảnh không
+                                        # bao giờ khớp → veto ảnh khoá pop → timeout. Confirm ảnh
+                                        # để chống pop-bừa-TỪ-XA (noise GPS), không phải phủ quyết
+                                        # khi GPS đã sát: <1.5m >> noise median 0.44 là đủ bằng chứng.)
+                                        dd = _mdist(web.wp_idx)
+                                        if dd < min(1.5, args.reach_m):
+                                            man_seen = f"tới sát {dd:.1f}m"
+                                if not (man_seen or _mdist(web.wp_idx) < args.reach_m):
+                                    break                     # xa + chưa xác nhận → chưa pop
+                                if (web.wp_idx + 1 < len(subs)
+                                        and subs[web.wp_idx + 1].get("xy") is not None
+                                        and _mdist(web.wp_idx + 1) >= _mdist(web.wp_idx)):
+                                    break                     # chưa đi qua wp_idx (kế chưa gần hơn)
+                                if args.pop_confirm_cos > 0:
+                                    if not man_seen:
                                         if web.wp_idx != man_block_idx:
                                             man_block_idx = web.wp_idx
-                                            print(f"[web] GPS trong bán kính nhưng ẢNH chưa khớp "
-                                                  f"(ccos {cc:.3f} < {args.pop_confirm_cos:g}) — "
-                                                  f"chưa pop subgoal {web.wp_idx + 1}", flush=True)
+                                            print(f"[web] GPS bảo đã qua nhưng chưa xác nhận (ccos "
+                                                  f"{_mcos(web.wp_idx):.3f} < "
+                                                  f"{args.pop_confirm_cos:g}, chưa từng sát <1.5m) "
+                                                  f"— chưa pop subgoal {web.wp_idx + 1}", flush=True)
                                         break
                                     print(f"[web] ✓ subgoal tay {web.wp_idx + 1}/{len(subs)} "
-                                          f"(GPS + ảnh ccos {cc:.3f})", flush=True)
+                                          f"(GPS qua + {man_seen})", flush=True)
                                 else:
                                     print(f"[web] ✓ subgoal tay {web.wp_idx + 1}/{len(subs)} (GPS)", flush=True)
-                                web.wp_idx += 1; manual_hits = 0
+                                web.wp_idx += 1; manual_hits = 0; man_seen = False
                             cos_v = gps_dist = None
                             if web.wp_idx < len(subs):
                                 sub = subs[web.wp_idx]
@@ -778,7 +841,29 @@ def main():
                                 web.status(state="timeout", seq=seq)
                                 web.route = None
                                 continue
-                            target_pool, target_tokens, _ = manual_patch(subs[web.wp_idx]["img"])
+                            # CONTROL-TARGET = lookahead heading-aware (port từ nhánh graph):
+                            # đi DỌC từ subgoal hiện tại (wp_idx) theo arc-length TEACH, dừng ở
+                            # ctrl_lookahead_m HOẶC khi heading route xoay ≥ cap → ở CUA target tự
+                            # dừng tại "miệng cua" (còn overlap), không nhảy sang ảnh QUANH-GÓC
+                            # (centered-cos âm → energy mù → rail lái = lỗi vỡ-cua ĐÃ ĐO). Trên đoạn
+                            # thẳng target ~lookahead_m phía trước (gradient mạnh hơn ngắm sát mũi).
+                            # wp_idx vẫn do pop visual/GPS giữ → live-GPS noise KHÔNG chạm target này.
+                            ctrl_idx = web.wp_idx
+                            if man_cum is not None and web.wp_idx < len(subs):
+                                s0a = float(man_cum[web.wp_idx]); h0 = float(man_head[web.wp_idx])
+                                j = web.wp_idx
+                                while j < len(subs) - 1:
+                                    if man_cum[j + 1] - s0a >= args.ctrl_lookahead_m:
+                                        break
+                                    dh = abs((float(man_head[j + 1]) - h0 + np.pi)
+                                             % (2 * np.pi) - np.pi)
+                                    if dh >= head_cap_rad:
+                                        break
+                                    j += 1
+                                ctrl_idx = j
+                            man_ctrl_idx = ctrl_idx
+                            manual_ctrl_cos = _mcos(ctrl_idx)   # cos tới control-target (cho giữ-lái-xuyên-vùng-mù)
+                            target_pool, target_tokens, _ = manual_patch(subs[ctrl_idx]["img"])
                         except FileNotFoundError as e:
                             emit(0.0, 0.0); prev_steer = 0.0
                             print(f"[web] ⚠ route tay thiếu ảnh ({e}) → STOP route", flush=True)
@@ -786,7 +871,9 @@ def main():
                             web.route = None
                             continue
                         gd = f" d={gps_dist:.1f}m" if gps_dist is not None else ""
-                        tag = f"manual {web.wp_idx + 1}/{len(subs)} cos{cos_v:.3f}{gd}"
+                        la = (f" →la{man_ctrl_idx + 1}" if man_ctrl_idx >= 0
+                              and man_ctrl_idx != web.wp_idx else "")
+                        tag = f"manual {web.wp_idx + 1}/{len(subs)}{la} cos{cos_v:.3f}{gd}"
                     else:
                         if graph is None:                     # manual-only (--graph none): teach/idle
                             if web.route is not None:
@@ -963,7 +1050,7 @@ def main():
                                         break
                                     dh = abs((float(graph.heading[nav_route[j]]) - h0 + np.pi)
                                              % (2 * np.pi) - np.pi)
-                                    if dh >= 0.9:                 # ~50°
+                                    if dh >= head_cap_rad:        # mặc định ~50° (--heading-cap-deg)
                                         break
                                     j += 1
                                 target = nav_route[j]
@@ -1005,6 +1092,30 @@ def main():
                     t_plan = time.time()
                     raw_steer, throt = float(raw_steer), float(throt)
                     model_throt = throt                    # ga model TRƯỚC floors (log/--step)
+                    # GIỮ LÁI XUYÊN VÙNG MÙ (commit-through-turn, route tay): vào cua subgoal kế
+                    # xoay khỏi overlap → cos target tụt → CEM hết gradient → ra noise ±1 → xe
+                    # CHỆCH KHỎI tuyến (đo 06-12 sg14). Khi cos target < --lock-cos: ĐÓNG BĂNG lái
+                    # ở cú quẹo CUỐI lúc còn lock (cam kết hoàn tất cua) thay vì noise; cos hồi →
+                    # CEM tiếp; giữ > --lock-hold-s vẫn không hồi → DỪNG (khỏi veer đi xa như cũ).
+                    hold_tag = ""
+                    if wp_mode == "manual" and args.lock_cos > 0 and manual_ctrl_cos is not None:
+                        if manual_ctrl_cos >= args.lock_cos:
+                            hold_steer, hold_t0 = raw_steer, None   # còn lock → cập nhật lái tin cậy
+                        elif hold_steer is not None and abs(hold_steer) > 0.25:
+                            # CHỈ giữ khi lái-cuối là CÚ QUẸO thật (>0.25). Nếu lái cuối ~thẳng
+                            # (chưa kịp quẹo) thì GIỮ THẲNG là vô nghĩa → "HOLD+0.00 đi thẳng rồi
+                            # chết" (bug đo 06-12) → để CEM tự lái tiếp, không giữ, không timeout.
+                            if hold_t0 is None:
+                                hold_t0 = time.time()
+                            if time.time() - hold_t0 > args.lock_hold_s:
+                                emit(0.0, 0.0); prev_steer = 0.0
+                                print(f"[web] ⚠ GIỮ QUẸO > {args.lock_hold_s:.0f}s chưa bắt lại lock "
+                                      f"(cos {manual_ctrl_cos:.2f}) → DỪNG, chờ web", flush=True)
+                                web.frame(rgb); web.status(state="lostlock", seq=seq)
+                                web.route = None
+                                continue
+                            raw_steer = hold_steer               # GIỮ cú quẹo xuyên vùng mù
+                            hold_tag = f" HOLD{raw_steer:+.2f}"
                     # EMA làm mượt lái (chống zigzag/văng đường) + cua thì giảm ga
                     steer = args.steer_smooth * prev_steer + (1.0 - args.steer_smooth) * raw_steer
                     prev_steer = steer                     # EMA giữ giá trị CHƯA gain (không kép)
@@ -1086,7 +1197,7 @@ def main():
                         continue
 
                     emit(steer, throt)                                 # once (phone keeps-alive) or holder (dongle)
-                    print(f"[infer] seq{seq} {tag} steer{steer:+.2f}(raw{raw_steer:+.2f}) throt{throt:+.2f} "
+                    print(f"[infer] seq{seq} {tag}{hold_tag} steer{steer:+.2f}(raw{raw_steer:+.2f}) throt{throt:+.2f} "
                           f"(ga model {model_throt:+.3f}) "
                           f"({time.time()-t0:.2f}s enc{t_enc-t0:.2f} nav{t_tgt-t_enc:.2f} "
                           f"cem{t_plan-t_tgt:.2f})", flush=True)

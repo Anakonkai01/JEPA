@@ -5,6 +5,108 @@
 > [LeWorldModel.md](LeWorldModel.md) · [../robot/android/README.md](../robot/android/README.md) ·
 > [../robot/android/DRIVE_SETUP.md](../robot/android/DRIVE_SETUP.md). Cập nhật file này mỗi khi trạng thái đổi.
 
+## 🏆 2026-06-12 TỐI (đợt 2) — POP FIX ×2 (LATCH + GEO-CONFIRM) → **XE LẦN ĐẦU TỰ QUA CUA** (user xác nhận, nhiều run liên tiếp)
+
+> Tiếp buổi tối ở park. User phát hiện đúng chỗ chết: **xe ĐÃ đi qua subgoal, cos ĐÃ từng vượt ngưỡng,
+> mà KHÔNG pop → kẹt ghim subgoal cũ mãi**. Soi code + log bắt được 2 bug pop, fix tại trận, và sau fix
+> **user chạy 3-4 run liên tiếp: "fix ổn nhất từ trước tới giờ, model đã THẬT SỰ cua được, hơi lệch
+> nhưng rất oke, rất hài lòng"** — nhớ ĐÍNH CHÍNH 06-12: trước hôm nay cua CHƯA BAO GIỜ qua được
+> bằng bất kỳ cách nào → **đây là bước tiến quan trọng nhất của control tới giờ.**
+
+**★ BUG 1 — POP LỆCH PHA (latch, `inference_loop.py` nhánh pop GPS route tay):** 3 điều kiện pop bị
+AND tại CÙNG 1 tick nhưng chúng đúng ở 2 THỜI ĐIỂM khác nhau: `ccos ≥ pop-confirm-cos` ĐỈNH lúc xe
+Ở/tiến tới subgoal (lúc đó "đã đi qua" = subgoal-kế-gần-hơn CHƯA đúng → break), còn "đã đi qua" chỉ
+đúng SAU khi qua (lúc đó camera đã nhìn cảnh phía sau → ccos TỤT dưới ngưỡng → veto ảnh chặn). Tệ
+nhất: vòng pop chỉ chạy khi `d < reach-m` → xe đi tiếp là **cửa sổ pop ĐÓNG VĨNH VIỄN** (log 16:04
+park1: ghim `manual 1/30`, d 1.2→20m). **Fix: `man_seen` LATCH "ảnh đã khớp" ở bất kỳ tick nào →
+pop lúc đi qua dù ccos hiện tại đã tụt; đã latch thì bỏ luôn cổng reach-m.** Verify chạy thật
+parkfix2: subgoal 1-6 pop chuẩn (`GPS qua + ảnh ĐÃ khớp`), pop tại d 0.2-1.2m, tuần tự không nhảy cóc.
+
+**★ BUG 2 — VETO ẢNH Ở CUA (geo-confirm):** sau latch, sg7 vẫn kẹt: xe **ĐÈ LÊN mốc d=0.1m**, GPS
+xác nhận đã qua, mà ccos đỉnh chỉ **0.48 < 0.5** → không bao giờ latch → timeout 60s. Cơ chế ĐO ĐƯỢC
+(chuỗi ccos lúc pop GIẢM DẦN khi vào cua: sg4 0.737 → sg5 0.668 → sg6 0.528 → sg7 0.48): **ở cua,
+heading lúc repeat lệch heading lúc teach → cùng xy mà view khác → ảnh bản chất KHÔNG khớp nổi** —
+hạ ngưỡng là đuổi vô tận (sg khác lại hụt kiểu khác). **Fix: GPS sát < min(1.5m, reach-m) (noise
+median 0.44m) cũng tính là XÁC NHẬN** — confirm ảnh để chống pop-bừa-TỪ-XA, không phải quyền phủ
+quyết khi xe đã đè lên mốc. Log pop giờ ghi rõ cách xác nhận: `(GPS qua + ảnh khớp ccos x)` /
+`(GPS qua + tới sát x.xm)`. Lưu ý kèm: route teach cũ KHÁC ánh sáng (park1 teach trưa chạy 16h) thì
+ccos ≈ 0 ngay TẠI mốc — geo-confirm cứu được pop, nhưng control vẫn cần route teach mới/cùng-giờ.
+
+**★ KẾT QUẢ + CONFIG USER CHỐT TẠI TRẬN (đã ghi trong `run_infer.sh`, user tự chỉnh KHÁC đề xuất):**
+`--samples 256 --iters 2` (tick chậm đổi lấy search dày — user chấp), ga `--throttle-cap 0.10
+--cruise-throttle 0.10 --kick-throttle 0`, `--lock-cos 0.10 --lock-hold-s 10` (HOLD gần như tắt —
+ít can thiệp), `--pop-confirm-cos 0.5 --reach-m 6 --ctrl-lookahead-m 0.5 --heading-cap-deg 35
+--steer-smooth 0.1 --turn-slow 0 --no-recover`. Route `parkfix2` (0.4m, 31 subgoal). Kết quả: **qua
+cua nhiều run liên tiếp, còn "hơi lệch" (lateral offset) nhưng bám được route.**
+
+**★ VẬN HÀNH MỚI:** `run_infer.sh` giờ **TỰ GHI LOG** mỗi run → `logs/infer_<ngày_giờ>.log` (tee,
+vẫn in màn hình; `logs/` đã vào .gitignore). Lý do: 3-4 run ĐẸP NHẤT hôm nay chạy terminal trần →
+**không còn log per-tick để phân tích** — từ mai mọi run đều có vết.
+
+**🔜 VIỆC NGÀY MAI (user chốt: test tiếp + đánh giá phân tích + cập nhật lưu trữ):** (1) số liệu hoá
+"hơi lệch" — lateral offset so polyline teach từ GPS trong log run; (2) đo tỉ lệ qua-cua / pop đúng
+trên N run; (3) thử lại 32/1 vs 256/2 (lệch có phải do tick chậm? HANDOFF cũ đo offline 32/1 ngang
+64/2 — 256/2 chưa từng đo); (4) quay video + số liệu báo cáo. Câu hỏi mở cũ "model có ĐỦ KHẢ NĂNG
+qua cua không" → **ĐÃ TRẢ LỜI: CÓ** (khi target/pop đúng); phương án pure-pursuit/GPS-heading dự
+phòng KHÔNG cần nữa trừ khi "hơi lệch" không trị được.
+
+## 🌃 2026-06-12 TỐI/ĐÊM — PARK CHẠY THẬT: 3 FIX CUA trên inference_loop + ĐO ĐƯỢC "model BIẾT lái cua" (KHÔNG đi indoor — fix cua ngoài park)
+
+> Tiếp buổi chiều. User KHÔNG đi indoor nữa — ở lại park chạy thật teach&repeat LIVE (`teach_record.py`),
+> Claude theo dõi log + sửa code tại trận qua nhiều run. **KẾT LUẬN LỚN: model KHÔNG dốt cua** — đo được
+> offline + thấy nó ra `steer +1.0` đúng phía khi chạy thật. **Mọi thất bại cua = TARGET-SELECTION / POP /
+> GA-FULL-LOCK / SMOOTHING, không phải năng lực model.** Đã sửa 3 chỗ code + viết bộ script chạy; route
+> dày chạy tới subgoal 13/31. **Fix cuối CHƯA verify trọn vòng** (xem CÒN MỞ).
+
+**★ ĐO ĐƯỢC (probe_energy, cd4, offline in-domain park) — model lái cua TỐT:**
+- `python scripts/probe_energy.py --turn-only -d 4 --n-windows 60`: argminE **đúng hướng quẹo 58/60**,
+  median |argminE−teacher| 0.12, **contrast 0.37**. → energy có đáy đúng phía ở cua.
+- Contrast TỤT theo khoảng cách target (mất overlap): **d2 0.443 / d4 0.355 / d8 0.270**. → "mất target khi
+  target xa/quanh-góc" là cơ chế ĐO ĐƯỢC. Trị bằng TARGET GẦN + teach DÀY, không phải train.
+
+**★ 3 FIX CODE trong `scripts/inference_loop.py` (compile OK, CHƯA commit — xem git status):**
+1. **Lookahead heading-aware cho NHÁNH ROUTE-TAY** (port từ graph): dựng polyline arc-length + heading
+   central-diff từ xy TEACH các subgoal; control-target = subgoal cách `--ctrl-lookahead-m` along-track từ
+   wp_idx, **DỪNG SỚM khi heading xoay ≥ `--heading-cap-deg`** (flag MỚI, default 50, áp CẢ graph). Control
+   **GPS-độc-lập** (dùng xy teach + cos; GPS live chỉ là cổng thô — trả lời "GPS có cải thiện được không":
+   KHÔNG cần, đã đưa GPS ra khỏi vòng lái).
+2. **POP-FIX chống "GPS nuốt subgoal"**: pop GPS route tay giờ CHỈ pop khi xe đã ĐI QUA subgoal (subgoal kế
+   gần hơn). Trước: route dày ~1m << reach 6m → startup nuốt 4 subgoal/1 tick khi xe đứng yên → wp_idx nhảy
+   trước xe → target ra ngoài overlap → rail lái + kẹt + lùi-tựa-lửa. (Cũng hạ `--reach-m` 6→2.5.)
+3. **"GIỮ LÁI XUYÊN VÙNG MÙ" (commit-through-turn)**: flag MỚI `--lock-cos` (0.30), `--lock-hold-s` (4.0).
+   cos→control-target tụt < lock-cos giữa cua (CEM hết gradient → ra noise ±1 → xe chệch khỏi) → ĐÓNG BĂNG
+   lái ở cú quẹo cuối **CHỈ khi |steer|>0.25 (quẹo thật)**; cos hồi → CEM tiếp; giữ > lock-hold-s chưa hồi →
+   DỪNG neutral (hết veer đi 12m). Log thêm tag `HOLD±x.xx`. ⚠️ Bug đã gặp+sửa: nếu lookahead XA, CEM ra ~0
+   ở cua → HOLD đóng băng THẲNG (`HOLD+0.00`) → đâm; nên lookahead phải NGẮN (0.5) + HOLD chỉ giữ quẹo thật.
+
+**★ SCRIPT CHẠY (repo root, MỚI — tránh lỗi đứt-dòng khi paste; user TỰ chạy, xem [[live-robot-user-drives]]):**
+`bash run_web.sh` · `bash run_infer.sh` (sửa số TRONG file) · `bash run_teach.sh <tên>` (teach_record --step-m 0.4).
+
+**★ BÀI HỌC CHẠY THẬT (đo tại trận):**
+- **GA full-lock**: 0.07 KHÔNG lăn (ma sát tĩnh sàn), 0.14 VỌT giật. **`--turn-slow` MẶC ĐỊNH cắt ~nửa ga ở
+  |steer|=1 → full-lock SCRUB KẸT** (ga tụt còn 0.03). Fix: **`--turn-slow 0`** + cruise ~0.10-0.12 (sàn hằng,
+  vô điều kiện) để có lực scrub qua cua. kick 0 + cruise hằng = đề-pa ÊM (không giật như kick).
+- **steer-smooth**: 0.6 (mặc định) Ì → **bóp nửa lực quẹo → ĐI THẲNG** (model ra raw ±1.0 mà áp chỉ ±0.5,
+  bằng chứng rõ trong log). Dùng **0.1** (quẹo được) → 0.2-0.3 nếu twitchy.
+- **TEACH DÀY ĂN RÕ**: `parkfix1` (0.8m, 33 sub) chết ở subgoal 2-3; **`parkfix2` (0.4m, 31 sub) chạy tới
+  subgoal 13** (qua nhiều cua, cos dip rồi TỰ HỒI). Cua gắt → teach 0.4m, đi CHẬM + cung RỘNG MƯỢT (đừng pivot).
+- **LOOKAHEAD ở cua phải NGẮN (0.5)**: lookahead 1.0 (→la = wp+2) ngắm subgoal quanh-góc (out-of-overlap) →
+  CEM ra ~0 (thẳng) → HOLD đóng băng thẳng → "không quẹo, đi thẳng rồi chết". 0.5 (→la = wp+1) gần, đòi quẹo, còn overlap.
+
+**★ CONFIG TỐT NHẤT hiện tại (đã ghi sẵn trong `run_infer.sh`):** `--reach-m 2.5 --no-recover --samples 32
+--iters 1 --ctrl-lookahead-m 0.5 --heading-cap-deg 35 --pop-confirm-cos 0.5 --steer-smooth 0.1 --turn-slow 0
+--throttle-cap 0.09 --cruise-throttle 0.09 --kick-throttle 0.0 --lock-cos 0.30 --lock-hold-s 4.0`. Route chạy:
+`data/routes/manual/parkfix2` (dày 0.4m, 31 subgoal). Checkpoint vẫn cd4 best.pt + policy_prior.
+
+**🔴 CÒN MỞ (✅ ĐÃ GIẢI QUYẾT đợt 2 — xem section 🏆 trên: thủ phạm thật là POP, fix latch+geo-confirm, xe ĐÃ qua cua):** Fix cuối (lookahead 1.0→0.5 + HOLD-chỉ-giữ-|steer|>0.25)
+**CHƯA chạy thử lại** (sửa xong là hết phiên). Session sau: chạy 3 script + ▶ Run `parkfix2`, soi 2 cua gắt
+**subgoal 6 và 14**:
+- CEM có ra **cú QUẸO** (`steer+0.x` tới target gần) ở cua không? Tag `HOLD+0.85` (giữ QUẸO) chứ không `HOLD+0.00`?
+- **CÓ qua được cua** → fix cua XONG → chạy trọn vòng + quay video làm số liệu báo cáo.
+- **CEM VẪN ra thẳng ở cua dù target gần** → model không quyết quẹo cho subgoal đó (khác HOLD) → soi `--step`
+  ngay tại cua, hoặc làm **lái hình học (pure-pursuit theo route heading)** — cần car-heading (GPS-track lúc
+  lăn / rotvec phone). Đây là phương án SÂU nếu visual-servo không đủ cho cua gắt.
+
 ## 🏞️ 2026-06-12 CHIỀU — PARK teach&repeat LIVE-RECORD: ĐOẠN THẲNG NGON, CUA GẮT VỠ (cấu trúc) → USER CHỐT PIVOT INDOOR
 
 > Tiếp buổi sáng. Bỏ teach-tay-đứng-chụp (dày, cos loạn). **Ý user (HAY): tự lái 1 vòng quay live →

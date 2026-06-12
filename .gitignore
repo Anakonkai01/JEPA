@@ -10,6 +10,9 @@
 /runs/
 /wandb/
 
+# log chạy thật (inference/teach/web — máy-local, không sync)
+/logs/
+
 # Python cache / build
 __pycache__/
 *.pyc
