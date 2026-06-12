@@ -1,9 +1,116 @@
 # HANDOFF — đọc cái này trước khi tiếp tục
 
-> Tóm tắt tình hình cho phiên sau. Cập nhật: **2026-06-12**.
+> Tóm tắt tình hình cho phiên sau. Cập nhật: **2026-06-12 đêm**.
 > Nền đầy đủ: [../CLAUDE.md](../CLAUDE.md) · [../README.md](../README.md) · [PLAN.md](PLAN.md) ·
 > [LeWorldModel.md](LeWorldModel.md) · [../robot/android/README.md](../robot/android/README.md) ·
 > [../robot/android/DRIVE_SETUP.md](../robot/android/DRIVE_SETUP.md). Cập nhật file này mỗi khi trạng thái đổi.
+
+## 🔬 2026-06-12 ĐÊM — PHIÊN PHÂN TÍCH SÂU (6 câu hỏi user) — toàn số ĐO ĐƯỢC + 4 artifact mới + GPU chạy đêm
+
+> User hỏi 6 cụm (cosine sg14+, GPS, CEM timing/ga, pin/nóng phone, teach từ REC, tối ưu model).
+> Mọi kết luận dưới đây có số đo / file log đi kèm. **Inference + route_web đã bị TẮT để lấy GPU
+> (relaunch mai: `bash run_web.sh` + `bash run_infer.sh`).**
+
+**★ Q1 COSINE — "sg14+ thấp, qua cua vẫn thấp" (probe MỚI `scripts/probe_route_sim.py`, log
+`logs/probe_route_parkfix2.log`):**
+- **Trong-route (cùng ánh sáng teach): centered-cos TỐT** — NN-kề 28/31, margin kề-vs-xa median
+  +0.193, 0 hàng alias, monotonic ρ 0.80. So phương pháp trên cùng ảnh: cos thô margin +0.002
+  (chết — đúng lý do đã bỏ), −top1PC +0.248 / seq-2 +0.228 (nhỉnh hơn centered một chút),
+  whiten +0.209, patch-L1 +0.078 (kém + 2 alias) → **phép đo hiện tại đúng hướng, không phải lỗi đo.**
+- **KHÁC ÁNH SÁNG là sập TOÀN BỘ:** 93 frame người-lái khác-ngày đứng ĐÚNG xy+heading subgoal
+  (d ≤ 1.2m): ccos tại subgoal đúng **median +0.097**, localize-trong-route đúng ±1 chỉ **15%
+  (ccos) / 11% (−top1PC) / 15% (patch-L1) ≈ random 10%** → KHÔNG phép đo embedding nào sống qua
+  đổi-sáng; **30/31 subgoal không bao giờ qua nổi pop-confirm 0.5 với ảnh khác-buổi.**
+- **Giải thích quan sát sg14+:** parkfix2 teach **16:48**, các run thắng **18:21–19:45** (lệch
+  1.5–3h đúng lúc nắng xế đổ nhanh); route là CUNG QUẸO PHẢI ~45–50° trải sg13–25 (heading +20°
+  → −28°) → nửa sau xe nhìn hướng khác so với nắng + lateral offset sau cua ("hơi lệch") cộng
+  dồn → ccos nửa sau tụt là **teach-vs-run drift (sáng + lệch làn)**, không phải đo sai. Đoạn
+  sg23–28 còn TỰ-GIỐNG-NHAU cao (ccos xa-max 0.74–0.87) = cảnh lặp lại, margin mỏng hơn nửa đầu.
+- **Meta đo thế nào:** V-JEPA 2-AC KHÔNG có detector "đã tới goal" online — episode chạy đủ N bước
+  rồi đo offline bằng proprioception tay máy (đã rà code `mpc_utils.py` 06-12 sáng, mục 8). "Chính
+  xác cm" của họ = encoder khớp tay máy, không phải phép đo ảnh. Phép đo của ta là phần TỰ CHẾ.
+- **Việc nên làm:** (1) **RE-TEACH route ngay trước mỗi buổi chạy** (teach_record 5' hoặc
+  route_from_session — xem Q5) — rẻ nhất, chữa đúng gốc; (2) giữ pop = GPS-qua + (ảnh khớp HOẶC
+  geo-confirm <1.5m) như hiện tại; (3) nâng cấp ĐO (sau deadline): seq-matching kiểu SeqSLAM
+  (khớp chuỗi 5–20 frame, chịu đổi-sáng tốt theo literature), hoặc reachability/temporal-distance
+  head kiểu ViNG (học "còn mấy bước tới goal" từ data — nguyên tắc đúng hơn cosine).
+
+**★ Q2 GPS — vai trò + nâng cấp:**
+- Vai trò hiện tại (đúng như user hiểu): pop gate (`reach-m`) + geo-confirm <1.5m + stuck-detect +
+  spd_est tier ga + xy TEACH (polyline lookahead/heading) + vẽ web. **Control = 100% vision.**
+- Phone A42: app xin 5Hz nhưng máy trả **1.04Hz đo được** (gps.csv); noise đã đo 0.44m median /
+  1.0m p90. Nâng bằng phone gần như hết cửa (1Hz là trần hardware; L5 của A42 không chắc — cài
+  GPSTest xem cột CF có 117x.xx MHz không, có L5 thì cũng chỉ bớt multipath, không xuống dưới ~0.5m).
+- **RTK ngoài (sau deadline, ĐÁNG):** Quectel LC29H(EA) ~$60 / ZED-F9P + antenna ~$250 / UM980 —
+  1–2cm khi có correction (NTRIP caster hoặc tự dựng base = 2 module). Lợi: pop chính-xác-mét,
+  lateral-offset ground-truth cho báo cáo, mở cửa pure-pursuit fallback + heading thật khi lăn.
+  KHÔNG kịp trước 06-15 (ship + tích hợp UART→phone/ESP32 + nguồn) → ghi backlog.
+
+**★ Q3 CEM TIMING + GA (bench `/tmp/bench_cem.py` trên GPU thật, model cd4):**
+- CEM nhìn trước **horizon 4 × dt 0.22s = 0.88s**; chỉ áp **action ĐẦU**, giữ nguyên cho tới khi
+  tick sau xong. Tick đo được (CEM + enc ~0.03 + overhead): **32/1 ≈ 0.50s · 64/2 ≈ 1.57s ·
+  128/2 ≈ 2.89s · 256/2 ≈ 5.51s**. → Config thắng tối nay (256/2) = xe đi **"mù" ~5.5s/quyết định**
+  (0.3–0.5 m/s ≈ 1.5–2.7m ≈ 4–7 subgoal route 0.4m) — **"hơi lệch" phần lớn từ đây**, không phải model dốt.
+  Offline bf16 (60 window, n=60): 256/2 Δsteer d1/d2 = 0.041/0.099 vs 64/2 cũ 0.040/0.078 → search
+  dày KHÔNG mua thêm chất lượng action (đủ bảng xem `logs/eval_goal_cd4_policy_s256i2.log` +
+  `_s32i1_bf16.log`). **Mai chạy 64/2 (1.6s) hoặc 32/1 (0.5s).**
+- **Data train (181+28 session, 228k frame — `/tmp/data_stats.py`):** đứng yên 13.4% frame; **1049
+  sự kiện đề-pa** (đứng yên→>0.5m/s trong 2s); window bắt đầu từ đứng yên 13.3%, trong đó có tăng
+  tốc thật 991 (≈1.7% tổng window) → **đề-pa CÓ trong data nhưng mỏng**. Dải ga deploy 0.07–0.10 =
+  43% data (dày nhất). NHƯNG: media tốc độ khi lăn @ga 0.07–0.09 trong data ≈ **0.95–1.05 m/s** —
+  xe deploy bò 0.2–0.5 m/s = **đuôi chậm của phân bố** (pin/mặt sàn khác) + doppler đọc 0.00 khi bò
+  → state nói "đứng yên" trong khi xe đang lăn (lệch state systematics).
+- **Vì sao "nhích nhích không đi" khi ga thấp:** (1) `CarDynamics` (k_thr 1.588, k_drag 0.078):
+  từ đứng yên ga 0.10 → CEM "tưởng tượng" sau 0.88s chỉ đạt **0.13 m/s, dịch ~6cm** → gradient
+  energy theo ga ≈ 0 → ga model = noise/prior → **floor quyết định việc xe có đi hay không**;
+  (2) config tối nay `cap 0.10 = cruise 0.10` → khi lăn ga GHIM 0.10 (model 0 quyền — chấp nhận
+  được như "ga hành trình hở"), còn **đứng yên thì kick=0 → chỉ còn ga model ~0.075–0.10 (kickstart
+  policy) < ngưỡng scrub full-lock ~0.12 đã đo** → đề-pa NGAY TRONG CUA là kẹt đúng cơ chế.
+  **Patch MỚI (`inference_loop.py`, chưa test xe): kick STEER-AWARE = kick × (1 + 0.5·|steer|)**
+  (0.08 → 0.08 thẳng / 0.12 full-lock, khớp 2 số đo ma sát) → mai đặt `--kick-throttle 0.08`
+  thay vì 0 nếu còn kẹt đề-pa ở cua.
+
+**★ Q4 PIN/NÓNG PHONE — thủ phạm code-side tìm thấy + APK MỚI (CHƯA cài):**
+- `MainActivity.STREAM_INTERVAL = 40ms` → khi nối PC app **JPEG-encode (bitmap 1280×720 crop/scale/
+  rotate + compress q85) + TX 5G/Tailscale ~25 lần/giây liên tục**, trong khi inference chỉ tiêu
+  1–3 frame/s. Workload này CHỈ xuất hiện khi chạy AUTO/stream dài (các buổi trước = REC 10Hz không
+  stream → "trước không nóng"). Cộng thêm (không đổi được bằng code): màn hình bật, GPS on, camera
+  30fps, **phone nuôi luôn ESP32-S3 qua OTG (~0.4–0.7W)**, 5G TX, nắng chiều.
+- **Fix: APK v0.6-cool đã build** (stream 25→10Hz, versionCode 6) tại
+  `robot/android/app/build/outputs/apk/debug/app-debug.apk` — **cài:**
+  `~/Android/Sdk/platform-tools/adb install -r robot/android/app/build/outputs/apk/debug/app-debug.apk`.
+  Vận hành thêm: bấm **🌙 Dim** khi xe chạy (AMOLED đen ~1W), che nắng phone, pin sạc dự phòng nếu
+  buổi dài. Đo trước/sau: `adb shell dumpsys batterystats --reset` rồi chạy 15' → `dumpsys batterystats`.
+
+**★ Q5 TEACH TỪ SESSION REC — `scripts/route_from_session.py` (MỚI, smoke-test pass):**
+Đúng ý user: **lái 1 vòng với CH10 REC (không cần PC ngoài bãi) → lấy session về → dựng route
+offline**: `PYTHONPATH=src python scripts/route_from_session.py data/raw_towerpro/session_XXX <tên>
+--step-m 0.4` — subgoal theo quãng đường along-track, **tự DÀY ở cua** (heading baseline ±0.75s,
+--turn-deg 15 → step 0.25m), bỏ đoạn lùi + GPS acc kém, xy đúng hệ graph (pop GPS/lookahead chạy
+y như teach live). Lợi hơn teach live: frame 10Hz chọn spacing tuỳ ý, không cần route_web/inference
+chạy lúc teach. **Ràng buộc DUY NHẤT (đo ở Q1): chạy CÙNG BUỔI/cùng ánh sáng với lúc quay.**
+
+**★ Q6 GPU ĐÊM (đang chạy):** (1) eval offline **256/2 vs 32/1 bf16** (`logs/eval_goal_cd4_policy_
+s256i2.log`, `_s32i1_bf16.log`) — flag `--bf16` MỚI trong `eval_goal_reaching_ac.py` (khớp inference;
+fp32 OOM @256). (2) **Cooldown `cd4_as3`** (`configs/train/vjepa_ac_car_cd4_as3.yaml` + chain
+`scripts/overnight_20260612.sh`): **auto_steps 2→3** từ cd4-best, 2 ep ≈ 6–7h — căn cứ: contrast
+energy tụt theo khoảng cách target (d2 0.443 → d8 0.270) = rollout nhiều bước mờ; auto_steps 3 train
+thẳng nhánh CEM dùng. Sáng mai đọc `logs/train_ac_car_cd4_as3.log` + `eval_ratio_cd4_as3.log` +
+`eval_goal_cd4_as3_s32i1.log` + `probe_energy_cd4_as3_turn.log`, **quyết theo luật B5** (giữ CHỈ
+KHI ratio@2/@3 + d4/d8 cải thiện, d1 không xấu; ⚠️ val loss cd4_as3 KHÔNG so trực tiếp cd4 — objective
+đổi). KHÔNG đụng cd8 (28h, không kịp). Lưu ý: **wandb group mới `vjepa_ac_car_cd4_as3`**.
+
+**★ PATCH `inference_loop.py` đêm nay (compile OK, CHƯA test trên xe — mai để ý):**
+1. **Heading polyline route tay: baseline ≥1.2m** thay central-diff ±1 subgoal (teach 0.4m ≈ GPS
+   noise 0.44m → heading cũ nhiễu; đo parkfix2: jitter p90 22°→12°, max 171°→57°) → heading-cap 35°
+   hết dừng-lookahead-bừa.
+2. **Kick steer-aware** (Q3 trên). Cả hai gated: (1) chỉ nhánh route-tay lookahead, (2) chỉ khi kick>0.
+
+**🔜 PROTOCOL MAI (đúc từ đêm nay):** (1) cài APK v0.6; (2) tới bãi: quay route bằng REC (CH10) HOẶC
+teach_record → **dựng/teach lại route NGAY TRƯỚC run** (đừng dùng parkfix2 cũ — khác sáng là ccos sập);
+(3) `run_infer.sh` đổi `--samples 64 --iters 2` (tick 1.6s) — nếu mượt thử 32/1; `--kick-throttle 0.08`
+nếu kẹt đề-pa ở cua; (4) log tự ghi (`logs/infer_*.log`) → về nhà đo lateral offset (xy log vs polyline
+teach) + ccos-tại-pop per subgoal — 2 số này quyết bước kế.
 
 ## 🏆 2026-06-12 TỐI (đợt 2) — POP FIX ×2 (LATCH + GEO-CONFIRM) → **XE LẦN ĐẦU TỰ QUA CUA** (user xác nhận, nhiều run liên tiếp)
 

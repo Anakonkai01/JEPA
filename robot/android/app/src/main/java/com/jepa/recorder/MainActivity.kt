@@ -65,7 +65,9 @@ class MainActivity : AppCompatActivity() {
     private var lastStreamMs = 0L
     private var lastHudMs = 0L
     private val SAVE_INTERVAL = 100L          // lưu cục bộ 10 Hz
-    private val STREAM_INTERVAL = 40L         // stream PC ~25 Hz (mượt, tách khỏi nhịp lưu)
+    private val STREAM_INTERVAL = 100L        // stream PC ~10 Hz (06-12: 25Hz = thủ phạm nóng/hao pin
+                                              // chính khi chạy AUTO — JPEG encode + TX 5G mỗi 40ms trong
+                                              // khi PC chỉ tiêu thụ 1-3 frame/s; 10Hz vẫn dư cho live view)
     private val TARGET_W = 640                 // hạ về 640px (V-JEPA chỉ cần 256)
     private val SHUTTER_FPS = 30               // ép phơi sáng ≤ 1/30s chống nhòe (thử 60 nếu cam hỗ trợ)
     // IP máy nhận. Mặc định = Tailscale IP LAPTOP omarchy (cả LAN lẫn 5G); LAN-only "192.168.100.41";

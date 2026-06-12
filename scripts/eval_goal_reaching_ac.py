@@ -61,6 +61,9 @@ def main():
                          "latents (scripts/pool_patch_latents.py).")
     ap.add_argument("--dt", type=float, default=0.22, help="clip frame-stride period (s) for CarDynamics")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
+    ap.add_argument("--bf16", action="store_true",
+                    help="autocast bf16 quanh CEM (KHỚP inference_loop chạy thật; fp32 OOM ở "
+                         "--samples 256). Số bf16 vs fp32 lệch nhẹ — so sánh thì chạy CÙNG mode.")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
@@ -185,12 +188,14 @@ def main():
                 pol_dsteer.append(abs(float(prop[0] - teacher[0, 0, 0])))
                 pol_dthrot.append(abs(float(prop[1] - teacher[0, 0, 1])))
 
-            _, info = planner.plan(z0, s0_raw, goal, return_info=True, domain=dom, mu_init=mu0)
-            cem_seq = info["sequence"].to(args.device)
-            cem_s.append(info["score"])
-            tea_s.append(float(planner.score(z0, s0_raw, goal, teacher, domain=dom)[0]))
-            rnd = low + (high - low) * torch.rand(args.samples, d, 2, device=args.device)
-            rsc = planner.score(z0, s0_raw, goal, rnd, domain=dom)
+            with torch.autocast("cuda", dtype=torch.bfloat16,
+                                enabled=args.bf16 and args.device.startswith("cuda")):
+                _, info = planner.plan(z0, s0_raw, goal, return_info=True, domain=dom, mu_init=mu0)
+                cem_seq = info["sequence"].to(args.device)
+                cem_s.append(info["score"])
+                tea_s.append(float(planner.score(z0, s0_raw, goal, teacher, domain=dom)[0]))
+                rnd = low + (high - low) * torch.rand(args.samples, d, 2, device=args.device)
+                rsc = planner.score(z0, s0_raw, goal, rnd, domain=dom)
             rnd_mean_s.append(float(rsc.mean()))
             rnd_best_s.append(float(rsc.min()))
             dsteer.append(abs(float(cem_seq[0, 0] - teacher[0, 0, 0])))

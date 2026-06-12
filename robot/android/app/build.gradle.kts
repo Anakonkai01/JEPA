@@ -11,8 +11,8 @@ android {
         applicationId = "com.jepa.recorder"
         minSdk = 26
         targetSdk = 34
-        versionCode = 5
-        versionName = "0.5-pro"   // HUD màu + relay closed-loop + Drive resume + fix leak/ANR
+        versionCode = 6
+        versionName = "0.6-cool"  // stream 25→10Hz (bớt nóng/hao pin khi chạy AUTO dài)
     }
     buildTypes {
         release { isMinifyEnabled = false }

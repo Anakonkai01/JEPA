@@ -733,8 +733,17 @@ def main():
                                     np.linalg.norm(np.diff(mxy, axis=0), axis=1))]).astype(np.float32)
                                 N = len(mxy)
                                 hd = np.zeros(N, np.float32)
+                                # Heading trên BASELINE ≥1.2m (06-12 đo: teach 0.4m spacing ≈ GPS
+                                # noise 0.44m → central-diff ±1 subgoal = nhiễu ±25°+, probe thấy
+                                # Δheading bịa 171° cuối route → heading-cap dừng lookahead bừa).
+                                _HB = 1.2
                                 for k in range(N):
-                                    a = mxy[max(0, k - 1)]; b = mxy[min(N - 1, k + 1)]
+                                    i0 = i1 = k
+                                    while i0 > 0 and man_cum[k] - man_cum[i0] < _HB / 2:
+                                        i0 -= 1
+                                    while i1 < N - 1 and man_cum[i1] - man_cum[k] < _HB / 2:
+                                        i1 += 1
+                                    a = mxy[i0]; b = mxy[i1]
                                     hd[k] = np.arctan2(b[1] - a[1], b[0] - a[0])
                                 man_head = hd
                         if man_center is not None:
@@ -1154,7 +1163,12 @@ def main():
                             throt = max(throt, args.cruise_throttle * floor_k)
                         elif float(meta.get("lat", 0) or 0) != 0:
                             if spd_est < args.stuck_speed:
-                                throt = max(throt, args.kick_throttle); kick = True
+                                # Kick STEER-AWARE (06-12 đo): đề-pa thẳng cần ~0.07-0.08 nhưng
+                                # full-lock SCRUB cần ~0.12 (×1.5) → kick phẳng là sai 1 đầu
+                                # (0.08 kẹt ở cua, 0.12 vọt khi thẳng). kick 0.08 → 0.08-0.12.
+                                throt = max(throt, args.kick_throttle
+                                            * (1.0 + 0.5 * min(1.0, abs(steer))))
+                                kick = True
                             elif spd_est < args.cruise_speed:
                                 throt = max(throt, args.cruise_throttle * floor_k)
                     if args.step:
