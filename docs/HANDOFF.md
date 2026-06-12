@@ -51,9 +51,17 @@
   tick sau xong. Tick đo được (CEM + enc ~0.03 + overhead): **32/1 ≈ 0.50s · 64/2 ≈ 1.57s ·
   128/2 ≈ 2.89s · 256/2 ≈ 5.51s**. → Config thắng tối nay (256/2) = xe đi **"mù" ~5.5s/quyết định**
   (0.3–0.5 m/s ≈ 1.5–2.7m ≈ 4–7 subgoal route 0.4m) — **"hơi lệch" phần lớn từ đây**, không phải model dốt.
-  Offline bf16 (60 window, n=60): 256/2 Δsteer d1/d2 = 0.041/0.099 vs 64/2 cũ 0.040/0.078 → search
-  dày KHÔNG mua thêm chất lượng action (đủ bảng xem `logs/eval_goal_cd4_policy_s256i2.log` +
-  `_s32i1_bf16.log`). **Mai chạy 64/2 (1.6s) hoặc 32/1 (0.5s).**
+  Offline bf16 ĐỦ BẢNG (60 window/d, box ga [0,0.10], cùng policy; ⚠️ 2 run chọn window khác nhau
+  — so median, không paired):
+  | d | Δsteer 32/1 | Δsteer 256/2 | CEM/rnd 32/1→256/2 |
+  |---|---|---|---|
+  | 1 | 0.038 | 0.041 | 0.70→0.70 |
+  | 2 | 0.098 | 0.099 | 0.77→0.75 |
+  | 4 | 0.132 | 0.100 | 0.76→0.74 |
+  | 8 | 0.172 | 0.158 | 0.84→0.83 |
+  → d=1–2 (đúng tầm control-target lookahead 0.5m) **y hệt nhau**; 256/2 chỉ nhỉnh ở d=4–8 là tầm
+  KHÔNG dùng làm control-target nữa — và giá closed-loop là tick 0.5s→5.5s. **Mai chạy 64/2 (1.6s)
+  hoặc 32/1 (0.5s).** (`logs/eval_goal_cd4_policy_s256i2.log` + `_s32i1_bf16.log`.)
 - **Data train (181+28 session, 228k frame — `/tmp/data_stats.py`):** đứng yên 13.4% frame; **1049
   sự kiện đề-pa** (đứng yên→>0.5m/s trong 2s); window bắt đầu từ đứng yên 13.3%, trong đó có tăng
   tốc thật 991 (≈1.7% tổng window) → **đề-pa CÓ trong data nhưng mỏng**. Dải ga deploy 0.07–0.10 =
