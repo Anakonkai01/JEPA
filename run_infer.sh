@@ -27,6 +27,14 @@ PYTHONPATH=src ~/miniforge3/envs/ai/bin/python -u scripts/inference_loop.py \
   2>&1 | tee -a "$LOG"
 
 # ── KNOB hay chỉnh ──────────────────────────────────────────────
+#  --samples/--iters    TICK ĐO THẬT (06-12 đêm, desktop): 32/1=0.5s · 64/2=1.6s ·
+#                       128/2=2.9s · 256/2=5.5s/quyết-định. 256/2 = xe đi "MÙ" ~5.5s
+#                       (0.3-0.5m/s ≈ 1.5-2.7m ≈ 4-7 subgoal) → "hơi lệch" phần lớn từ đây;
+#                       offline 256/2 KHÔNG hơn 64/2 (Δsteer d1 0.041 vs 0.040). KHUYÊN 64/2.
+#  --kick-throttle 0.08 kick giờ STEER-AWARE ×(1+0.5|steer|): 0.08 thẳng → 0.12 full-lock
+#                       (khớp ma sát đo). kick=0 → đề-pa NGAY TRONG CUA dễ kẹt (scrub >0.10).
+#  ⚠️ ROUTE: teach/dựng lại NGAY TRƯỚC buổi chạy (probe 06-12: khác ánh sáng → ccos sập,
+#                       30/31 subgoal không qua nổi pop-confirm 0.5 với ảnh khác-buổi).
 #  --lock-cos 0.30      GIỮ LÁI XUYÊN VÙNG MÙ (MỚI): cos target tụt < 0.30 giữa cua →
 #                       đóng băng lái ở cú quẹo cuối (cam kết hoàn tất cua), hết noise/chệch.
 #                       Vẫn chệch sớm → nâng 0.40 (giữ sớm hơn). Can thiệp oan → hạ 0.20.

@@ -64,6 +64,8 @@ def main():
     ap.add_argument("--bf16", action="store_true",
                     help="autocast bf16 quanh CEM (KHỚP inference_loop chạy thật; fp32 OOM ở "
                          "--samples 256). Số bf16 vs fp32 lệch nhẹ — so sánh thì chạy CÙNG mode.")
+    ap.add_argument("--score-chunk", type=int, default=None,
+                    help="chia batch score CEM thành chunk (VRAM phẳng; cần cho samples 256 @ d=8)")
     ap.add_argument("--seed", type=int, default=0)
     args = ap.parse_args()
 
@@ -161,7 +163,8 @@ def main():
                                horizon=d, n_samples=args.samples, n_elite=args.elite,
                                n_iter=args.iters, throttle_min=args.throttle_min,
                                throttle_max=args.throttle_max, history=args.history,
-                               prev_action_idx=prev_idx, device=args.device)
+                               prev_action_idx=prev_idx, score_chunk=args.score_chunk,
+                               device=args.device)
         cem_s, tea_s, rnd_mean_s, rnd_best_s, dsteer, dthrot = [], [], [], [], [], []
         pol_dsteer, pol_dthrot = [], []
         for i in idx:

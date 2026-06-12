@@ -1211,8 +1211,10 @@ def main():
                         continue
 
                     emit(steer, throt)                                 # once (phone keeps-alive) or holder (dongle)
+                    xy_tag = (f" xy({car_xy[0]:.1f},{car_xy[1]:.1f})"
+                              if car_xy is not None else "")           # để đo lateral offset từ log
                     print(f"[infer] seq{seq} {tag}{hold_tag} steer{steer:+.2f}(raw{raw_steer:+.2f}) throt{throt:+.2f} "
-                          f"(ga model {model_throt:+.3f}) "
+                          f"(ga model {model_throt:+.3f}){xy_tag} "
                           f"({time.time()-t0:.2f}s enc{t_enc-t0:.2f} nav{t_tgt-t_enc:.2f} "
                           f"cem{t_plan-t_tgt:.2f})", flush=True)
 

@@ -113,7 +113,8 @@ class CEMPlannerAC:
                  action_scale=(1.0, 6.67), horizon: int = 4, n_samples: int = 128,
                  n_elite: int = 16, n_iter: int = 4, throttle_min=-0.16, throttle_max=0.15,
                  history: int = 2, init_std: float = 0.5, min_std: float = 0.05,
-                 warm_std: float = 0.15, prev_action_idx=None, domain=None, device: str = "cuda"):
+                 warm_std: float = 0.15, prev_action_idx=None, domain=None,
+                 score_chunk: int | None = None, device: str = "cuda"):
         self.model = model.eval()
         self.dyn = dynamics
         self.sm = state_mean.to(device).float(); self.ss = state_std.to(device).float()
@@ -136,6 +137,10 @@ class CEMPlannerAC:
         # ứng viên của bước trước (khớp lúc train: state[t] chứa action[t-1]). None = state không có prev-action.
         self.prev_idx = list(prev_action_idx) if prev_action_idx is not None else None
         self.domain = None if domain is None else float(domain)
+        # score theo CHUNK (None = cả batch): horizon dài × samples nhiều → rollout giữ
+        # seq (B, H·(2+Ntok), D) — 256 samples @ d=8 OOM 16GB (đo 06-12). Chunk đổi chút
+        # tốc độ lấy trần VRAM phẳng; deployment horizon 4 không cần.
+        self.score_chunk = score_chunk
         self.device = device
 
     def _states_raw(self, s0_raw, raw_actions):
@@ -156,6 +161,10 @@ class CEMPlannerAC:
         """z0 (1,N,D) z-scored, s0_raw (S,) raw, goal (N,D) z-scored, raw_actions (B,H,2).
         ``domain`` overrides the planner default for this call (multi-root models)."""
         B = raw_actions.size(0)
+        if self.score_chunk and B > self.score_chunk:
+            return torch.cat([self.score(z0, s0_raw, goal, raw_actions[i:i + self.score_chunk],
+                                         domain=domain)
+                              for i in range(0, B, self.score_chunk)])
         states_z = (self._states_raw(s0_raw, raw_actions) - self.sm) / self.ss      # (B,H,S)
         scaled = raw_actions * self.ascale                                          # (B,H,2)
         dom = self.domain if domain is None else float(domain)
