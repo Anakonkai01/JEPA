@@ -71,6 +71,17 @@ không domain-shift — không so trực tiếp được.
 indoor (mục 6) trước cd8** — cd8 là ablation B5 "gain nhỏ-vừa nếu có", 28h GPU không giải quyết
 OOD indoor. Diff `train_ac_car.py` (auto_steps generic) + config cd8 đã commit.
 
+**10. "GPS NGU — trong bụi cỏ vẫn báo ĐẠT goal" → `--pop-confirm-cos` MỚI (visual-confirm pop):**
+GPS đo được noise ±0.44m median / 1.0m p90 / 3.2m max → reach-m là CỔNG THÔ, không bao giờ xác
+nhận được 50cm. Nhưng probe chuỗi subgoal THẬT park (graph route 113m, spacing 4-6m): **centered
+cos tách vị trí cả ngoài trời** — tại-chỗ ~1.0, subgoal KẾ ~0.58, cách-2 ~0.37, xa âm (cos thô vẫn
+mù 0.95-0.99). → `--pop-confirm-cos 0.75` (0=tắt, default): GPS trong bán kính CHƯA đủ, **ẢNH phải
+khớp mới pop** — áp cho pop GPS route TAY + goal CUỐI full-nav (center = mean pool subgoal route;
+subgoal giữa route graph vẫn GPS vì control target là lookahead). Ảnh không khớp → route tay
+timeout dừng an toàn / full-nav chạy tiếp tới khi khớp. Trần chính xác visual ≈ 0.5-1m tuỳ cảnh
+(thr 0.85-0.9 + teach ảnh dày = chặt hơn); cm-grade kiểu Meta là từ ENCODER tay máy (proprioception
+sub-mm, quasi-static, in-domain) — khác hệ đo, không phải world model của họ "chính xác hơn".
+
 **LỆNH INDOOR MỚI (thay lệnh cũ — bỏ manual-reach-cos 0.999, sửa cruise>cap, thêm pulse):**
 ```bash
 PYTHONPATH=src python scripts/route_web.py --graph none          # web :8060

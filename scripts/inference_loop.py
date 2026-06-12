@@ -351,7 +351,16 @@ def main():
     ap.add_argument("--off-route-m", type=float, default=10.0,
                     help="node localize cách xe (GPS) xa hơn ngần này → coi như LẠC → neutral (đừng lái theo route bịa)")
     ap.add_argument("--reach-m", type=float, default=4.0,
-                    help="tới đích khi GPS cách goal < ngần này (mét). Robust hơn cosine ở park tự-giống.")
+                    help="tới đích khi GPS cách goal < ngần này (mét). GPS noise đo được ±0.4-1m "
+                         "(p90) → đây chỉ là CỔNG THÔ; muốn chính xác bật --pop-confirm-cos.")
+    ap.add_argument("--pop-confirm-cos", type=float, default=0.0,
+                    help="VISUAL-CONFIRM pop (0=tắt): GPS trong bán kính CHƯA đủ — ẢNH hiện tại còn "
+                         "phải khớp ảnh subgoal/goal: centered-cos ≥ ngưỡng này mới pop/reached. "
+                         "Đo park 06-12 (chuỗi subgoal 4-6m): tại-chỗ ~1.0, subgoal KẾ ~0.58, xa âm "
+                         "→ gợi ý 0.75 (chặt hơn: 0.85). Áp cho: pop GPS route TAY + goal CUỐI "
+                         "full-nav (subgoal giữa route graph vẫn GPS — target control là lookahead, "
+                         "pop chặt sẽ ì). Ảnh không khớp mãi → route tay có timeout, full-nav cứ "
+                         "chạy tiếp tới khi khớp. Chữa 'xe trong bụi cỏ vẫn báo đạt goal'.")
     ap.add_argument("--manual-reach-cos", type=float, default=0.80,
                     help="route TAY (teach&repeat): subgoal không có GPS (indoor) coi là ĐẠT khi cosine "
                          "≥ ngưỡng này. ⚠️ Từ 06-12 cosine là CENTERED (trừ mean pooled các subgoal "
@@ -592,6 +601,7 @@ def main():
             # route TAY: dwell cosine, đồng hồ timeout per-subgoal, route đang bám (reset khi giao mới)
             manual_hits, manual_last_idx, manual_t0, last_rt_obj = 0, -1, time.time(), None
             man_center, man_vecs = None, None             # centered-cosine route tay (probe_reach 06-12)
+            man_block_idx, goal_block_id = -1, None       # log "GPS tới nhưng ảnh chưa khớp" 1 lần/subgoal
             last_nf_status = 0.0                          # throttle ghi status "no-frame" (1Hz)
             try:
                 while reader.alive:
@@ -689,12 +699,26 @@ def main():
                                     return float(navn @ man_vecs[i])
                                 return float(navn @ manual_patch(subs[i]["img"])[2])
 
-                            # pop GPS: ảnh chụp có thể dày hơn reach-m → pop hết các sub đã trong bán kính
+                            # pop GPS: ảnh chụp có thể dày hơn reach-m → pop hết các sub đã trong bán kính.
+                            # --pop-confirm-cos: GPS (noise ±0.4-1m) chỉ là CỔNG THÔ — ảnh phải khớp
+                            # (centered-cos ≥ ngưỡng) mới được pop ("trong bụi cỏ vẫn báo đạt" 06-12)
                             while (web.wp_idx < len(subs) and car_xy is not None
                                    and subs[web.wp_idx].get("xy") is not None
                                    and float(np.linalg.norm(car_xy - np.asarray(
                                        subs[web.wp_idx]["xy"], np.float32))) < args.reach_m):
-                                print(f"[web] ✓ subgoal tay {web.wp_idx + 1}/{len(subs)} (GPS)", flush=True)
+                                if args.pop_confirm_cos > 0:
+                                    cc = _mcos(web.wp_idx)
+                                    if cc < args.pop_confirm_cos:
+                                        if web.wp_idx != man_block_idx:
+                                            man_block_idx = web.wp_idx
+                                            print(f"[web] GPS trong bán kính nhưng ẢNH chưa khớp "
+                                                  f"(ccos {cc:.3f} < {args.pop_confirm_cos:g}) — "
+                                                  f"chưa pop subgoal {web.wp_idx + 1}", flush=True)
+                                        break
+                                    print(f"[web] ✓ subgoal tay {web.wp_idx + 1}/{len(subs)} "
+                                          f"(GPS + ảnh ccos {cc:.3f})", flush=True)
+                                else:
+                                    print(f"[web] ✓ subgoal tay {web.wp_idx + 1}/{len(subs)} (GPS)", flush=True)
                                 web.wp_idx += 1; manual_hits = 0
                             cos_v = gps_dist = None
                             if web.wp_idx < len(subs):
@@ -813,6 +837,33 @@ def main():
                             reached_now = gps_dist < args.reach_m
                         else:
                             reached_now = (cur == goal)
+                        # --pop-confirm-cos: GPS < reach_m (cổng thô ±0.4-1m noise) chưa đủ — ẢNH
+                        # goal còn phải khớp view hiện tại (centered-cos, center = mean pool các
+                        # subgoal route + goal; pool đã cache trong subgoal_patch). Ảnh chưa khớp
+                        # → chạy tiếp servo về goal tới khi khớp ("trong bụi cỏ vẫn báo đạt" 06-12).
+                        # Cần route đã plan (nav_subs) để có center ≥2 điểm; chưa có thì như cũ.
+                        if reached_now and args.pop_confirm_cos > 0 and nav_subs:
+                            try:
+                                nodes = list(dict.fromkeys(list(nav_subs) + [goal]))
+                                if len(nodes) >= 2:
+                                    ps = np.stack([subgoal_patch(n)[0].float().cpu().numpy()
+                                                   for n in nodes])
+                                    cgo = ps.mean(0)
+                                    gv = ps[nodes.index(goal)] - cgo
+                                    gv = gv / (np.linalg.norm(gv) + 1e-8)
+                                    cv = nav - cgo
+                                    cv = cv / (np.linalg.norm(cv) + 1e-8)
+                                    conf = float(cv @ gv)
+                                    if conf < args.pop_confirm_cos:
+                                        reached_now = False
+                                        if goal != goal_block_id:
+                                            goal_block_id = goal
+                                            print(f"[infer] GPS d={gps_dist:.1f}m < reach nhưng ẢNH "
+                                                  f"goal chưa khớp (ccos {conf:.3f} < "
+                                                  f"{args.pop_confirm_cos:g}) — chạy tiếp tới khi khớp",
+                                                  flush=True)
+                            except FileNotFoundError:
+                                pass                      # thiếu ảnh node → giữ GPS-reach như cũ
                         if reached_now:
                             emit(0.0, 0.0); prev_steer = 0.0
                             if web is not None and web.route:   # web: xong route → chờ route mới
