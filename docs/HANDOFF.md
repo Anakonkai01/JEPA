@@ -82,6 +82,18 @@ timeout dừng an toàn / full-nav chạy tiếp tới khi khớp. Trần chính
 (thr 0.85-0.9 + teach ảnh dày = chặt hơn); cm-grade kiểu Meta là từ ENCODER tay máy (proprioception
 sub-mm, quasi-static, in-domain) — khác hệ đo, không phải world model của họ "chính xác hơn".
 
+**11. `--step` BẮT ĐƯỢC BUG SEARCH TẠI TRẬN (chạy thật indoor 06-12) → CEM SEED CANDIDATES:**
+log step cho thấy **E(-1.0) thấp nhất (model THÍCH trái) mà CEM ra +0.27 phải** — policy warm-start
+(BC park, OOD indoor) mu≈+0.25 + warm σ 0.15 → 32 sample không bao giờ chạm vùng −1 → search bị
+policy che mắt (đúng nghi vấn user "bị giới hạn không gian search"). **Fix `cem.py`: mỗi iteration
+luôn chèn 5 seed candidate steer [-1,-0.5,0,+0.5,+1] (ga = mu hiện tại)** → elite bắt được đáy
+toàn cục, +5 rollout/iter (tick 0.36→0.45s), smoke e2e pass (CEM giờ dám ra ±1.0 khi E bảo vậy).
+Fix kèm cùng buổi: (a) **`--settle-s`** (default 0; indoor 0.8-1.0) — sau mỗi nhịp pulse/step CHỜ
+xe hết trớn rồi mới lấy frame plan ("chưa kịp dừng đã quyết định tiếp"); (b) **validation
+`--throttle-min`**: user truyền 0.09 (> cap 0.055) → box lộn ngược, ga GHIM 0.09 mọi tick →
+giờ ap.error khi min>cap + warning khi min>0 (flag này là đáy box, chỉ ≤0 mới có nghĩa = cho lùi;
+"ga tối thiểu" = --cruise-throttle).
+
 **LỆNH INDOOR MỚI (thay lệnh cũ — bỏ manual-reach-cos 0.999, sửa cruise>cap, thêm pulse):**
 ```bash
 PYTHONPATH=src python scripts/route_web.py --graph none          # web :8060

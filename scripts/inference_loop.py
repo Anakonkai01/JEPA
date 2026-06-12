@@ -409,6 +409,11 @@ def main():
                          "--throttle-cap theo mặt sàn (sàn nhà trơn hơn cỏ).")
     ap.add_argument("--pulse-move", type=float, default=0.45,
                     help="pulse: thời gian chạy mỗi nhịp (giây) ≈ 1-2 bước model (dt 0.22)")
+    ap.add_argument("--settle-s", type=float, default=0.0,
+                    help="--pulse/--step: sau mỗi nhịp CHỜ thêm ngần này giây cho xe HẾT TRỚN rồi "
+                         "mới lấy frame plan tiếp ('chưa kịp dừng đã quyết định tiếp' 06-12 — coast "
+                         "trong lúc compute ~0.4s chưa đủ đứng hẳn). Indoor chính-xác-trước: 0.8-1.0. "
+                         "0 = tắt (như cũ).")
     ap.add_argument("--recover", action=argparse.BooleanOptionalAction, default=True,
                     help="tự RECOVERY khi kẹt (đâm tường / lao bờ cỏ): lệnh ga tiến mà GPS speed ~0 "
                          "quá --stuck-s giây → lùi + đánh lái ngược --recover-s giây → replan. "
@@ -436,6 +441,15 @@ def main():
         ap.error("opencv-python required (pip install opencv-python)")
     if args.web and args.control_only:
         ap.error("--web đi với full-nav (cần graph) — không dùng cùng --control-only")
+    if args.throttle_min > args.throttle_cap:
+        ap.error(f"--throttle-min {args.throttle_min:g} > --throttle-cap {args.throttle_cap:g}: "
+                 f"box ga LỘN NGƯỢC → ga model bị GHIM = {args.throttle_min:g} mọi tick. Flag này "
+                 f"là ĐÁY box CEM (chỉ hữu ích khi ≤0 để cho phép LÙI); 'ga tối thiểu khi chạy' "
+                 f"là --cruise-throttle.")
+    if args.throttle_min > 0:
+        print(f"[infer] ⚠️ --throttle-min {args.throttle_min:g} > 0: bạn đang CẤM model chọn ga "
+              f"dưới {args.throttle_min:g} trong box CEM — thường cái bạn muốn là "
+              f"--cruise-throttle (sàn ga thực thi). --throttle-min chỉ nên ≤0 (cho lùi).", flush=True)
     if args.cruise_throttle > args.throttle_cap > 0:
         print(f"[infer] ⚠️ --cruise-throttle {args.cruise_throttle:g} > --throttle-cap "
               f"{args.throttle_cap:g}: sàn ga ĐÈ trần ga model MỌI tick → ga hằng "
@@ -1061,6 +1075,8 @@ def main():
                             continue
                         hold(steer, throt, args.pulse_move)   # áp đúng 1 nhịp
                         emit(steer, 0.0)                      # coast (giữ lái) — frame kế gần tĩnh
+                        if args.settle_s > 0:                 # chờ hết trớn rồi mới plan tiếp
+                            time.sleep(args.settle_s)
                         continue
 
                     emit(steer, throt)                                 # once (phone keeps-alive) or holder (dongle)
@@ -1137,6 +1153,8 @@ def main():
                         # drift trong lúc tính ≈ 0 (trễ không còn ăn vào độ chính xác).
                         hold(steer, throt, args.kick_s if kick else args.pulse_move)
                         emit(steer, 0.0)                              # coast trong lúc tính
+                        if args.settle_s > 0:                         # chờ hết trớn (frame plan tĩnh thật)
+                            time.sleep(args.settle_s)
                     else:
                         dtw = period - (time.time() - t0)
                         if dtw > 0:

@@ -182,9 +182,17 @@ class CEMPlannerAC:
             mu[:, 1] = (self.low[1] + self.high[1]) / 2                             # throttle mid-box
             sigma = self.sigma0.expand(self.H, 2).clone()
         best_s, best_seq = None, None
+        # SEED CANDIDATES (06-12, đo bằng --step indoor): warm-start σ nhỏ quanh policy OOD
+        # che mất đáy E ở steer ĐỐI DIỆN (E(-1) min mà CEM ra +0.27 vì 32 sample chỉ rải
+        # quanh mu policy ±2σ). Mỗi iteration luôn chèn 5 ứng viên steer cố định [-1..+1]
+        # (ga = mu hiện tại) → elite bắt được đáy toàn cục, giá chỉ +5 rollout/iter.
+        sweep = torch.linspace(-1.0, 1.0, 5, device=self.device)
         for _ in range(self.n_iter):
             eps = torch.randn(self.n_samples, self.H, 2, device=self.device)
             samp = torch.max(torch.min(mu + sigma * eps, self.high), self.low)
+            seed = torch.stack([sweep.view(5, 1).expand(5, self.H),
+                                mu[:, 1].view(1, self.H).expand(5, self.H)], dim=-1)
+            samp = torch.cat([samp, torch.max(torch.min(seed, self.high), self.low)], 0)
             sc = self.score(z0, s0_raw, goal, samp, domain=domain)
             elite = torch.topk(sc, self.n_elite, largest=False).indices
             mu = samp[elite].mean(0); sigma = torch.maximum(samp[elite].std(0), self.min_std_d)
