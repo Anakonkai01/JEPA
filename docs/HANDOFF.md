@@ -5,6 +5,118 @@
 > [LeWorldModel.md](LeWorldModel.md) · [../robot/android/README.md](../robot/android/README.md) ·
 > [../robot/android/DRIVE_SETUP.md](../robot/android/DRIVE_SETUP.md). Cập nhật file này mỗi khi trạng thái đổi.
 
+## 🏞️ 2026-06-12 CHIỀU — PARK teach&repeat LIVE-RECORD: ĐOẠN THẲNG NGON, CUA GẮT VỠ (cấu trúc) → USER CHỐT PIVOT INDOOR
+
+> Tiếp buổi sáng. Bỏ teach-tay-đứng-chụp (dày, cos loạn). **Ý user (HAY): tự lái 1 vòng quay live →
+> session đó thành route → đem xe về đầu + chạy lại.** Đã build công cụ + chạy thật. Kết: **đoạn thẳng
+> chạy NGON, cua gắt VỠ LẶP LẠI**. User chốt: **về nhà, thu data INDOOR, cooldown train domain-adapt,
+> test+fix trong nhà (dễ iterate), BẮT BUỘC fix được CUA — chỉ đi thẳng = vứt.** Mọi process field đã
+> tắt, GPU free, cd4 vẫn là ckpt tốt nhất.
+
+**★ CÔNG CỤ MỚI `scripts/teach_record.py` (teach&repeat đúng nghĩa, KHÔNG cần REC/upload):**
+PC đang nhận sẵn luồng live của phone → script đọc `live_status.json` (car_xy do inference idle ghi) +
+gọi `POST /api/manual/snap` MỖI khi xe đi `--step-m` mét → dựng route tay DÀY từ chính luồng live
+(cùng tiền-xử-lý + cùng ánh sáng hôm nay = **zero domain-shift**, heading lái-tiến thật). Flow:
+1. `route_web.py` + `inference_loop.py --web` (graph mode, idle stream — KHÔNG cần graph cho việc teach,
+   chỉ cần car_xy từ GPS). 2. CH9≠AUTO, lái 1 vòng remote. 3. `python scripts/teach_record.py <tên>
+   --step-m 1.0` (chạy nền) → snap mỗi ~1m. 4. Stop script (SIGTERM tự `POST /api/routes` lưu descriptor)
+   → route hiện web list. 5. Đem xe VỀ frame 000 + ĐÚNG HƯỚNG teach → CH9 AUTO → ▶ Run. Đã tạo
+   `data/routes/manual/park1` (30 subgoal, ~38m loop). **HƯỚNG đặt xe lúc Run = tối quan trọng** (lệch
+   hướng → cos âm → ghim lái).
+
+**KẾT QUẢ ĐO ĐƯỢC:**
+- **ĐOẠN THẲNG (subgoal 1–5): CHẠY NGON** — cos centered DƯƠNG 0.5–0.86, lái nhẹ đúng hướng, advance
+  mượt. **Live-record teach + cùng ánh sáng = đã chữa lỗi cos-âm/ghim-trái của teach-tay-đứng-chụp.**
+- **CUA GẮT (subgoal 6, quẹo phải): VỠ LẶP LẠI 2 LẦN** — user: "phải quẹo phải mà nó quẹo TRÁI rồi
+  đâm thẳng bụi cỏ". Log: target = subgoal QUANH GÓC xe CHƯA nhìn thấy → **centered-cos ÂM (−0.22)** →
+  world-model không có overlap → CEM chọn **full-TRÁI nhất quán (raw −1.0 mọi tick, KHÔNG phải noise)**
+  → d phình 2.4→5.1m → lạc khỏi route vào bụi. **Đây là ĐIỂM YẾU CẤU TRÚC của route-tay, KHÔNG phải
+  OOD/tuning**: route-tay chỉ ngắm subgoal GPS-gần-nhất, thiếu **lookahead heading-aware** mà GRAPH
+  route có (chạy 40m qua cua hôm 06-11). Target quanh cua = ngoài overlap → energy bừa → lái bừa.
+
+**CÁC FIX/BÀI HỌC GA+POP (cho lần manual repeat sau):**
+- **Continuous >> pulse outdoor** (tái khẳng định 06-11): pulse mỗi nhịp xuất phát từ đứng yên → phải
+  phá ma sát tĩnh → bò 0.1 m/s → stuck-detector báo nhầm → recovery → halt. Liên tục giữ trớn mới đi được.
+- **⚠️ `--kick-throttle`/`--cruise-throttle` GHI ĐÈ `--throttle-cap`** (là floor `max()`, KHÔNG bị
+  clamp lại về cap). Đặt kick 0.16 → vì xe chậm `spd_est < stuck_speed 0.15` nên **kick bắn MỌI tick →
+  ga GHIM 0.16 = MAX, giật khủng khiếp** (user phàn nàn). **LUẬT: kick ≤ cap và cruise ≤ cap.** Để giới
+  hạn CỨNG 0.07–0.08: `--throttle-cap 0.08 --cruise-throttle 0.07 --kick-throttle 0.07` (không gì vượt 0.08).
+- **`--reach-m` (route dày 1m, `--pop-confirm-cos 0` outdoor): đánh đổi khoảng-cách-target.** 1.5 quá
+  CHẶT (xe tới 1.6m, hụt pop trong gang → target dí sát đầu → energy phẳng → CEM lái RANDOM ±1.0 → lạc).
+  2.5 quá XA (target ~3.5m quanh cua → cos thấp → lái +0.8 → scrub đứng im). ~2.0 ở giữa. Gốc: discrete-
+  subgoal không có target liên tục → quá gần=phẳng, quá xa=mất overlap. **Lookahead (dưới) mới là lời giải.**
+- **`--turn-slow 0`** chống scrub (giữ ga trong cua) NHƯNG bỏ luôn phanh-trong-cua → xe quay sai vào bụi
+  mà ga vẫn 0.08 ("vào bụi cỏ còn tăng ga"). ĐỪNG dùng 0; dùng ~0.3 (chậm trong cua mà không stall).
+
+**🔧 FIX CUA (việc must-win, làm trong nhà): THÊM LOOKAHEAD HEADING-AWARE VÀO NHÁNH ROUTE-TAY** của
+`inference_loop.py` (port từ nhánh graph ~L893–933): dựng polyline xy từ các subgoal tay → chiếu xe lên
+(monotonic, chỉ-tiến) → target = subgoal cách ~`--ctrl-lookahead-m` ALONG-TRACK nhưng **DỪNG SỚM nếu
+heading route xoay ≥~50°** → target luôn nằm trong overlap, vào cua tự dày. Ngắm ẢNH subgoal đó qua
+`manual_patch`. Đây là cơ chế đã chứng minh 40m. (Hiện route-tay ngắm `subs[wp_idx]` thuần GPS.)
+
+**KẾ HOẠCH USER CHỐT (pivot indoor — thứ tự làm):**
+1. **Thu data INDOOR**: lái FlySky REC (CH10) trong nhà ~30–60' → `sync_dataset` + `encode_patch` 384
+   → root mới `data/latents_indoor_patch_384` (domain_id=1 towerpro) → cooldown từ cd4-best 1–2 ep
+   (~3–6h) + retrain `policy_prior` (~20'). (Chi tiết: section 06-12 SÁNG §6.)
+2. **Test + fix trong nhà** (dễ iterate nhất: gần, lặp nhanh, đủ sáng). Dùng `teach_record.py` teach
+   route trong nhà (có GPS rác trong nhà → cân nhắc `--graph none` + pop bằng cosine, HOẶC teach ngoài
+   sân gần nhà). **Indoor data chữa OOD; CUA là lỗi RIÊNG (cấu trúc) → vẫn phải thêm lookahead (trên).**
+3. **Lệnh manual repeat sau khi có lookahead**: `--throttle-cap 0.08 --cruise-throttle 0.07
+   --kick-throttle 0.07 --turn-slow 0.3 --no-recover --steer-smooth 0.4 --reach-m 2.0
+   --ctrl-lookahead-m <~1.5> --samples 32 --iters 1 --policy <prior>` (+ checkpoint indoor-cooldown khi xong).
+
+## 🏞️ 2026-06-12 TRƯA — CHẠY THẬT PARK (in-domain, teach&repeat route tay "ngoaiduong") — 4 fix tại trận, 1 vấn đề CÒN MỞ
+
+> Buổi sáng park, đúng điều kiện in-domain. User teach route tay 10 subgoal + Run; Claude theo dõi log debug.
+> **TRẠNG THÁI KHI DỪNG (sắp hết context): inference forward-only + route_web ĐANG CHẠY** (PID
+> 1744619 + 1740130). Logs: `logs/infer_fwd.log` (inference), `logs/route_web_run.log`. PC Tailscale
+> 100.110.165.40:8060; phone 100.64.68.96 stream OK; GPU rảnh trước đó (cd8 paused), cd4 ckpt.
+
+**LỆNH ĐANG CHẠY (forward-only, pulse) — relaunch session sau = đúng lệnh này:**
+```bash
+PYTHONPATH=src python scripts/route_web.py            # web :8060 (graph default, outdoor có GPS)
+PYTHONPATH=src python scripts/inference_loop.py --web --reach-m 6 --stuck-s 3 \
+  --samples 64 --iters 2 --steer-smooth 0 \
+  --checkpoint checkpoints/vjepa_ac_car_cd4/vjepa_ac_car/best.pt \
+  --throttle-cap 0.08 --pulse --pulse-move 0.45 --settle-s 0.8 --pop-confirm-cos 0.5
+```
+
+**1. BUG DOC: lệnh park cũ `--throttle-cap 0.065` + cruise mặc định 0.07 → cruise>cap → ga GHIM 0.07,
+model mất quyền ga** (cảnh báo startup bắt được). Run KỶ LỤC 40m thực ra dùng **cap mặc định 0.08**
+(cruise 0.07 < 0.08). → bỏ `--throttle-cap 0.065`, dùng 0.08.
+
+**2. ✅ FIX "GPS NUỐT SUBGOAL" = `--pop-confirm-cos 0.5` (CHẠY ĐÚNG):** route tay teach DÀY (subgoal
+cách 0.3–3m) << reach-m 6 → vòng `while` pop (inference_loop.py ~L719) pop HẾT subgoal trong 6m
+một tick → nhảy thẳng subgoal xa 8.6m (cos âm = hết overlap) → CEM mù → lái ghim trái → recovery →
+🛑 KẸT. Bật pop-confirm-cos → GPS chưa đủ, ẢNH phải khớp (centered-cos ≥ ngưỡng) mới pop → **tuần tự,
+không nhảy cóc** (log: subgoal1 ccos 0.878 → subgoal2 0.552 → subgoal3 giữ vì 0.171<0.5). HANDOFF
+luôn cảnh báo: ĐỪNG teach subgoal dày < GPS noise ±2m.
+
+**3. ✅ FIX "cứ lùi lùi, đứng 1 chỗ đánh lái": TẮT lùi (`--throttle-min 0`, forward-only):** user xin
+ga lùi 0.09 → tôi đặt `--throttle-min=-0.09` + bỏ policy → ở subgoal cos thấp (energy PHẲNG) CEM vớ
+"lùi" trong nhiễu MỌI nhịp (`ga model -0.090`) → xe lùi miết không bao giờ tới subgoal. Đây đúng lý do
+config 40m CẤM lùi ("no surprise reverse"); lùi thật chỉ để stuck-recovery. → bỏ throttle-min (=0).
+⚠️ **argparse gotcha: `--throttle-min -0.09` CRASH** (đọc -0.09 thành flag, exit 1 không traceback) →
+phải `--throttle-min=-0.09` nếu cần.
+
+**4. Yêu cầu user "dừng-hết quán tính-chụp-rồi quyết định" = `--pulse --settle-s 0.8`** (đi 1 nhịp
+0.45s → ngắt ga → chờ 0.8s hết trớn → lấy frame → quyết định) + bỏ policy + steer-smooth 0 (quyết
+định tươi, không bias lái) + samples 64/iters 2 (pulse chậm không ngại trễ). tick ~1.5s (cem 1.49).
+
+**🔴 VẤN ĐỀ CÒN MỞ (làm trước session sau):** route tay "ngoaiduong" teach **QUÁ DÀY** → subgoal 3
+(`data/routes/manual/ngoaiduong/002.jpg`) **cos max ~0.29, không bao giờ chạm 0.5 → không pop → 60s
+timeout → DỪNG**. centered-cos không phân biệt sạch subgoal sát nhau (0.878/0.552/0.29 nhảy loạn).
+2 đường: (a) **HẠ `--pop-confirm-cos` xuống ~0.3** (rủi ro nuốt lại ở chỗ subgoal kề cos cao); (b)
+**TEACH LẠI route THƯA hơn** (~4–5m/subgoal, chỉ DÀY ở cua gắt, view khác biệt rõ — đúng spacing
+graph-route đã chứng minh 40m). Khuyến nghị (b). Chưa kịp thử forward-only có để xe tới được subgoal 3
+không (lần chạy lùi nó lùi xa nên cos không lên) — session sau Run lại lệnh đang chạy, xem cos có lên
+khi xe BÒ TIẾN tới subgoal không; nếu vẫn kẹt → re-teach.
+
+**Bài học vận hành:** dùng `run_in_background` (KHÔNG `&` — SIGHUP giết); pgrep lọc `grep -v "/bin/bash -c"`
+gây tưởng-nhầm process chết (thực ra sống) → kiểm tra bằng `ps -eo pid,etime,args | grep inference_loop`.
+Kill bằng `pkill -9 -f scripts/inference_loop.py` (không đụng route_web). Mỗi lần đổi flag = relaunch
+(~30s load model) + phone tự reconnect + user bấm ▶ Run lại trên web.
+
 ## 🔍 2026-06-12 SÁNG — AUDIT INFERENCE: "cosine lúc nào cũng cao" = ĐO ĐƯỢC + FIX (centered cos); indoor NGU = OOD ĐO ĐƯỢC; cd8 PAUSE @ ep0
 
 **User báo 8 nghi vấn (indoor chạy "ngu ngu": cosine cao đều, lái lệch/không quẹo, không lùi,
