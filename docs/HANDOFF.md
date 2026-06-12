@@ -13,6 +13,14 @@
 > test+fix trong nhà (dễ iterate), BẮT BUỘC fix được CUA — chỉ đi thẳng = vứt.** Mọi process field đã
 > tắt, GPU free, cd4 vẫn là ckpt tốt nhất.
 
+**⚠️ ĐÍNH CHÍNH QUAN TRỌNG (user, 06-12 tối): CUA CHƯA BAO GIỜ CHẠY ĐƯỢC — chưa 1 lần, bằng BẤT KỲ
+cách nào (graph route LẪN route tay).** Mọi chỗ section cũ ghi "KỶ LỤC 40m tự đi" là TÔ HỒNG: 40m đó
+đâm lề/đâm bụi LIÊN TỤC, user phải chỉnh tay; KHÔNG navigate sạch 1 khúc cua nào. → **Lookahead
+heading-aware KHÔNG phải fix đã chứng minh** (graph route CÓ code đó mà vẫn không qua cua) — coi là
+GIẢ THUYẾT-CẦN-ĐO. **Câu hỏi cốt lõi chưa ai đo: model có ĐỦ KHẢ NĂNG đánh lái đúng qua 1 cua không?**
+(offline `probe_energy` chỉ test ảnh-đích SÁT mặt = dễ; ở cua online = chưa đo bao giờ.) → **ĐO TRƯỚC
+bằng `--step`** (mục FIX CUA) rồi mới chọn hướng, đừng vặn nút theo giả định.
+
 **★ CÔNG CỤ MỚI `scripts/teach_record.py` (teach&repeat đúng nghĩa, KHÔNG cần REC/upload):**
 PC đang nhận sẵn luồng live của phone → script đọc `live_status.json` (car_xy do inference idle ghi) +
 gọi `POST /api/manual/snap` MỖI khi xe đi `--step-m` mét → dựng route tay DÀY từ chính luồng live
@@ -31,8 +39,9 @@ gọi `POST /api/manual/snap` MỖI khi xe đi `--step-m` mét → dựng route 
   đâm thẳng bụi cỏ". Log: target = subgoal QUANH GÓC xe CHƯA nhìn thấy → **centered-cos ÂM (−0.22)** →
   world-model không có overlap → CEM chọn **full-TRÁI nhất quán (raw −1.0 mọi tick, KHÔNG phải noise)**
   → d phình 2.4→5.1m → lạc khỏi route vào bụi. **Đây là ĐIỂM YẾU CẤU TRÚC của route-tay, KHÔNG phải
-  OOD/tuning**: route-tay chỉ ngắm subgoal GPS-gần-nhất, thiếu **lookahead heading-aware** mà GRAPH
-  route có (chạy 40m qua cua hôm 06-11). Target quanh cua = ngoài overlap → energy bừa → lái bừa.
+  OOD/tuning**: route-tay chỉ ngắm subgoal GPS-gần-nhất; ở cua target nằm NGOÀI overlap → energy bừa → lái bừa.
+  (Route-tay thiếu lookahead heading-aware mà graph route có — NHƯNG xem ĐÍNH CHÍNH: graph route có nó
+  mà CŨNG không qua cua, nên thiếu-lookahead không phải nguyên nhân duy nhất / đủ.)
 
 **CÁC FIX/BÀI HỌC GA+POP (cho lần manual repeat sau):**
 - **Continuous >> pulse outdoor** (tái khẳng định 06-11): pulse mỗi nhịp xuất phát từ đứng yên → phải
@@ -52,7 +61,11 @@ gọi `POST /api/manual/snap` MỖI khi xe đi `--step-m` mét → dựng route 
 `inference_loop.py` (port từ nhánh graph ~L893–933): dựng polyline xy từ các subgoal tay → chiếu xe lên
 (monotonic, chỉ-tiến) → target = subgoal cách ~`--ctrl-lookahead-m` ALONG-TRACK nhưng **DỪNG SỚM nếu
 heading route xoay ≥~50°** → target luôn nằm trong overlap, vào cua tự dày. Ngắm ẢNH subgoal đó qua
-`manual_patch`. Đây là cơ chế đã chứng minh 40m. (Hiện route-tay ngắm `subs[wp_idx]` thuần GPS.)
+`manual_patch`. ⚠️ **KHÔNG phải fix đã chứng minh** (xem ĐÍNH CHÍNH — 40m KHÔNG sạch). **ĐO TRƯỚC bằng
+`--step`**: dựng 1 CUA ĐƠN trong nhà → đi từng nhịp, in `E(steer)` 5 nấc → xem ở GIỮA cua model có BAO
+GIỜ chỉ đúng hướng không. CÓ → target/pop sai, lookahead/target-gần có cửa. KHÔNG → lỗi MODEL (cần
+train/domain-adapt, hoặc cách servo-1-ảnh không làm được cua → đổi chiến lược). (Hiện route-tay ngắm
+`subs[wp_idx]` thuần GPS.)
 
 **KẾ HOẠCH USER CHỐT (pivot indoor — thứ tự làm):**
 1. **Thu data INDOOR**: lái FlySky REC (CH10) trong nhà ~30–60' → `sync_dataset` + `encode_patch` 384
