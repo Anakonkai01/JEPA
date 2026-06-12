@@ -98,7 +98,19 @@ offline**: `PYTHONPATH=src python scripts/route_from_session.py data/raw_towerpr
 y như teach live). Lợi hơn teach live: frame 10Hz chọn spacing tuỳ ý, không cần route_web/inference
 chạy lúc teach. **Ràng buộc DUY NHẤT (đo ở Q1): chạy CÙNG BUỔI/cùng ánh sáng với lúc quay.**
 
-**★ Q6 GPU ĐÊM (đang chạy):** (1) eval offline **256/2 vs 32/1 bf16** (`logs/eval_goal_cd4_policy_
+**★ Q6 — PHÁN QUYẾT SÁNG 06-13 (chain đêm chạy trọn, exit 0): GIỮ cd4, cd4_as3 = ablation NEGATIVE
+(số vẫn dùng được cho báo cáo).** cd4_as3 (auto_steps 3, 2 ep, val TF+3step 0.5943→0.5841):
+- eval_ratio (FROZEN, 2000 window): @1 0.745 (= cd4 0.744) / @2 **0.699** (cd4 0.703) / @3 **0.686**
+  (cd4 0.697) → multi-step *prediction* tốt lên thật.
+- NHƯNG goal-reaching 32/1 bf16: d1 0.043 / d2 0.097 / d4 0.105 / d8 **0.212** (cd4 cùng mode:
+  0.038/0.098/0.132/0.172) — d4 lên, d8 xuống, d1 nhích xấu (n=60 không paired, nhiễu lớn);
+- và **probe_energy --turn-only d4 (thước đo CUA mà CEM thực đọc): sign-đúng 54/60, contrast 0.274
+  — THUA cd4 (58/60, 0.37)**. Diễn giải: train rollout sâu hơn làm dự đoán mượt/trung bình hoá →
+  landscape energy theo action PHẲNG đi quanh cua. → Theo luật B5: **ckpt deploy giữ nguyên
+  `checkpoints/vjepa_ac_car_cd4/vjepa_ac_car/best.pt`** (run_infer.sh không đổi). Bài học cho B/C:
+  auto_steps cao hơn KHÔNG miễn phí — phải soi cả action-sensitivity, không chỉ val/ratio.
+
+**★ Q6 GPU ĐÊM (đã chạy):** (1) eval offline **256/2 vs 32/1 bf16** (`logs/eval_goal_cd4_policy_
 s256i2.log`, `_s32i1_bf16.log`) — flag `--bf16` MỚI trong `eval_goal_reaching_ac.py` (khớp inference;
 fp32 OOM @256). (2) **Cooldown `cd4_as3`** (`configs/train/vjepa_ac_car_cd4_as3.yaml` + chain
 `scripts/overnight_20260612.sh`): **auto_steps 2→3** từ cd4-best, 2 ep ≈ 6–7h — căn cứ: contrast
