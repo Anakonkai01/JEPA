@@ -1029,10 +1029,11 @@ def main():
                     # torque; tier spd_est đã chặn kick giữa cua). Model ra ga ÂM (--throttle-min
                     # <0 = muốn lùi) → floors/kick đứng ngoài, không đè quyết định model.
                     # Nhịp rời rạc (--pulse/--step): MỖI nhịp xuất phát từ đứng yên (settle chờ
-                    # hết trớn) → sàn ga phải thắng MA SÁT TĨNH cả khi đánh lái (scrub còn nặng
-                    # hơn) — giảm-sàn-theo-cua chỉ dành cho chạy liên tục đang lăn (06-12: sàn nhà
-                    # user đo cần >0.07 mới lăn; cruise là số ma-sát-LĂN, đặt theo mặt sàn).
-                    floor_k = 1.0 if (args.step or args.pulse) else \
+                    # hết trớn) → sàn ga phải thắng MA SÁT TĨNH, và đánh lái càng gắt càng cần
+                    # LỰC HƠN (scrub bánh trước — chạy thật 06-12: full-lock @0.08 không nhúc
+                    # nhích dù đi thẳng @0.08 lăn được) → sàn TĂNG theo |steer|: ×1 đi thẳng,
+                    # ×1.5 full-lock (cruise 0.08 → 0.12). Giảm-sàn-theo-cua chỉ cho chạy liên tục.
+                    floor_k = (1.0 + 0.5 * min(1.0, abs(steer))) if (args.step or args.pulse) else \
                         max(0.6, 1.0 - args.turn_slow * min(1.0, abs(steer)))
                     if throt >= 0.0:
                         if args.floor_no_gps:
