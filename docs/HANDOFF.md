@@ -5,6 +5,83 @@
 > [LeWorldModel.md](LeWorldModel.md) · [../robot/android/README.md](../robot/android/README.md) ·
 > [../robot/android/DRIVE_SETUP.md](../robot/android/DRIVE_SETUP.md). Cập nhật file này mỗi khi trạng thái đổi.
 
+## 🔍 2026-06-12 SÁNG — AUDIT INFERENCE: "cosine lúc nào cũng cao" = ĐO ĐƯỢC + FIX (centered cos); indoor NGU = OOD ĐO ĐƯỢC; cd8 PAUSE @ ep0
+
+**User báo 8 nghi vấn (indoor chạy "ngu ngu": cosine cao đều, lái lệch/không quẹo, không lùi,
+nghi quán tính/trễ, nghi cap/floor đè model, nghi history, reach-check vs Meta) → audit + đo + fix:**
+
+**1. "COSINE NÀO CŨNG CAO" — đúng, đo được, ĐÃ FIX bằng CENTERED COSINE (`scripts/probe_reach.py` MỚI):**
+cos pooled THÔ trên 2 route indoor (test_nha 10 ảnh / test_nha_2 8 ảnh): ảnh-kề 0.982/0.985,
+xa-nhau-nhất vẫn 0.940/0.953 → dải động ~0.04, ngưỡng 0.97/0.999 đều vô nghĩa (pooled V-JEPA có
+thành-phần-chung khổng lồ "đây là ảnh trong nhà"). **Fix: TRỪ MEAN pooled các subgoal route rồi mới
+cos** → kề ~+0.5 / cách-2 ~0.0 / xa ~−0.4, nearest-neighbor đúng 10/10 + 7/8. Đã vào
+`inference_loop.py` route tay (route ≥2 ảnh tự dùng centered; 1 ảnh rơi về cos thô): **defaults MỚI
+`--manual-reach-cos 0.80 / --manual-near-cos 0.40`, margin luật-tương-đối 0.10** — ⚠️ ĐỪNG truyền
+ngưỡng thang cũ (0.97/0.999) nữa. E2E fake-phone pass: nhìn SAI chỗ cos −0.74/−0.48, đúng chỗ 1.000,
+pop 3/3 + 🏁. (L1 patch-token cũng probe: tách được nhưng kém ccos; energy CEM giữ nguyên L1.)
+
+**2. INDOOR "LÁI NGU/LỆCH PHẢI KHI CẦN QUẸO TRÁI" = MODEL OOD — ĐO ĐƯỢC, không phải config:**
+`probe_energy --frames-dir` trên 2 route nhà (log `logs/probe_indoor_*.log`, chạy 02:11):
+**median contrast 0.045/0.056 vs park ban ngày 0.39 (≈8× phẳng hơn)**, argminE đổi dấu loạn xạ
+giữa các ảnh kề nhau → landscape energy indoor GẦN PHẲNG, CEM bám noise; policy prior cũng BC từ
+park. Tăng samples/iters KHÔNG cứu (A2 đã đo @32/1+policy ≈ @64/2+policy); steering box vốn
+KHÔNG cap ([-1,1] full). → Indoor muốn chính xác = **THU DATA INDOOR** (xem mục 6).
+
+**3. NGHI "CAP/FLOOR ĐÈ MODEL" — đúng MỘT NỬA, 2 bug thật đã fix:**
+- **Lệnh user đang chạy có `--cruise-throttle 0.07 > --throttle-cap 0.05` → sàn ĐÈ trần: ga hằng
+  0.07 MỌI tick, model mất 100% quyền ga** (đâm thẳng không hãm ở cua là phải). Giờ startup in
+  ⚠️ cảnh báo; indoor đúng là cap 0.05 / cruise 0.04.
+- **Floor đè turn_slow** (đã ghi nhận 06-11, nay fix): floor giờ TURN-AWARE
+  `floor = cruise·max(0.6, 1−turn_slow·|steer|)` → vào cua sàn ga tự giảm (chặn dưới 0.6× để còn lăn);
+  kick giữ nguyên lực (đề-pa). Steering KHÔNG bị cap ở đâu cả (EMA user đã tắt =0).
+
+**4. "SAO KHÔNG TỰ LÙI" → `--throttle-min` MỚI (default 0 = như cũ):** đặt âm (vd −0.11) cho CEM
+box ga = [min, cap] → **model tự chọn lùi** (thay lùi-mù hardcode); floors/kick tự đứng ngoài khi
+model ra ga âm. Lưu ý kickstart policy lúc đứng-yên vẫn ép mu tiến → lùi chủ yếu khả thi khi đang lăn.
+
+**5. NGHI "QUÁN TÍNH/TRỄ — frame cũ lúc ra quyết định xe đã dịch" — ĐÚNG hiện tượng, định lượng:**
+tuổi frame lúc action chạm bánh ≈ δ_cam 0.10 + uplink ~0.05-0.1 + encode 0.03 + CEM 0.33 ≈ **0.5s**;
+CEM nhìn 4×0.22 = 0.88s tương lai, action đầu bị giữ ~0.4s (1 tick). Đi 0.5 m/s → lệch ~0.25m so
+với frame — khớp quan sát "chạy cực chậm thì ổn hơn hẳn". Thuốc có sẵn: **`--pulse`** (chạy 1 nhịp
+→ NGẮT GA trong lúc tính → frame plan gần tĩnh) — indoor ưu tiên chính xác NÊN BẬT;
+và **`--step` MỚI** = pulse bấm tay để debug (mục 7).
+
+**6. "TRAIN TIẾP DOMAIN TRONG NHÀ?" — khả thi, đây là fix THẬT cho indoor:** lái FlySky thu
+~30-60' session TRONG NHÀ (CH10 REC như cũ) → `sync_dataset` + `encode_patch` 384 → thêm root
+`data/latents_indoor_patch_384` (servo TowerPro → domain_id=1 như cũ) → cooldown kiểu cd4 từ
+cd4-best 1-2 ep (~3-6h) + retrain policy_prior (~20'). Encoder frozen nên chỉ predictor+policy cần
+data; graph/GPS không cần (route tay). Làm được trong 1 ngày.
+
+**7. TOOLING DEBUG MỚI trong `inference_loop.py`: `--step`** — mỗi tick: neutral → in `model steer/ga`
+vs `ÁP steer/ga` (thấy floor/EMA/gain làm gì) + **quét E(steer) 5 nấc sống tại tick đó** (thấy CEM
+"nghĩ gì") → CHỜ ENTER mới áp đúng 1 nhịp `--pulse-move` rồi coast; `s`=skip, `q`=bỏ route. Log
+thường cũng in thêm `(ga model ±x.xxx)`. Fix kèm: `--help` hết crash (escape `%%` help steer-gain).
+
+**8. HISTORY/REACH vs META — RÀ LẠI, KHÔNG PHẢI THỦ PHẠM:** inference ta cấp **1 frame context**
+(z0=(1,N,D)) — Meta MPC cũng 1 frame (`mpc_utils.py:48`); `history=2` chỉ là cửa sổ trượt khi
+rollout tự hồi quy, khớp pattern train block-causal (temporal_pos re-base về 0 nhất quán train↔infer
+— đã soi `vjepa2_ac_car.py rollout`). Reach-check: Meta KHÔNG có detector "đã tới goal" online
+(episode chạy đủ N bước rồi đo offline) — GPS-reach outdoor + ccos indoor của ta là phần TỰ CHẾ,
+nay đã đo+fix (mục 1). "Meta chính xác cao" = tay máy quasi-static in-domain, không quán tính,
+không domain-shift — không so trực tiếp được.
+
+**9. cd8 (T=8, auto_steps 3) PAUSE @ ep0 gstep 3051/4509 (~68% ep0 sau 6h20' → ~9.3h/ep, 3 ep ≈ 28h):**
+2 lần OOM trước khi chạy được (batch 64→40 + grad-ckpt + expandable_segments); `last.pt` lưu sạch
+09:17, resume = chạy lại đúng lệnh (tmux `train_cd8`, `resume: auto`). **Khuyến nghị: ƯU TIÊN data
+indoor (mục 6) trước cd8** — cd8 là ablation B5 "gain nhỏ-vừa nếu có", 28h GPU không giải quyết
+OOD indoor. Diff `train_ac_car.py` (auto_steps generic) + config cd8 đã commit.
+
+**LỆNH INDOOR MỚI (thay lệnh cũ — bỏ manual-reach-cos 0.999, sửa cruise>cap, thêm pulse):**
+```bash
+PYTHONPATH=src python scripts/route_web.py --graph none          # web :8060
+PYTHONPATH=src python scripts/inference_loop.py --web --graph none \
+  --checkpoint checkpoints/vjepa_ac_car_cd4/vjepa_ac_car/best.pt \
+  --policy checkpoints/policy_prior/best.pt --samples 32 --iters 1 \
+  --floor-no-gps --throttle-cap 0.05 --cruise-throttle 0.04 --steer-smooth 0 --pulse
+# debug "tại sao nó quyết định vậy": thêm --step (ENTER từng nhịp, in E(steer) sống)
+# ngưỡng pop: default mới 0.80/0.40 (thang centered) — nhìn `cos` trên log/web rồi tinh chỉnh
+```
+
 ## 📸 2026-06-12 — TEACH & REPEAT: route TAY tự chụp trên web (không cần graph/GPS → indoor/chỗ mới) + 6 fix UI
 
 **Yêu cầu user: tự lái remote + chụp subgoal tại chỗ → tạo route ngay, khỏi phụ thuộc ảnh data cũ**

@@ -1,0 +1,43 @@
+# COOLDOWN T=8 từ cd4 best.pt (Phase B, HANDOFF 2026-06-11).
+# horizon 8 (~1.6s context) + LR decay; batch 32 vì seq ~2× so với T=4.
+# So sánh B5: giữ cd8 CHỈ KHI d=4/8 goal-reaching cải thiện mà d=1 không xấu.
+#   PYTORCH_ALLOC_CONF=expandable_segments:True PYTHONPATH=src python scripts/train_ac_car.py \
+#     --config configs/train/vjepa_ac_car_cd8.yaml configs/model/vjepa_ac_car.yaml
+device: cuda
+seed: 0
+
+wandb:
+  enabled: True
+  project: rc-car-jepa
+  group: vjepa_ac_car_cd8
+
+data:
+  roots:
+    - {patch_dir: data/latents_towerpro_patch_384, raw_dir: data/raw_towerpro, domain_id: 1}
+    - {patch_dir: data/latents_kds_patch_384,      raw_dir: data/raw_kds,      domain_id: 0}
+  val_frac: 0.2
+  horizon: 8
+  frame_stride: 2
+  max_gap: 2
+  state_columns: [speed, gx, gy, gz, ax, ay, az, rx, ry, rz, prev_steer, prev_throttle]
+  action_scale: [1.0, 6.67]
+
+train:
+  epochs: 3
+  batch_size: 40
+  gradient_checkpointing: true
+  lr: 7.0e-5
+  weight_decay: 1.0e-4
+  warmup_frac: 0.0
+  num_workers: 4
+  patience: 3
+  min_delta: 1.0e-4
+  compile: false
+  auto_steps: 3
+  init_from: checkpoints/vjepa_ac_car_cd4/vjepa_ac_car/best.pt
+  resume: auto
+  save_steps: 600
+  out_dir: checkpoints/vjepa_ac_car_cd8
+
+eval:
+  horizon: 3

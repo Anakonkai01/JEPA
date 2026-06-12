@@ -314,7 +314,18 @@ def main():
     ap.add_argument("--elite", type=int, default=12)
     ap.add_argument("--iters", type=int, default=2, help="CEM iterations (giảm = nhanh hơn)")
     ap.add_argument("--throttle-cap", type=float, default=0.08,
-                    help="ga TỐI ĐA cho lần chạy (an toàn): box throttle = [0, cap], forward-only")
+                    help="ga TỐI ĐA cho lần chạy (an toàn): box throttle = [throttle-min, cap]")
+    ap.add_argument("--throttle-min", type=float, default=0.0,
+                    help="ĐÁY box ga CEM (mặc định 0 = cấm lùi). Đặt âm (vd -0.11) cho MODEL được "
+                         "chọn lùi — recovery đến từ model thay vì lùi-mù hardcode. Khi model ra ga "
+                         "âm, floors/kick tự đứng ngoài (không đè lệnh lùi). Lưu ý: kickstart policy "
+                         "lúc đứng-yên vẫn ép mu tiến → lùi chủ yếu khả thi khi đang lăn. "
+                         "Controller clamp cứng −0.16; ESC Mode 3 lùi trực tiếp.")
+    ap.add_argument("--step", action="store_true",
+                    help="DEBUG TỪNG NHỊP: mỗi tick in quyết định CEM (steer model vs sau xử lý, "
+                         "quét E(steer) 5 nấc) rồi CHỜ ENTER mới áp đúng 1 nhịp --pulse-move giây "
+                         "(xe neutral trong lúc chờ). s=skip tick, q=bỏ route. Xem 'tại sao nó "
+                         "quyết định vậy' tại trận.")
     ap.add_argument("--subgoal-spacing", type=float, default=4.0, help="metres between subgoals")
     ap.add_argument("--ctrl-lookahead-m", type=float, default=2.5,
                     help="target ẢNH cho CEM = node trên route polyline cách xe ngần này (mét, "
@@ -328,7 +339,7 @@ def main():
     ap.add_argument("--steer-gain", type=float, default=1.0,
                     help="NHÂN steer sau EMA trước khi gửi (clamp ±1) — chữa 'đánh lái yếu' khi model/"
                          "policy ra góc nhỏ (BC park thiên góc bé; indoor OOD). 1.3-1.5 = mạnh hơn "
-                         "30-50%. Lưu ý: gain làm lệch so với action model tin → tăng nhỏ từng nấc.")
+                         "30-50%%. Lưu ý: gain làm lệch so với action model tin → tăng nhỏ từng nấc.")
     ap.add_argument("--turn-slow", type=float, default=0.5,
                     help="cua thì giảm ga: throt *= (1 - k·|steer|). 0=tắt")
     ap.add_argument("--stale-s", type=float, default=0.4,
@@ -341,15 +352,18 @@ def main():
                     help="node localize cách xe (GPS) xa hơn ngần này → coi như LẠC → neutral (đừng lái theo route bịa)")
     ap.add_argument("--reach-m", type=float, default=4.0,
                     help="tới đích khi GPS cách goal < ngần này (mét). Robust hơn cosine ở park tự-giống.")
-    ap.add_argument("--manual-reach-cos", type=float, default=0.97,
+    ap.add_argument("--manual-reach-cos", type=float, default=0.80,
                     help="route TAY (teach&repeat): subgoal không có GPS (indoor) coi là ĐẠT khi cosine "
-                         "pooled-latent(view hiện tại, ảnh subgoal) ≥ ngưỡng này. Log in cos mỗi tick "
-                         "để tune; park tự-giống thì đừng dựa cosine (dùng GPS).")
-    ap.add_argument("--manual-near-cos", type=float, default=0.95,
+                         "≥ ngưỡng này. ⚠️ Từ 06-12 cosine là CENTERED (trừ mean pooled các subgoal "
+                         "route, cần ≥2 ảnh): thang mới ≈ tại-chỗ ≳0.8 / ảnh kề ~+0.5 / xa <0 "
+                         "(probe_reach đo indoor; cos THÔ cũ saturate 0.89–0.99 'lúc nào cũng cao'). "
+                         "Route 1 ảnh rơi về cos thô (thang cũ ~0.97). Log in cos mỗi tick để tune; "
+                         "park tự-giống thì đừng dựa cosine (dùng GPS).")
+    ap.add_argument("--manual-near-cos", type=float, default=0.40,
                     help="route TAY không GPS, luật pop thứ 2: ĐÃ TỚI GẦN (cos ≥ near) mà subgoal KẾ "
-                         "trông gần hơn RÕ RỆT (cos_next > cos + 0.02) → coi như đã qua. Chống kẹt khi "
-                         "ngưỡng tuyệt đối không bao giờ đạt (lệch sáng). Park alias nặng (đo e2e 06-12: "
-                         "cos giữa các CHỖ KHÁC NHAU 0.94–0.97) → outdoor đừng dựa cosine, dùng GPS. 0 = tắt.")
+                         "trông gần hơn RÕ RỆT (margin 0.10 thang centered / 0.02 thang thô) → coi như "
+                         "đã qua. Chống kẹt khi ngưỡng tuyệt đối không bao giờ đạt (lệch sáng). "
+                         "Outdoor đừng dựa cosine, dùng GPS. 0 = tắt.")
     ap.add_argument("--manual-timeout-s", type=float, default=60.0,
                     help="route TAY: 1 subgoal quá ngần này giây không đạt → DỪNG route chờ lệnh web "
                          "(an toàn indoor: không GPS = không có stuck-recovery). 0 = tắt.")
@@ -413,6 +427,11 @@ def main():
         ap.error("opencv-python required (pip install opencv-python)")
     if args.web and args.control_only:
         ap.error("--web đi với full-nav (cần graph) — không dùng cùng --control-only")
+    if args.cruise_throttle > args.throttle_cap > 0:
+        print(f"[infer] ⚠️ --cruise-throttle {args.cruise_throttle:g} > --throttle-cap "
+              f"{args.throttle_cap:g}: sàn ga ĐÈ trần ga model MỌI tick → ga hằng "
+              f"{args.cruise_throttle:g}, model mất quyền điều ga (đâm thẳng không hãm ở cua). "
+              f"Indoor nên cap 0.05 / cruise 0.04.", flush=True)
 
     # --- model + normalisation ---
     ckpt = torch.load(args.checkpoint, map_location=args.device, weights_only=False)
@@ -440,7 +459,7 @@ def main():
     dyn = fit_dynamics(cfg, args.checkpoint, speed_idx, yaw_idx, args.dt)
     planner = CEMPlannerAC(model, dyn, state_mean, state_std, action_scale=ascale,
                            horizon=args.horizon, n_samples=args.samples, n_elite=args.elite,
-                           n_iter=args.iters, throttle_min=0.0,           # forward-only (no surprise reverse)
+                           n_iter=args.iters, throttle_min=args.throttle_min,  # default 0 = forward-only
                            throttle_max=args.throttle_cap, warm_std=args.warm_std,
                            prev_action_idx=prev_idx, domain=domain, device=args.device)
 
@@ -572,6 +591,7 @@ def main():
             pos_hist = []                                 # (t, xy) cho stuck-detector dịch chuyển
             # route TAY: dwell cosine, đồng hồ timeout per-subgoal, route đang bám (reset khi giao mới)
             manual_hits, manual_last_idx, manual_t0, last_rt_obj = 0, -1, time.time(), None
+            man_center, man_vecs = None, None             # centered-cosine route tay (probe_reach 06-12)
             last_nf_status = 0.0                          # throttle ghi status "no-frame" (1Hz)
             try:
                 while reader.alive:
@@ -640,12 +660,33 @@ def main():
                         if meta.get("lat", 0) and meta.get("lon", 0):
                             gps = (float(meta["lat"]), float(meta["lon"]))
                         car_xy = graph.to_xy(*gps) if (graph is not None and gps is not None) else None
+                        subs = rt["subgoals"]
                         if rt is not last_rt_obj:             # route mới giao → reset dwell/đồng hồ
                             last_rt_obj, manual_hits, manual_last_idx = rt, 0, -1
-                        subs = rt["subgoals"]
-                        navn = nav / (np.linalg.norm(nav) + 1e-8)
+                            # CENTERED cosine (probe_reach 06-12): cos pooled THÔ saturate trong nhà
+                            # (mọi cặp 0.89–0.99, kề-vs-xa chênh ~0.04 → "cosine nào cũng cao");
+                            # TRỪ MEAN pooled các subgoal route rồi mới cos → kề ~+0.5 / xa ~−0.4,
+                            # nearest-neighbor đúng 10/10. Cần ≥2 ảnh; 1 ảnh rơi về cos thô cũ.
+                            man_center, man_vecs = None, None
+                            try:
+                                _pools = [manual_patch(sg["img"])[0].float().cpu().numpy()
+                                          for sg in subs]
+                                if len(_pools) >= 2:
+                                    man_center = np.mean(_pools, axis=0).astype(np.float32)
+                                    man_vecs = [(p - man_center)
+                                                / (np.linalg.norm(p - man_center) + 1e-8)
+                                                for p in _pools]
+                            except FileNotFoundError:
+                                pass                          # ảnh thiếu → nhánh dưới báo lỗi như cũ
+                        if man_center is not None:
+                            _v = nav - man_center
+                            navn = _v / (np.linalg.norm(_v) + 1e-8)
+                        else:
+                            navn = nav / (np.linalg.norm(nav) + 1e-8)
                         try:
                             def _mcos(i):                     # cosine(view hiện tại, subgoal i)
+                                if man_vecs is not None and i < len(man_vecs):
+                                    return float(navn @ man_vecs[i])
                                 return float(navn @ manual_patch(subs[i]["img"])[2])
 
                             # pop GPS: ảnh chụp có thể dày hơn reach-m → pop hết các sub đã trong bán kính
@@ -663,11 +704,12 @@ def main():
                                     gps_dist = float(np.linalg.norm(car_xy - np.asarray(sub["xy"], np.float32)))
                                 else:
                                     cos_next = _mcos(web.wp_idx + 1) if web.wp_idx + 1 < len(subs) else None
-                                    # margin 0.02: park đo được cos giữa các chỗ KHÁC nhau lệch ~0.01-0.03
-                                    # → margin nhỏ pop oan (e2e 06-12); cần "gần hơn RÕ RỆT" mới tin
+                                    # margin "gần hơn RÕ RỆT": thang centered rộng (kề ~0.5/xa ~−0.4)
+                                    # → 0.10; thang thô (route 1 ảnh) giữ 0.02 như đo park e2e 06-12
+                                    mg = 0.10 if man_vecs is not None else 0.02
                                     hit = cos_v >= args.manual_reach_cos or (
                                         args.manual_near_cos > 0 and cos_next is not None
-                                        and cos_v >= args.manual_near_cos and cos_next > cos_v + 0.02)
+                                        and cos_v >= args.manual_near_cos and cos_next > cos_v + mg)
                                     manual_hits = manual_hits + 1 if hit else 0
                                     if manual_hits >= 2:      # 2 tick liên tiếp — chống alias 1 frame
                                         nxt = f" next{cos_next:.3f}" if cos_next is not None else ""
@@ -897,6 +939,7 @@ def main():
                         raw_steer, throt = planner.plan(z0, s0, target_tokens, mu_init=mu0)
                     t_plan = time.time()
                     raw_steer, throt = float(raw_steer), float(throt)
+                    model_throt = throt                    # ga model TRƯỚC floors (log/--step)
                     # EMA làm mượt lái (chống zigzag/văng đường) + cua thì giảm ga
                     steer = args.steer_smooth * prev_steer + (1.0 - args.steer_smooth) * raw_steer
                     prev_steer = steer                     # EMA giữ giá trị CHƯA gain (không kép)
@@ -914,18 +957,64 @@ def main():
                     # xen kẽ → không tích trớn → dịch <0.6m/3s → recovery v2 lùi oan ("lùi quài").
                     # Tier chọn theo spd_est (max doppler/GPS-displacement) — doppler 0.00 khi bò
                     # từng xếp xe-đang-lăn vào tier kick → surge 0.12 giữa cua.
-                    if args.floor_no_gps:
-                        # indoor: CHỈ floor cruise, CẤM kick — đặt TRƯỚC nhánh GPS vì trong nhà
-                        # phone vẫn hay còn GPS rác (lat≠0 gần cửa sổ) → từng kích kick 0.12
-                        # trên sàn trơn thay vì cruise 0.04 (chạy thật 06-12)
-                        throt = max(throt, args.cruise_throttle)
-                    elif float(meta.get("lat", 0) or 0) != 0:
-                        if spd_est < args.stuck_speed:
-                            throt = max(throt, args.kick_throttle); kick = True
-                        elif spd_est < args.cruise_speed:
-                            throt = max(throt, args.cruise_throttle)
+                    # Floor TURN-AWARE (06-12): trước đây floor đè turn_slow → vào cua vẫn ăn
+                    # nguyên cruise (turn_slow thành code chết khi floor binding) = "không hãm ở
+                    # cua, đâm thẳng lên lề". Giờ sàn ga cũng giảm theo |steer|, chặn dưới 0.6×
+                    # để vẫn lăn (ma sát lăn < ma sát tĩnh). Kick giữ NGUYÊN lực (đề-pa cần đủ
+                    # torque; tier spd_est đã chặn kick giữa cua). Model ra ga ÂM (--throttle-min
+                    # <0 = muốn lùi) → floors/kick đứng ngoài, không đè quyết định model.
+                    floor_k = max(0.6, 1.0 - args.turn_slow * min(1.0, abs(steer)))
+                    if throt >= 0.0:
+                        if args.floor_no_gps:
+                            # indoor: CHỈ floor cruise, CẤM kick — đặt TRƯỚC nhánh GPS vì trong nhà
+                            # phone vẫn hay còn GPS rác (lat≠0 gần cửa sổ) → từng kích kick 0.12
+                            # trên sàn trơn thay vì cruise 0.04 (chạy thật 06-12)
+                            throt = max(throt, args.cruise_throttle * floor_k)
+                        elif float(meta.get("lat", 0) or 0) != 0:
+                            if spd_est < args.stuck_speed:
+                                throt = max(throt, args.kick_throttle); kick = True
+                            elif spd_est < args.cruise_speed:
+                                throt = max(throt, args.cruise_throttle * floor_k)
+                    if args.step:
+                        # DEBUG TỪNG NHỊP (yêu cầu 06-12): neutral → in quyết định + landscape
+                        # E(steer) 5 nấc tại tick này → chờ ENTER mới áp đúng 1 nhịp rồi coast.
+                        emit(0.0, 0.0)
+                        sw = [-1.0, -0.5, 0.0, 0.5, 1.0]
+                        ga = max(abs(throt), 0.02)
+                        cand = torch.tensor([[s_, ga] for s_ in sw], dtype=torch.float32,
+                                            device=args.device).unsqueeze(1) \
+                                    .expand(-1, args.horizon, -1).contiguous()
+                        with torch.autocast("cuda", dtype=torch.bfloat16,
+                                            enabled=args.device.startswith("cuda")):
+                            es = planner.score(z0, s0, target_tokens, cand).tolist()
+                        emin = min(es)
+                        bar = "  ".join(f"{s_:+.1f}:{e:.4f}{'◄' if e == emin else ''}"
+                                        for s_, e in zip(sw, es))
+                        print(f"[step] {tag}\n"
+                              f"[step] model: steer {raw_steer:+.2f} ga {model_throt:+.3f} | "
+                              f"ÁP (sau EMA/gain/floor): steer {steer:+.2f} ga {throt:+.3f}\n"
+                              f"[step] E(steer | ga {ga:.2f}): {bar}  (thấp = CEM thích)", flush=True)
+                        if web is not None:
+                            web.frame(rgb)
+                            web.status(state="step", seq=seq)
+                        try:
+                            ans = input("[step] ENTER=áp 1 nhịp | s=skip | q=bỏ route > ").strip().lower()
+                        except EOFError:
+                            ans = "s"
+                        if ans == "q":
+                            if web is not None:
+                                web.route = None
+                            prev_steer = 0.0
+                            continue
+                        if ans == "s":
+                            continue
+                        hold(steer, throt, args.pulse_move)   # áp đúng 1 nhịp
+                        emit(steer, 0.0)                      # coast (giữ lái) — frame kế gần tĩnh
+                        continue
+
                     emit(steer, throt)                                 # once (phone keeps-alive) or holder (dongle)
                     print(f"[infer] seq{seq} {tag} steer{steer:+.2f}(raw{raw_steer:+.2f}) throt{throt:+.2f} "
+                          f"(ga model {model_throt:+.3f}) "
                           f"({time.time()-t0:.2f}s enc{t_enc-t0:.2f} nav{t_tgt-t_enc:.2f} "
                           f"cem{t_plan-t_tgt:.2f})", flush=True)
 

@@ -62,18 +62,20 @@ def _save_ckpt(path: Path, payload: dict):
     tmp.replace(path)
 
 
-def _losses(model, b, device):
-    """L1 teacher-forcing + 2-step rollout (grad through one recurrent step)."""
+def _losses(model, b, device, auto_steps: int = 2):
+    """L1 teacher-forcing + ``auto_steps``-step autoregressive rollout."""
     z = b["tokens"].to(device); a = b["actions"].to(device); s = b["states"].to(device)
     out = model(z, a, s)                                        # (B,T,N,D)
     tf = F.l1_loss(out[:, :-1], z[:, 1:])
-    # 2-step rollout: predict z[:,1] from z[:,:1], feed back, predict z[:,2]
-    if z.size(1) >= 3:
-        p1 = model(z[:, :1], a[:, :1], s[:, :1])[:, -1:]        # ẑ1
-        p1 = F.layer_norm(p1, (p1.size(-1),))                   # re-LN fed-back rep (= rollout())
-        ctx = torch.cat([z[:, :1], p1], dim=1)                  # (B,2,N,D)
-        p2 = model(ctx, a[:, :2], s[:, :2])[:, -1:]             # ẑ2
-        ro = F.l1_loss(p2[:, 0], z[:, 2])
+    if z.size(1) > auto_steps:
+        ctx = z[:, :1]
+        pred = None
+        for k in range(1, auto_steps + 1):
+            pred = model(ctx, a[:, :k], s[:, :k])[:, -1:]
+            pred = F.layer_norm(pred, (pred.size(-1),))           # re-LN (= rollout())
+            if k < auto_steps:
+                ctx = torch.cat([ctx, pred], dim=1)
+        ro = F.l1_loss(pred[:, 0], z[:, auto_steps])
     else:
         ro = torch.zeros((), device=device)
     return tf + ro, tf.detach(), ro.detach()
@@ -254,6 +256,8 @@ def train(cfg: dict) -> dict:
         return p
 
     save_steps = tcfg.get("save_steps")
+    auto_steps = int(tcfg.get("auto_steps", 2))
+    print(f"[ac_car] auto_steps rollout = {auto_steps}", flush=True)
     for epoch in range(start_ep, tcfg["epochs"]):
         train_sampler.set_epoch(epoch)
         model.train(); t0 = time.time(); tl = 0.0
@@ -263,7 +267,7 @@ def train(cfg: dict) -> dict:
                 g["lr"] = lr
             opt.zero_grad(set_to_none=True)
             with torch.autocast("cuda", dtype=torch.bfloat16, enabled=use_amp):
-                loss, tf, ro = _losses(model, b, device)
+                loss, tf, ro = _losses(model, b, device, auto_steps=auto_steps)
             loss.backward(); opt.step()
             tl += loss.item()
             if run and gstep % 50 == 0:
@@ -283,7 +287,7 @@ def train(cfg: dict) -> dict:
         with torch.no_grad():
             for b in val_dl:
                 with torch.autocast("cuda", dtype=torch.bfloat16, enabled=use_amp):
-                    loss, _, _ = _losses(model, b, device)
+                    loss, _, _ = _losses(model, b, device, auto_steps=auto_steps)
                 vl += loss.item()
         vl /= max(1, len(val_dl))
         if run:
