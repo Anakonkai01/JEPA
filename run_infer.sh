@@ -39,9 +39,10 @@ PYTHONPATH=src ~/miniforge3/envs/ai/bin/python -u scripts/inference_loop.py \
   2>&1 | tee -a "$LOG"
 
 # ── KNOB (sửa qua ENV: VD `THR=0.12 LOOK=0.6 bash run_infer.sh`) ─────────────────
-#  SMP/ITERS  256/2 (proven, ~5.5s/tick) — nhiều sample CẮT đuôi full-lock (energy phẳng
-#             → ít sample bốc ±1). Ga THẤP nên đi-mù 5.5s vẫn dịch ít. Nhanh hơn: SMP=64
-#             (~1.6s) — chỉ dùng nếu đuôi full-lock OK (xem logs/meas_tail đêm 06-14).
+#  SMP/ITERS  256/2 = field-PROVEN (06-12, ~5.5s/tick). NHƯNG meas_tail 06-14 ĐO: samples
+#             16→256 KHÔNG giảm variance/full-lock-tail (giả thuyết "nhiều-sample cắt đuôi" SAI)
+#             → ⭐ THỬ NGAY `SMP=64` (~1.6s, offline ≈ 256/2 nhưng ít lái-mù 3.4× → closed-loop
+#             nên TỐT HƠN). Default để 256 cho an toàn (đúng config đã thắng); 64 là knob đầu.
 #  LOOK=0.5   ⭐ NGẮN cho cua: target gần → còn overlap → đòi quẹo. 06-13 để 2.0 → vào cua
 #             ngắm subgoal quanh-góc (out-of-overlap) → CEM ra ~0 (thẳng) → đi thẳng rồi chết.
 #  POP=0.5    pop-confirm-cos. Latch + geo-confirm (<1.5m) đã fix pop-stuck (06-12 đợt-2).
