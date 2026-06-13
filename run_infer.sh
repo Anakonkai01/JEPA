@@ -7,29 +7,34 @@ cd /home/pc5070ti/workspace/JEPA
 mkdir -p logs
 LOG="logs/infer_$(date +%Y%m%d_%H%M%S).log"
 echo "[run_infer] log → $LOG"
-echo "[run_infer] geosteer-recover-cos = ${GEO:-0.35}   ·   TẮT geosteer (baseline): GEO=0 bash run_infer.sh"
+echo "[run_infer] samples=${SMP:-128} (tick: 48≈1.1s · 128≈2.8s) · geosteer-recover-cos = ${GEO:-0} (0=TẮT, pure-visual; rotvec đang hỏng → BẬT test: GEO=0.35)"
 echo "[run_infer] throttle=${THR:-0.08} kick=${KICK:-0.10} pop-confirm=${POP:-0}(0=pop thuần GPS)   ·   pop chặt lại: POP=0.5 · nhanh hơn: THR=0.10"
+echo "[run_infer] geosteer-heading = $([ -n "$GSH" ] && echo GPS-track || echo rotvec+calib)   ·   thử heading GPS (fix he±150°): GSH=1 bash run_infer.sh · mổ heading: GSDBG=1 bash run_infer.sh"
+echo "[run_infer] VISUAL-CTRL: lookahead=${LOOK:-2.0}m horizon=${HOR:-6} steer-smooth=${SMOOTH:-0.3}   ·   target xa hơn=gradient lái mạnh hơn (fix CEM lật-dấu); ngắn lại cho cua: LOOK=1.2 bash run_infer.sh"
 PYTHONPATH=src ~/miniforge3/envs/ai/bin/python -u scripts/inference_loop.py \
   --web \
-  --reach-m 6\
+  --reach-m 4\
   --no-recover \
   --checkpoint checkpoints/vjepa_ac_car_cd4/vjepa_ac_car/best.pt \
   --policy checkpoints/policy_prior/best.pt \
-  --samples 64 --iters 2 \
-  --ctrl-lookahead-m 0.5 \
+  --samples ${SMP:-128} --iters ${ITERS:-2} \
+  --horizon ${HOR:-6} \
+  --ctrl-lookahead-m ${LOOK:-2.0} \
   --heading-cap-deg 35 \
-  --pop-confirm-cos ${POP:-0} \
-  --steer-smooth 0.1 \
+  --pop-confirm-cos ${POP:-0.2} \
+  --steer-smooth ${SMOOTH:-0.1} \
   --steer-trim=-0.04 \
   --xtrack-recover-cos 0 \
   --xtrack-lookahead-m 1.5 \
-  --geosteer-recover-cos ${GEO:-0.35} \
+  --geosteer-recover-cos ${GEO:-0} \
   --geosteer-cap 0.5 \
   --geosteer-div-ticks 4 \
+  ${GSH:+--geosteer-gps-heading} \
+  ${GSDBG:+--geosteer-debug} \
   --turn-slow 0 \
   --throttle-cap ${THR:-0.08} \
   --cruise-throttle ${THR:-0.08} \
-  --kick-throttle ${KICK:-0.10} \
+  --kick-throttle ${KICK:-0.085} \
   --lock-cos 0 \
   --lock-hold-s 10.0 \
   2>&1 | tee -a "$LOG"

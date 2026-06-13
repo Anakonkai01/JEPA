@@ -18,6 +18,7 @@ from __future__ import annotations
 import argparse
 import json
 import re
+import shutil
 import time
 from pathlib import Path
 
@@ -237,9 +238,15 @@ def api_routes_save():
 
 @app.delete("/api/routes/<name>")
 def api_routes_delete(name: str):
-    p = ROUTES_DIR / f"{_safe_name(name)}.json"
+    nm = _safe_name(name)
+    p = ROUTES_DIR / f"{nm}.json"
+    mdir = _manual_dir(nm)                         # dọn LUÔN ảnh+meta route tay → teach lại cùng tên = SẠCH
+    existed = p.exists() or mdir.exists()          # (snap nối thêm vào meta cũ → xoá json thôi vẫn cộng dồn)
     if p.exists():
         p.unlink()
+    if mdir.exists():
+        shutil.rmtree(mdir, ignore_errors=True)
+    if existed:
         return jsonify({"ok": True})
     return jsonify({"error": "không thấy route"}), 404
 

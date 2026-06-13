@@ -1,6 +1,40 @@
 # HANDOFF — đọc cái này trước khi tiếp tục
 
-> Tóm tắt tình hình cho phiên sau. Cập nhật: **2026-06-13 trưa**.
+## 🅿️🛑 2026-06-13 CHIỀU/TỐI — PARK (pure-visual): BÁM NỬA ĐẦU RỒI BUNG Ở "COS-DROPOUT" → DỪNG BÃI, FIX Ở NHÀ. Chi tiết đầy đủ: **`docs/CLOSED_LOOP_FAILURE.md`**
+
+> **TL;DR cho phiên/máy sau (đọc CLOSED_LOOP_FAILURE.md để đủ):**
+> - **Đã DỪNG ra công viên** (quyết định user: nắng/pin/công sức, knob hết đường). Closed-loop visual
+>   teach&repeat **bám tuyến tốt NỬA ĐẦU route (d<0.5m, sg1–18) rồi BUNG ra lề** ở điểm **"cos-dropout"**.
+>   Cơ chế đo được (~10 run, MỌI config): tới subgoal mà ảnh live ≠ ảnh teach → **cos<0.1 → CEM mất
+>   gradient → lái loạn full-lock đảo chiều → văng >2m → KHÔNG có tín hiệu kéo về → đâm lề.** (Cộng
+>   hưởng: kick steer-aware nâng ga lúc panic → tăng tốc khi quẹo bậy.)
+> - **GIỚI HẠN MODEL/DATA (no-recovery + panic ở cos-dropout), KHÔNG phải config.** Đã thử đủ: route
+>   sạch, tick 1.1s (SMP48/HOR4), POP=0, lookahead 2.0, steer-smooth 0.45, throttle 0.06, geosteer.
+>   Knob chỉ DỜI điểm bung, không xoá.
+> - **Phủ nhận "bức tường tự-giống / teach xấu":** embedding teach của route HỎNG (parkfix_5/park6)
+>   phân-biệt-được NGANG/HƠN route NGON (parkfix3, self-gap 0.094 vs 0.070). parkfix3 chạy ngay sau
+>   teach (nắng sáng) → cos 66%>0.3, bám tới sg18-57; parkfix_5 teach 14:11 chạy 14:50 (nắng gắt) →
+>   cos 0%>0.3. → khớp-live nhạy alignment teach-vs-repeat (giờ/nắng/heading), KHÔNG do scene/biểu-diễn.
+> - **BUG QUY TRÌNH đã vá:** teach CỘNG DỒN (`api_manual_snap` append, không xoá) → park6 59→112sg với
+>   seam 29m giữa (2 lượt) → "đi qua goal mà không pop". Đã vá `api_routes_delete` (rmtree meta) + cắt
+>   park6 về 59. ⚠️ **restart route_web** để fix hiệu lực; hoặc teach TÊN MỚI mỗi lần.
+> - **World-model (đóng góp chính, offline 06-07) KHÔNG bị ảnh hưởng** — gap ở tầng nav-robustness+control.
+>
+> **➡️ BƯỚC SAU (về nhà, KHÔNG phải knob ở bãi) — CLOSED_LOOP_FAILURE.md §8:**
+> 1. **Retrain có RECOVERY DATA (fix gốc):** thu/augment cảnh xe LỆCH rồi kéo về (cái ViNG/Meta có,
+>    teach-1-lượt-giữa-line THIẾU) → hết panic ở cos-dropout.
+> 2. **3DGS sim** (`docs/SIM_3DGS_PLAN.md`): closed-loop trong nhà, kiểm soát heading/lighting, lặp đêm.
+> 3. (phụ) test `GSH=1` (geosteer heading GPS-track, đã code chưa test); bỏ kick steer-aware lúc panic.
+>
+> **Code đã đổi phiên này:** `scripts/inference_loop.py` (+`--geosteer-gps-heading` `--geosteer-debug`
+> — heading GPS-track thay rotvec hỏng he±150°, CHƯA test xe); `scripts/route_web.py` (delete dọn meta);
+> `run_infer.sh` (env knob SMP/ITERS/HOR/LOOK/SMOOTH/TRIM + geosteer default OFF, fix typo lo5s→logs).
+> `docs/CLOSED_LOOP_FAILURE.md` MỚI. **Paper: closed-loop = negative finding trung thực (bám nửa route,
+> bung ở visual-mismatch vì thiếu lateral-recovery); world-model offline vẫn là claim chính.**
+
+---
+
+> Tóm tắt tình hình cho phiên sau. Cập nhật: **2026-06-13 chiều/tối**.
 > Nền đầy đủ: [../CLAUDE.md](../CLAUDE.md) · [../README.md](../README.md) · [PLAN.md](PLAN.md) ·
 > [LeWorldModel.md](LeWorldModel.md) · [../robot/android/README.md](../robot/android/README.md) ·
 > [../robot/android/DRIVE_SETUP.md](../robot/android/DRIVE_SETUP.md). Cập nhật file này mỗi khi trạng thái đổi.

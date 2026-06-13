@@ -476,6 +476,15 @@ def main():
                     help="AN TOÀN (Rủi ro #1 = dấu steer→yaw trên xe THẬT): |cross-track| TĂNG liên "
                          "tục ngần này tick recovery (hoặc >8m) → DỪNG neutral (recovery đang đẩy xe XA "
                          "line = nghi sai dấu). 0 = tắt detector. Hạ 3 = nhạy hơn.")
+    ap.add_argument("--geosteer-gps-heading", action="store_true",
+                    help="⭐ DÙNG HEADING GPS-TRACK TRỰC TIẾP cho geosteer (bỏ qua rotvec + "
+                         "HeadingCalibrator). Đo bãi 06-13: calib rotvec↔graph cho he sai ±150° "
+                         "(handedness/offset không khớp) → Stanley flail. GPS-track = hướng DỊCH "
+                         "CHUYỂN thật (baseline 1.2m), không cần canh trục, không nhập nhằng dấu. "
+                         "Hợp route CRUISE (xe lăn liên tục); xe đứng yên → None → CEM giữ lái.")
+    ap.add_argument("--geosteer-debug", action="store_true",
+                    help="in dòng [gshead] az/track/offset/yaw_gs/psi/he mỗi tick geosteer để mổ "
+                         "sai heading (vì sao he ±150° ở bãi).")
     ap.add_argument("--turn-slow", type=float, default=0.5,
                     help="cua thì giảm ga: throt *= (1 - k·|steer|). 0=tắt")
     ap.add_argument("--stale-s", type=float, default=0.4,
@@ -1222,7 +1231,18 @@ def main():
                         _yaw_track = est_car_heading(car_xy, cal_hist, min_move=1.2)
                         if _yaw_track is not None:
                             heading_cal.add(_az, _yaw_track)
-                        car_yaw_gs = heading_cal.yaw(_az)
+                        # heading GPS-track TRỰC TIẾP (bỏ rotvec/calib — bãi 06-13: calib cho he ±150°)
+                        # vs rotvec đã khử offset. GPS-track None khi xe chưa đi đủ 1.2m (đứng/bò).
+                        car_yaw_gs = (_yaw_track if args.geosteer_gps_heading
+                                      else heading_cal.yaw(_az))
+                        if args.geosteer_debug:
+                            _yg = heading_cal.yaw(_az)
+                            print(f"[gshead] az={np.degrees(_az):+.0f} "
+                                  f"track={('—' if _yaw_track is None else f'{np.degrees(_yaw_track):+.0f}')} "
+                                  f"off={('—' if heading_cal.offset is None else f'{np.degrees(heading_cal.offset):+.0f}')} "
+                                  f"yaw_gs={('—' if _yg is None else f'{np.degrees(_yg):+.0f}')} "
+                                  f"spread={heading_cal.spread_deg:.0f} src={'gps' if args.geosteer_gps_heading else 'rotvec'}",
+                                  flush=True)
                     # PiJEPA-style warm start: policy đề xuất action từ (pooled hiện tại, pooled goal,
                     # state) → khởi tạo mu của CEM (CEM vẫn refine dưới world model).
                     mu0 = None
@@ -1264,7 +1284,8 @@ def main():
                         div_streak, div_min = 0, None           # rời pha recovery → reset divergence
                     if gs_active:
                         gs_steer = gs_cross = gs_herr = None
-                        if car_yaw_gs is not None and not heading_cal.unreliable():
+                        if car_yaw_gs is not None and (args.geosteer_gps_heading
+                                                       or not heading_cal.unreliable()):
                             gs_steer, gs_cross, gs_herr = path_steer(
                                 car_xy, car_yaw_gs, spd_est, man_xy, man_cum, cap=args.geosteer_cap)
                         if gs_steer is None:                    # chưa calib / rotvec loạn → CEM giữ lái
