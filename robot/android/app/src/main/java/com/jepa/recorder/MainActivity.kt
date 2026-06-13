@@ -329,7 +329,7 @@ class MainActivity : AppCompatActivity() {
 
         val rec = if (writer.active) "<font color='#FF5252'><b>● REC ${writer.count}</b></font>"
                   else "<font color='#9E9E9E'>STANDBY</font>"
-        val head = "$rec  <font color='#9E9E9E'>v0.5 · cam ${"%.0f".format(Locale.US, fps)}fps</font>"
+        val head = "$rec  <font color='#9E9E9E'>v0.6-cool · cam ${"%.0f".format(Locale.US, fps)}fps</font>"
 
         val modeTxt = when (t?.mode) {
             2 -> "<font color='#40C4FF'><b>AUTO</b></font>"; 1 -> "REC"; 0 -> "NEUT"; else -> "?"
