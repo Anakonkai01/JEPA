@@ -82,30 +82,31 @@ def main():
 
     def predict(model, z):
         with torch.no_grad():
-            return model(z, ZG, ST, DOM if use_domain else None)[:, 0].numpy()
+            out = model(z, ZG, ST, DOM if use_domain else None)
+            return out[:, 0].numpy(), out[:, 1].numpy()      # steer, throttle
 
     rows = [("baseline", args.baseline), ("recovery", args.recovery)]
-    cols_order = [None] + list(range(len(shifts)))   # None = normal (full pool, no shift)
     for name, path in rows:
         if not Path(path).exists():
             print(f"  [{name}] {path} MISSING — skip"); continue
         model, _ = load_policy(path, device="cpu")
-        base_pred = predict(model, Z)                # normal (shift 0)
-        print(f"\n── {name} ── normal pred steer mean {base_pred.mean():+.3f}")
-        print(f"   {'shift':>6} {'mean steer':>11} {'Δ vs normal':>12} {'want sign':>10}")
+        base_st, base_th = predict(model, Z)             # normal (shift 0)
+        print(f"\n── {name} ── normal: steer {base_st.mean():+.3f}  throttle {base_th.mean():+.3f}")
+        print(f"   {'shift':>6} {'steer':>8} {'Δsteer':>8} {'sign':>5} {'throttle':>9} {'Δthr':>7}")
         deltas = []
         for k, s in enumerate(shifts):
-            p = predict(model, AUG[:, k])
-            d = (p - base_pred).mean()
+            p, pth = predict(model, AUG[:, k])
+            d = (p - base_st).mean(); dth = (pth - base_th).mean()
             deltas.append((s, d))
-            want = "↓(left)" if s > 0 else "↑(right)"
             ok = "✓" if (np.sign(d) == -np.sign(s)) else "✗"
-            print(f"   {s:>+6d} {p.mean():>+11.3f} {d:>+12.3f} {want:>8} {ok}")
+            print(f"   {s:>+6d} {p.mean():>+8.3f} {d:>+8.3f} {ok:>5} {pth.mean():>+9.3f} {dth:>+7.3f}")
         # monotonic corrective slope: regress Δsteer on shift (want NEGATIVE slope)
         sv = np.array([s for s, _ in deltas]); dv = np.array([d for _, d in deltas])
         slope = np.polyfit(sv, dv, 1)[0]
         mono = all(dv[i] <= dv[i-1] + 1e-4 for i in range(1, len(dv)))  # non-increasing with shift
-        print(f"   slope(Δsteer/shift) = {slope:+.4f}  (want <0)  | monotone-corrective: {mono}")
+        big = abs(dv[sv.argmax()])                       # |Δsteer| at largest +shift
+        print(f"   slope(Δsteer/shift) = {slope:+.4f} (want <0) | monotone-corrective: {mono} | "
+              f"|Δsteer|@+{int(sv.max())} = {big:.3f} (want ≥0.25 để kéo về thật)")
 
 
 if __name__ == "__main__":
