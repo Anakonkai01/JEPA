@@ -21,9 +21,14 @@
 > đẹp sáng nay tới sg13; vẫn TRÔI vì chưa bật recovery). **BẬT geosteer test bãi:** sửa `run_infer.sh`
 > `--geosteer-recover-cos 0.35` — protocol: sân TRỐNG, cap thấp, ngón tay trên STOP (xem §7 Rủi ro #1).
 >
-> **➡️ CHIỀU 06-13 ra bãi:** protocol đầy đủ + bảng đọc-tag (`GS`/`GS:noheading`/`DIVERGE`) + 3 kịch bản
-> (dấu đúng / dấu ngược / noheading) ở **§9**. **SESSION SAU:** (1) mổ log park chiều nay theo §9, (2)
-> **thực hiện 3DGS** — `docs/SIM_3DGS_PLAN.md` đã EXECUTION-READY (checklist Bước 0→4, mỗi bước có gate).
+> **➡️ TEST BÃI CHIỀU 06-13 (§10):** baseline lộ **BUG POP** — xe TRÔI ngang tích luỹ (0.9→1.5m) → qua
+> subgoal ngoài cửa-sổ geo-confirm 1.5m + cos thấp → kẹt `wp_idx` → lạc 15m. **geosteer CHƯA chạy thật
+> lần nào** (env không áp, chạy lệnh trần). Đã sửa DEFAULT `run_infer.sh` (commit `7cb1349`): `POP=0`
+> (pop thuần GPS), `GEO=0.35` (geosteer ON), `THR=0.08`/`KICK=0.10`. **Chạy trần `bash run_infer.sh` =
+> đúng config** → run kế = **LẦN ĐẦU geosteer thật** (xác minh dấu Rủi ro #1). Bảng đọc-tag + 3 kịch bản: §9.
+>
+> **SESSION SAU:** (1) mổ log geosteer run đầu (dấu đúng/ngược/noheading — §10); (2) CODE: nới geo-confirm
+> 1.5→2.5m + geosteer-as-primary cho route thẳng; (3) **3DGS** — `docs/SIM_3DGS_PLAN.md` EXECUTION-READY.
 
 ### 1) Triệu chứng + log
 - 4× `park4_di_thang`, vài lần `parkfix3`/`park3`: xe queo TRÁI hết cỡ → quay đầu. Đều fail.
@@ -154,6 +159,39 @@ xe chĩa ra xa); (3) **cap 0.5** không full-lock (không pivot).
 2. **THỰC HIỆN 3DGS** theo `docs/SIM_3DGS_PLAN.md` — đã **execution-ready** (▶️ NEXT SESSION CHECKLIST:
    Bước 0 cài COLMAP+nerfstudio → 1 trích frame → 2 pose → 3 train → 4 harness, mỗi bước có GATE).
    Refactor `plan_tick` (Bước 4) làm SỚM được vì dùng chung cho cả xe thật lẫn sim.
+
+### 10) 🅿️ KẾT QUẢ TEST BÃI CHIỀU 06-13 (thực tế) — BUG POP (trôi) chặn TRƯỚC khi geosteer kịp chạy
+
+> **geosteer VẪN CHƯA chạy thật lần nào** — mọi run chiều nay là BASELINE (env không áp vì user chạy
+> `bash run_infer.sh` TRẦN; log echo `geosteer-recover-cos = 0`, 0 tag `GS`). Vướng ở precursor: route
+> tay KHÔNG POP subgoal → chưa tới được pha geosteer.
+
+**Triệu chứng** (route `parkfix_5_di_thang`, 21 subgoal, đi thẳng): xe đi QUA subgoal mà KHÔNG pop →
+`wp_idx` đóng băng → control-target tụt SAU xe → cos sập → CEM nhiễu → xe lạc xa (d tới **15m**).
+
+**Chẩn** (log `infer_20260613_141933.log`, run 2): lệch ngang **TĂNG ĐỀU** vì visual-servo thiếu phản
+hồi vị trí: sg1@0.9m → sg2@0.3 → sg3@0.8 → sg4@1.2 → sg5@1.4 → **sg6@1.5m ✗**. sg1-5 pop nhờ
+geo-confirm (<1.5m); tới **sg6 lệch chạm đúng 1.5m = MÉP cửa-sổ** (`dd < min(1.5, reach_m)`) → trượt;
+cos route thẳng tự-giống chỉ **0.085 < pop-confirm 0.5** → cũng trượt → **2 cổng pop đều miss** → đóng
+băng sg6 → d 1.5→15m, steer ±1 (CEM mất target).
+
+**ROOT:** **TRÔI ngang tích luỹ** (đúng cái geosteer sinh ra để sửa) đẩy xe qua subgoal NGOÀI cửa-sổ
+1.5m; + route thẳng cos thấp → cổng ảnh vô dụng. Nhưng geosteer chưa bật → không có gì kéo về.
+
+**FIX (commit `7cb1349`, đổi DEFAULT trong `run_infer.sh` — chạy trần `bash run_infer.sh` là đúng):**
+- `--pop-confirm-cos 0` (env `POP`) = **pop thuần GPS** (reach 6m + subgoal kế gần hơn) → dung sai
+  lệch/trôi tới 6m, hết kẹt. *(POP=0.3 KHÔNG đủ — sg6 cos 0.085.)*
+- `--geosteer-recover-cos 0.35` (env `GEO`) = **geosteer ON** → kéo về line, chặn trôi.
+- `--throttle-cap/cruise 0.08` (env `THR`) + `--kick-throttle 0.10` (env `KICK`) = chậm + đề-pa đủ nổ.
+- **Env-knob override không sửa file:** `GEO/POP/THR/KICK`. Baseline (tắt geosteer) = `GEO=0 bash run_infer.sh`.
+
+**CÒN LẠI / SESSION SAU:**
+1. **Chạy default mới = LẦN ĐẦU geosteer THẬT** → xác minh DẤU steer→yaw (Rủi ro #1): xe **bẻ VỀ**=đúng /
+   `🛑 GEOSTEER DIVERGE`=ngược (tối về **đảo 1 dòng** trả về của `path_steer` trong `geosteer.py`) /
+   `GS:noheading` kéo dài = rotvec chưa calib (chạy thẳng thêm).
+2. **CODE (tối/máy nhà):** nới cửa-sổ geo-confirm **`1.5→2.5m`** trong `inference_loop.py` (fix GỐC pop;
+   hiện POP=0 né tạm) + cân nhắc cho geosteer làm **controller CHÍNH** route thẳng (recover-cos cao hơn,
+   vd 0.6) thay vì chỉ recovery — vì visual-servo trôi liên tục trên đường thẳng tự-giống.
 
 ## 🔬 2026-06-12 ĐÊM — PHIÊN PHÂN TÍCH SÂU (6 câu hỏi user) — toàn số ĐO ĐƯỢC + 4 artifact mới + GPU chạy đêm
 
