@@ -497,6 +497,14 @@ TRÁI một lượng `α·s/W`. Trộn `p_aug=0.35` mẫu recovery vào behavior
   Baseline **đã có** recovery yếu-nhưng-đúng-dấu (goal-conditioning mang sẵn tín hiệu lệch) → augment chỉ
   khuếch đại. val-loss recovery **≈/tốt hơn** baseline ⇒ **không hại** goal-reaching thường. Đáp ứng
   **bất biến theo cự-ly goal** (d=1 ≈ d=2 = tầm lookahead deploy).
+- **(H3) Tính bền cross-session của action** (`eval_policy_xsession.py`, 4000 cặp khớp GPS cùng-chỗ +
+  heading, 181 session towerpro): đổi goal sang view của **session khác** cùng vị-trí → action gần như
+  không đổi (med|Δsteer| **0.012**, corr **1.00**). Một *control goal-ngẫu-nhiên* cũng chỉ đổi 0.017 ⇒
+  **policy nhạy-goal YẾU, chủ yếu phản-xạ theo current-view + state** (một phần do cảnh park tự-giống).
+  Hệ quả kép: (a) **tốt** — recovery là current-view-driven nên bền + độc lập domain-shift của goal
+  (brittleness cross-buổi 06-12 nằm ở tầng *localize/cosine*, không ở action-given-goal); (b) **hạn
+  chế** — policy không "ngắm" subgoal nên hợp **bám hành-lang** giống train, yếu ở điểm-rẽ phụ-thuộc-goal,
+  nơi CEM (chấm patchL1 vs goal tokens) có hướng-goal hơn ⇒ hai bộ điều khiển **bổ sung** nhau.
 
 ### 12bis.4. Hạn chế trung thực + kế hoạch triển khai có cổng
 Dịch token synthetic là **proxy** cho lệch thật (mild: cos tới ảnh gốc ≈0.94 ở mức dịch lớn nhất, còn
