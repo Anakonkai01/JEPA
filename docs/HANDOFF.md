@@ -20,6 +20,10 @@
 > **Muốn chạy an toàn NGAY (recovery TẮT):** `bash run_infer.sh` = visual-servo trần + trim (hành vi
 > đẹp sáng nay tới sg13; vẫn TRÔI vì chưa bật recovery). **BẬT geosteer test bãi:** sửa `run_infer.sh`
 > `--geosteer-recover-cos 0.35` — protocol: sân TRỐNG, cap thấp, ngón tay trên STOP (xem §7 Rủi ro #1).
+>
+> **➡️ CHIỀU 06-13 ra bãi:** protocol đầy đủ + bảng đọc-tag (`GS`/`GS:noheading`/`DIVERGE`) + 3 kịch bản
+> (dấu đúng / dấu ngược / noheading) ở **§9**. **SESSION SAU:** (1) mổ log park chiều nay theo §9, (2)
+> **thực hiện 3DGS** — `docs/SIM_3DGS_PLAN.md` đã EXECUTION-READY (checklist Bước 0→4, mỗi bước có gate).
 
 ### 1) Triệu chứng + log
 - 4× `park4_di_thang`, vài lần `parkfix3`/`park3`: xe queo TRÁI hết cỡ → quay đầu. Đều fail.
@@ -79,7 +83,7 @@ python scripts/geosteer_rotvec_check.py                # Gate 0, cần data/raw_
 (1) heading từ **rotvec 50Hz** thay GPS-track 1Hz; (2) **Stanley** thay pure-pursuit (không suy biến khi
 xe chĩa ra xa); (3) **cap 0.5** không full-lock (không pivot).
 
-### 6) Trạng thái repo (uncommitted — commit trong phiên này)
+### 6) Trạng thái repo (ĐÃ commit + push: `9024a77` nền geosteer, `49b3290` Phase 4)
 - **MỚI:** `src/jepa_wm/nav/geosteer.py` · `scripts/geosteer_validate.py` · `scripts/geosteer_rotvec_check.py`.
 - **SỬA `scripts/inference_loop.py`** (138 dòng, từ phiên 06-13 sáng): **recovery-v1** = `recovery_steer()`
   pure-pursuit + `est_car_heading()` + flag `--xtrack-recover-cos` (**default 0.0 = TẮT**, an toàn) +
@@ -117,6 +121,39 @@ xe chĩa ra xa); (3) **cap 0.5** không full-lock (không pivot).
   sim-validate (nặng >16GB, không GT hình học); HỢP **Cosmos-Transfer** relight (bug lệch-sáng) +
   điểm so sánh paper (latent vs pixel world model). **Isaac Sim:** overkill, bỏ qua.
 - ⚠ Không sim nào xoá được Rủi ro #1 (dấu steer→yaw) — luôn phải canh với xe.
+
+### 9) ▶️ CHIỀU 06-13 — PROTOCOL TEST BÃI (geosteer) + VIỆC SESSION SAU
+
+**Chạy** (`run_infer.sh` tự ghi `logs/infer_<time>.log` để session sau mổ):
+1. **Sanity trước (recovery TẮT, như hiện tại):** `bash run_infer.sh` → xác nhận visual-servo chạy
+   đoạn thẳng park4 OK (như sáng tới sg13). Baseline hỏng = KHÔNG phải lỗi geosteer → dừng, mổ riêng.
+2. **Bật geosteer:** sửa `run_infer.sh` → `--geosteer-recover-cos 0.35` (giữ `--xtrack-recover-cos 0`)
+   → `bash run_infer.sh`. Chạy lại park4. Cho xe **chạy thẳng ≥10m đầu** để calib heading ARM.
+
+**Đọc tag mỗi tick (log/màn hình):**
+| Tag | Nghĩa |
+|---|---|
+| (không có `GS`) | cos cao, CEM lái thường — OK |
+| ` GS:noheading` | recovery muốn kích nhưng calib CHƯA sẵn / rotvec loạn → CEM giữ lái (chạy thẳng thêm để arm) |
+| ` GS+0.42(xt-1.2/he+18/cal9)` | Stanley ĐANG lái: steer / cross-track(m) / heading-err(°) / cal-spread(°) |
+| `🛑 GEOSTEER DIVERGE` | |cross| tăng → tự DỪNG = **NGHI SAI DẤU steer→yaw trên xe** |
+
+**3 kịch bản (= thí nghiệm xác minh Rủi ro #1):**
+- Xe **bẻ VỀ line, hội tụ** → 🎉 dấu ĐÚNG, geosteer chạy thật. Session sau: tinh chỉnh `--geosteer-cap`/`-cos`.
+- Xe **bẻ RA rồi `GEOSTEER DIVERGE` dừng** → dấu steer→yaw **NGƯỢC** trên xe (detector bắt, an toàn).
+  **Fix 1 dòng** session sau: đảo dấu output `path_steer` trong `geosteer.py` (hoặc convention offset) →
+  re-test. **KHÔNG phải hỏng nền** — đây chính là cái test bãi cần xác minh.
+- **Mãi `GS:noheading`** → calib không arm: kiểm meta có `rx,ry,rz` (app gửi rotvec) + có GPS fix +
+  xe phải chạy thẳng đủ (≥~1.2m/baseline). Mọi tick noheading = rotvec/GPS hỏng → báo session sau.
+
+**AN TOÀN:** ngón tay trên STOP (web ⛔ / gạt CH9 về manual). Detector là lớp chặn, KHÔNG thay được mắt.
+
+**VIỆC SESSION SAU (ưu tiên trên→dưới):**
+1. **Mổ log park chiều nay** (`logs/infer_2026...log`, lọc tag `GS`/`DIVERGE`/`noheading`) → theo 3 kịch
+   bản trên: dấu đúng→tune; dấu ngược→đảo 1 dòng `path_steer`; noheading→fix rotvec/GPS.
+2. **THỰC HIỆN 3DGS** theo `docs/SIM_3DGS_PLAN.md` — đã **execution-ready** (▶️ NEXT SESSION CHECKLIST:
+   Bước 0 cài COLMAP+nerfstudio → 1 trích frame → 2 pose → 3 train → 4 harness, mỗi bước có GATE).
+   Refactor `plan_tick` (Bước 4) làm SỚM được vì dùng chung cho cả xe thật lẫn sim.
 
 ## 🔬 2026-06-12 ĐÊM — PHIÊN PHÂN TÍCH SÂU (6 câu hỏi user) — toàn số ĐO ĐƯỢC + 4 artifact mới + GPU chạy đêm
 

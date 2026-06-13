@@ -8,6 +8,42 @@
 > chạy nhẹ trên RTX 5070 Ti. Isaac = render tổng hợp (visual gap) + overkill. Cosmos = world-model
 > pixel quá nặng (16GB không kham) + không có ground-truth hình học → chỉ hợp augmentation/paper.
 
+## ▶️ NEXT SESSION — EXECUTION CHECKLIST (chạy theo thứ tự, mỗi bước 1 GATE)
+
+> **Môi trường ĐÃ KIỂM 06-13 (máy pc5070ti):** COLMAP **CHƯA cài** · nerfstudio/gsplat **CHƯA cài** ·
+> GPU **RTX 5070 Ti 16GB, CUDA 12.8, torch 2.10.0+cu128** (cuda avail ✓) · session mẫu
+> `data/raw_towerpro/session_20260607_124454` = **5310 frame**, gps 624 dòng, rotvec 32311 dòng.
+> → Bước 0 PHẢI cài trước. Mọi bước viết script vào `scripts/sim3dgs_*.py` (durable, commit).
+
+**Bước 0 — Cài (1 lần):**
+```bash
+sudo pacman -S colmap                                   # Arch extra: SfM ra pose
+~/miniforge3/envs/ai/bin/pip install nerfstudio         # kéo theo gsplat (build CUDA ext theo torch 2.10/cu128)
+colmap -h | head -1 && ~/miniforge3/envs/ai/bin/python -c "import gsplat, nerfstudio; print('gs OK')"
+```
+GATE 0: `colmap` chạy + `import gsplat` OK. (gsplat lỗi build cu128 → `pip install gsplat` riêng,
+hoặc fallback 3DGS gốc graphdeco-inria. nerfstudio nặng dep → cân nhắc env riêng `gs` nếu đụng torch.)
+
+**Bước 1 — Trích frame** (`scripts/sim3dgs_extract.py`): chọn session ĐÃ chạy tuyến cần test (vd tuyến
+park4 chiều 06-13; mẫu nhiều coverage = `session_20260607_124454`). 5310 frame quá nhiều cho SfM →
+**subsample mỗi ~4** (~1300), **bỏ frame đứng** (gps speed<0.3 → trùng view) + **lọc blur**
+(Laplacian-var thấp). → GATE 1: ~800–1500 ảnh sắc nét phủ tuyến trong `/tmp/gs_park/images/`.
+
+**Bước 2 — Pose (COLMAP)** → chi tiết §2-B1. `sequential_matcher` (frame tuần tự + park TỰ-GIỐNG dễ
+loop sai) + Umeyama khớp quỹ đạo GPS lấy **scale mét** + canh về graph-frame. → GATE 2: reproj
+< ~1.5px, >80% ảnh registered, quỹ đạo COLMAP khớp hình GPS (kiểm chéo heading bằng rotvec như Gate-0).
+
+**Bước 3 — Train 3DGS** → §2-B2 (`ns-train splatfacto`, cân nhắc appearance-embedding cho lệch sáng).
+→ GATE 3: render dọc tuyến ra cảnh park (mắt thường) + PSNR hold-out ổn.
+
+**Bước 4 — Harness closed-loop** → §2-B3. **Refactor lõi quyết-định `inference_loop.main` thành hàm
+`plan_tick(rgb, meta, state…)`** để CẢ xe thật LẪN `scripts/sim3dgs_loop.py` gọi (1 nguồn logic).
+Inject GPS-1Hz + rotvec noise. → GATE 4: tái hiện hành vi park (visual-servo trôi / geosteer hội tụ)
+≈ xe thật → SIM dùng được để A/B + tune CEM.
+
+> ⚠ Việc này SAU khi đã triage log test bãi chiều 06-13 (xem `HANDOFF.md` §9) — bãi là deadline-path,
+> 3DGS là đầu-tư-dài. Nhưng refactor `plan_tick` (Bước 4) có thể làm SỚM vì có ích cho cả hai.
+
 ## 0) Bài toán SIM giải được mà sim-động-học (bicycle) KHÔNG
 
 | | sim-động-học (đã có: `geosteer_validate.py`) | 3DGS closed-loop (doc này) |
