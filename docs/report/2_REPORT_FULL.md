@@ -57,6 +57,10 @@ ngoài trời.
    **bằng chứng transfer chéo-domain-servo** — KDS (giàu steering) giúp ích cho TowerPro.
 3. **Một phân tích thất bại closed-loop có cơ chế** (cos-dropout → mất gradient → no-recovery → bung),
    kèm bằng chứng loại trừ giả thuyết "cảnh tự-giống / teach xấu".
+4. **Một khắc phục đã validate offline cho chính negative finding đó**: *recovery augmentation* ở mức
+   latent ("DAVE-2 cho V-JEPA", không cần GPU) khuếch đại đáp ứng tự-sửa của policy **3.4–5.4×** baseline
+   (đúng trục vật-lý H-A, đúng dấu, không hại goal-reaching), kèm tiêu-chí phân định rõ "đã chứng minh
+   offline" vs "cần xác minh trên xe" — biến thiếu-dữ-liệu-recovery thành phương pháp (§12bis).
 
 ---
 
