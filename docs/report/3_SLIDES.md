@@ -252,6 +252,22 @@ cos giữ ~0.25 (sg4–7) → **rơi <0.1 ở sg8 → âm ở sg9** (vùng đỏ
 
 ---
 
+## Khắc phục đề xuất: Recovery-augmented policy (06-14)
+
+- **Đo lại tốc-độ-quyết-định** (`meas_tail`): sample 16→256 **KHÔNG** giảm đuôi full-lock (14–16% phẳng)
+  → "nhiều sample thắng" SAI; đòn bẩy = **tick nhanh + ga thấp** → policy 1-forward (<1 ms) thay CEM.
+- **"DAVE-2 cho latent V-JEPA" (không GPU):** dịch ngang lưới token 24×24 (border-replicate) = giả
+  góc-nhìn xe lệch-làn → mean-pool → nhãn **bẻ-về** (`α·s/W`). Trộn vào behavior-cloning.
+- **Validate offline:**
+  - **Trục đúng vật-lý (H-A):** synthetic shift khớp chuyển-động-yaw thật (cos +0.10), thẳng ≈0.
+  - **Khuếch đại bẻ-về (REC-3):** slope **3.4–5.4×** baseline, monotone, đúng dấu; val ≈/tốt hơn (không hại lái thường).
+- **Trung thực:** synthetic = proxy (mild), **không** có renderer → triển khai **CÓ CỔNG**: CEM-floor mặc
+  định, bật policy chỉ sau **probe trên xe** (nhấc lệch trái→steer phải?). = biến thiếu-data thành method.
+
+<!-- Đây là "future work đã làm một phần": phương pháp + validate offline, ranh giới rõ với on-car. -->
+
+---
+
 ## Hạn chế
 
 - Closed-loop: **1 môi trường, ~10 run, 0 về đích, chưa có success-rate metric** → định tính + cơ chế.

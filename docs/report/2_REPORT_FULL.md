@@ -453,6 +453,57 @@ collapse (vàng→đỏ) xe **bung ra** và dừng tại ❌. Sinh bằng `scrip
 
 ---
 
+## 12bis. (Bổ sung 06-14) Khắc phục đề xuất — Recovery-augmented policy + đo lại "tốc-độ-quyết-định"
+
+> Phần này biến *negative finding* (§12) thành một **phương pháp khắc phục cụ thể, đã validate offline**.
+> Hai nguyên nhân cộng hưởng của thất bại closed-loop được tách bạch và xử lý riêng.
+
+### 12bis.1. Nguyên nhân #2 = TỐC-ĐỘ-QUYẾT-ĐỊNH (không chỉ thiếu recovery)
+Ngoài "thiếu lateral-recovery" (§12.1), một nguyên nhân thứ hai là **độ trễ quyết định của CEM**: mỗi
+tick CEM mất 0.5–5.5 s (theo số sample), trong đó xe chạy "mù" giữ nguyên action cũ → tích luỹ lệch.
+Giả thuyết trước đây: "nhiều sample thắng vì cắt được đuôi action full-lock". **Đo lại (`meas_tail.py`,
+300 window VAL, d=4)** bác bỏ: tăng sample 16→256 **KHÔNG** giảm phương sai argmin (≈0.18–0.23, phẳng)
+cũng **KHÔNG** giảm tỉ lệ full-lock trên đoạn thẳng (≈14–16%, phẳng). Đuôi full-lock là **nội tại của
+world-model**, không sửa được bằng search rộng hơn. ⇒ Hệ quả: **64 sample (1.6 s) ≈ 256 sample (5.5 s)
+về chất lượng** nhưng ít "lái mù" 3.4×; đòn bẩy đúng là **tick nhanh + ga thấp**, không phải search rộng.
+Điều này thúc đẩy một **policy học sẵn** (1 forward MLP, <1 ms) thay cho CEM trong vòng điều khiển.
+
+### 12bis.2. Recovery augmentation — "DAVE-2 cho latent V-JEPA" (không cần GPU)
+Dữ liệu teach-giữa-làn thiếu cảnh "xe lệch rồi bẻ về" (ViNG/Meta có). Ta **tổng hợp** nó ở mức latent:
+patch cache là lưới token **24×24**; **dịch ngang lưới** (border-replicate) ≈ góc nhìn của xe **lệch
+ngang/chệch hướng**, rồi mean-pool → latent lệch (giữ đủ 576 token = khớp pool tính online lúc inference,
+**không** cần encode lại qua V-JEPA). Mỗi mức dịch `s` ghép một **nhãn bẻ-về**: dịch phải (+s) → steer
+TRÁI một lượng `α·s/W`. Trộn `p_aug=0.35` mẫu recovery vào behavior-cloning của GoalPolicyPrior
+(`scripts/pool_recovery_latents.py`, `train_policy_recovery.py`).
+
+### 12bis.3. Validate offline (3 thí nghiệm, VAL held-out)
+- **(H-A) Trục synthetic có cơ-sở vật-lý** (`probe_aug_alignment.py`, 76k frame-pair): dịch token
+  synthetic dịch pooled latent **đúng trục** chuyển-động-ngang thật khi camera yaw — cos(real, synth+12)
+  = **+0.10** lúc yaw phải / −0.09 lúc yaw trái (đối xứng), còn chuyển-động THẲNG (control) ≈ **0**
+  (−0.01/−0.03). ⇒ augment không train một trục lạ.
+- **(REC-3) Recovery KHUẾCH ĐẠI đáp ứng bẻ-về** (`eval_recovery_response.py`, 8000 anchor): so baseline,
+  policy recovery có slope Δsteer/shift dốc **3.4–5.4×**, monotone, **đúng dấu mọi mức dịch**:
+
+  | policy | slope | \|Δsteer\| @ dịch +12 | val w-L1 (normal) |
+  |---|---|---|---|
+  | baseline (BC thường) | −0.0070 | 0.097 | 0.0699 |
+  | recovery α=0.6 | **−0.0239** | **0.286** | **0.0648** |
+  | recovery α=1.0 | −0.0377 | 0.447 | 0.0682 |
+
+  Baseline **đã có** recovery yếu-nhưng-đúng-dấu (goal-conditioning mang sẵn tín hiệu lệch) → augment chỉ
+  khuếch đại. val-loss recovery **≈/tốt hơn** baseline ⇒ **không hại** goal-reaching thường. Đáp ứng
+  **bất biến theo cự-ly goal** (d=1 ≈ d=2 = tầm lookahead deploy).
+
+### 12bis.4. Hạn chế trung thực + kế hoạch triển khai có cổng
+Dịch token synthetic là **proxy** cho lệch thật (mild: cos tới ảnh gốc ≈0.94 ở mức dịch lớn nhất, còn
+lệch ~1 m thật ≈0.8) và **không có renderer** → **không thể chứng minh transfer closed-loop offline**.
+Do đó policy recovery được triển khai **có cổng**: chạy CEM-floor đã-chứng-minh làm mặc định, và chỉ
+bật policy sau một **probe trên xe** (nhấc xe lệch trái → steer phải? phải → trái?). Đây là một **đóng
+góp phương pháp**: biến thiếu-sót-dữ-liệu thành augmentation latent rẻ + bộ tiêu chí validate offline,
+với ranh giới rõ giữa "đã chứng minh offline" và "cần xác minh trên xe".
+
+---
+
 ## 13. Tổng hợp các vấn đề kỹ thuật đã gặp & cách xử lý (catalog "mỗi vấn đề")
 
 > Phần này để bổ sung chiều sâu engineering vào Word; mỗi mục = 1 vấn đề thật + cách xử lý.
