@@ -47,6 +47,7 @@ from jepa_wm.data.dataset import frozen_split  # noqa: E402
 from jepa_wm.engine.encode import IMAGENET_MEAN, IMAGENET_STD, load_encoder  # noqa: E402
 from jepa_wm.models import build_model  # noqa: E402
 from jepa_wm.nav.graph import TopoGraph  # noqa: E402
+from jepa_wm.nav.geosteer import HeadingCalibrator, path_steer, rotvec_to_azimuth  # noqa: E402
 from jepa_wm.planning import CEMPlannerAC  # noqa: E402
 from jepa_wm.planning.dynamics import CarDynamics  # noqa: E402
 
@@ -462,6 +463,19 @@ def main():
     ap.add_argument("--xtrack-lookahead-m", type=float, default=1.5,
                     help="pure-pursuit recovery ngắm điểm cách hình-chiếu-xe ngần này (m) dọc polyline "
                          "teach. Ngắn (1.0) = bẻ về gắt; dài (2.5) = về mượt/chậm. Mặc định 1.5.")
+    ap.add_argument("--geosteer-recover-cos", type=float, default=0.0,
+                    help="⭐ PHASE 4 (06-13, THAY recovery-v1): cos control-target < ngưỡng này (route "
+                         "tay, MẤT khớp ảnh) → lái STANLEY về polyline teach bằng HEADING rotvec 50Hz "
+                         "(HeadingCalibrator tự canh offset rotvec↔graph ONLINE) thay GPS-track 1Hz (v1 "
+                         "→ xoay vòng). 0=TẮT. Khuyên 0.35. Đè --xtrack-recover-cos (v1) khi >0. Cần xe "
+                         "chạy ~10m đầu để calib heading (chưa calib → CEM giữ lái). Đã PASS SIM 16/16.")
+    ap.add_argument("--geosteer-cap", type=float, default=0.5,
+                    help="TRẦN |steer| Stanley recovery (0.5 = KHÔNG full-lock → cua mượt, chống pivot/"
+                         "xoay vòng = fix gốc v1). Hạ 0.4 nếu còn gắt; nâng 0.6 nếu về line chậm.")
+    ap.add_argument("--geosteer-div-ticks", type=int, default=4,
+                    help="AN TOÀN (Rủi ro #1 = dấu steer→yaw trên xe THẬT): |cross-track| TĂNG liên "
+                         "tục ngần này tick recovery (hoặc >8m) → DỪNG neutral (recovery đang đẩy xe XA "
+                         "line = nghi sai dấu). 0 = tắt detector. Hạ 3 = nhạy hơn.")
     ap.add_argument("--turn-slow", type=float, default=0.5,
                     help="cua thì giảm ga: throt *= (1 - k·|steer|). 0=tắt")
     ap.add_argument("--stale-s", type=float, default=0.4,
@@ -743,6 +757,10 @@ def main():
             hold_steer, hold_t0, manual_ctrl_cos = None, None, None  # giữ-lái-xuyên-vùng-mù (commit-through-turn)
             man_block_idx, goal_block_id = -1, None       # log "GPS tới nhưng ảnh chưa khớp" 1 lần/subgoal
             last_nf_status = 0.0                          # throttle ghi status "no-frame" (1Hz)
+            # PHASE 4 geosteer recovery (rotvec heading 50Hz + Stanley) — state per-connection:
+            heading_cal = HeadingCalibrator()             # offset rotvec↔graph, canh ONLINE mỗi run
+            cal_hist = []                                 # (t, car_xy) → GPS-track yaw cho calib heading
+            div_streak, div_min = 0, None                 # divergence-detector (an toàn dấu steer→yaw)
             try:
                 while reader.alive:
                     if halted:                            # quá recover-max lần kẹt → đứng yên chờ người
@@ -1189,6 +1207,22 @@ def main():
                         sp_h = time.time() - pos_hist[0][0]
                         if sp_h > 0.5:
                             spd_est = max(spd_est, float(np.linalg.norm(car_xy - pos_hist[0][1])) / sp_h)
+                    # PHASE 4: nuôi HeadingCalibrator MỖI tick có GPS (canh offset rotvec↔graph bằng
+                    # GPS-track yaw lúc xe chạy) → SẴN SÀNG trước khi cos sập cần recovery. Chỉ chạy khi
+                    # --geosteer-recover-cos>0 (tắt = không tốn gì). car_yaw_gs = heading xe graph-frame
+                    # (rad) từ rotvec đã khử offset; None khi chưa calib đủ / rotvec loạn.
+                    car_yaw_gs = None
+                    if args.geosteer_recover_cos > 0 and car_xy is not None:
+                        cal_hist.append((time.time(), np.asarray(car_xy, np.float32)))
+                        while len(cal_hist) > 1 and time.time() - cal_hist[0][0] > 6.0:
+                            cal_hist.pop(0)
+                        _az = rotvec_to_azimuth(float(meta.get("rx", 0.0) or 0.0),
+                                                float(meta.get("ry", 0.0) or 0.0),
+                                                float(meta.get("rz", 0.0) or 0.0))
+                        _yaw_track = est_car_heading(car_xy, cal_hist, min_move=1.2)
+                        if _yaw_track is not None:
+                            heading_cal.add(_az, _yaw_track)
+                        car_yaw_gs = heading_cal.yaw(_az)
                     # PiJEPA-style warm start: policy đề xuất action từ (pooled hiện tại, pooled goal,
                     # state) → khởi tạo mu của CEM (CEM vẫn refine dưới world model).
                     mu0 = None
@@ -1218,7 +1252,53 @@ def main():
                     # trim (vẫn qua làm-mượt + sàn ga như thường). TẮT khi --xtrack-recover-cos=0.
                     recover_tag = ""
                     recovered = False
-                    if (wp_mode == "manual" and args.xtrack_recover_cos > 0
+                    # ---- PHASE 4: GEOSTEER recovery (rotvec heading 50Hz + Stanley cap) ----
+                    # Thay recovery-v1: v1 lấy heading GPS-track 1Hz → 60% tick fallback + full-lock →
+                    # XOAY VÒNG (đo 06-13, docs/HANDOFF.md). Stanley + rotvec + cap 0.5 PASS SIM 16/16.
+                    # OFF mặc định (--geosteer-recover-cos 0). Khi bật, ĐÈ v1.
+                    gs_active = (wp_mode == "manual" and args.geosteer_recover_cos > 0
+                                 and manual_ctrl_cos is not None
+                                 and manual_ctrl_cos < args.geosteer_recover_cos
+                                 and car_xy is not None and man_xy is not None and man_cum is not None)
+                    if not gs_active:
+                        div_streak, div_min = 0, None           # rời pha recovery → reset divergence
+                    if gs_active:
+                        gs_steer = gs_cross = gs_herr = None
+                        if car_yaw_gs is not None and not heading_cal.unreliable():
+                            gs_steer, gs_cross, gs_herr = path_steer(
+                                car_xy, car_yaw_gs, spd_est, man_xy, man_cum, cap=args.geosteer_cap)
+                        if gs_steer is None:                    # chưa calib / rotvec loạn → CEM giữ lái
+                            div_streak, div_min = 0, None
+                            recover_tag = " GS:noheading"
+                        else:
+                            # divergence-detector (Rủi ro #1 = sai DẤU steer→yaw trên xe): |cross| vượt
+                            # MỨC TỐT NHẤT (min) của pha recovery một biên 2m (>> GPS noise) liên tục N
+                            # tick HOẶC >8m → recovery đẩy xe XA line → DỪNG. Min-based (không per-tick
+                            # delta) → miễn nhiễm GPS noise + overshoot hợp lệ, chỉ bắt runaway đơn điệu.
+                            div_min = abs(gs_cross) if div_min is None else min(div_min, abs(gs_cross))
+                            if abs(gs_cross) > div_min + 2.0:
+                                div_streak += 1
+                            else:
+                                div_streak = 0
+                            if ((args.geosteer_div_ticks > 0 and div_streak >= args.geosteer_div_ticks)
+                                    or abs(gs_cross) > 8.0):
+                                emit(0.0, 0.0); prev_steer = 0.0
+                                print(f"[infer] 🛑 GEOSTEER DIVERGE: |cross|={gs_cross:+.1f}m "
+                                      f"(streak {div_streak}, cal spread {heading_cal.spread_deg:.0f}°) "
+                                      f"→ DỪNG. Nghi SAI DẤU steer→yaw trên xe (HANDOFF Rủi ro #1).",
+                                      flush=True)
+                                if web is not None:
+                                    web.frame(rgb); web.status(state="geosteer-diverge", seq=seq)
+                                    web.route = None
+                                div_streak, div_prev_cross = 0, None
+                                continue
+                            raw_steer = gs_steer
+                            recovered = True
+                            recover_tag = (f" GS{raw_steer:+.2f}(xt{gs_cross:+.1f}/he{gs_herr:+.0f}/"
+                                           f"cal{heading_cal.spread_deg:.0f})")
+                    # recovery-v1 (pure-pursuit GPS-track) — CHỈ khi geosteer TẮT (giữ để A/B + fallback)
+                    if (not recovered and args.geosteer_recover_cos <= 0
+                            and wp_mode == "manual" and args.xtrack_recover_cos > 0
                             and manual_ctrl_cos is not None
                             and manual_ctrl_cos < args.xtrack_recover_cos
                             and car_xy is not None and man_xy is not None and man_cum is not None):
@@ -1234,7 +1314,7 @@ def main():
                     # ở cú quẹo CUỐI lúc còn lock (cam kết hoàn tất cua) thay vì noise; cos hồi →
                     # CEM tiếp; giữ > --lock-hold-s vẫn không hồi → DỪNG (khỏi veer đi xa như cũ).
                     hold_tag = ""
-                    if (args.xtrack_recover_cos <= 0          # recovery bật → HOLD tắt (recovery thay vai)
+                    if (args.xtrack_recover_cos <= 0 and args.geosteer_recover_cos <= 0  # recovery → HOLD tắt
                             and wp_mode == "manual" and args.lock_cos > 0 and manual_ctrl_cos is not None):
                         if manual_ctrl_cos >= args.lock_cos:
                             hold_steer, hold_t0 = raw_steer, None   # còn lock → cập nhật lái tin cậy

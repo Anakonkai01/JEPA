@@ -14,10 +14,12 @@
 > quay đầu** thay vì tịnh tiến về line. Offline-test cũ chỉ kiểm DẤU tĩnh nên KHÔNG bắt được spin (đây
 > là thiếu sót phương pháp). **Đã revert recovery về TẮT** trong `run_infer.sh` (xe hết xoay).
 > Sau đó dựng nền mới `src/jepa_wm/nav/geosteer.py` (heading từ **rotvec 50Hz** + controller
-> **Stanley** cap 0.5) — **Phase 0-3 PASS offline (13/13, exit 0)**. **Phase 4 (wire vào live) CHƯA làm.**
+> **Stanley** cap 0.5) — **Phase 0-3 PASS offline (13/13)**. **Phase 4 (wire vào live + divergence-
+> detector) ĐÃ XONG 06-13 chiều, cờ OFF mặc định** (verify offline: integration-check 7/7) — xem §7.
 >
-> **CHƯA RA BÃI LẠI** cho tới khi Phase 4 + divergence-detector xong. Muốn chạy an toàn ngay bây giờ:
-> `bash run_infer.sh` (recovery TẮT = visual-servo trần + trim, đúng hành vi đẹp sáng nay tới sg13).
+> **Muốn chạy an toàn NGAY (recovery TẮT):** `bash run_infer.sh` = visual-servo trần + trim (hành vi
+> đẹp sáng nay tới sg13; vẫn TRÔI vì chưa bật recovery). **BẬT geosteer test bãi:** sửa `run_infer.sh`
+> `--geosteer-recover-cos 0.35` — protocol: sân TRỐNG, cap thấp, ngón tay trên STOP (xem §7 Rủi ro #1).
 
 ### 1) Triệu chứng + log
 - 4× `park4_di_thang`, vài lần `parkfix3`/`park3`: xe queo TRÁI hết cỡ → quay đầu. Đều fail.
@@ -47,7 +49,7 @@ decode tại `inference_loop.py:229`). Recovery-v1 chỉ **đi sai nguồn** (GP
 | **1** | Heading provider: rotvec→yaw + calibrate offset ONLINE | **✓ DONE** | `src/jepa_wm/nav/geosteer.py` |
 | **2** | Controller Stanley (heading-err+cross-track), cap, chống pivot | **✓ DONE** | `geosteer.py` |
 | **3** | SIM closed-loop offline (cổng bắt buộc trước khi ra xe) | **✓ PASS** | `scripts/geosteer_validate.py` |
-| **4** | Tích hợp vào inference live + divergence-detector | **❌ CHƯA** | (sửa `inference_loop.py`) |
+| **4** | Wire vào inference + divergence-detector (cờ OFF) | **✓ CODE XONG** (chờ TEST BÃI) | `inference_loop.py` + `geosteer_integration_check.py` |
 
 **Phase 0 (số đo robust — median, lọc GPS-glitch, 8 session):** offset rotvec↔graph **~−90° nhất quán
 7/8** session; **median sai số heading 6.5–14.8° (trung vị 10.3°)**; %<25° = 70–89%. ⇒ rotvec DÙNG ĐƯỢC
@@ -87,17 +89,34 @@ xe chĩa ra xa); (3) **cap 0.5** không full-lock (không pivot).
   `--xtrack-recover-cos 0` (geo recovery v1 tắt) + `--lock-cos 0` (HOLD tắt) = visual-servo trần +
   `--steer-trim -0.04` (lệch cơ khí: bánh chếch PHẢI, AUTO bỏ qua subtrim TX → ÂM bù TRÁI).
 
-### 7) Phase 4 — VIỆC TIẾP THEO (chưa làm), làm Ở NHÀ rồi mới ra bãi
-1. Đọc `rx,ry,rz` từ meta live mỗi tick → `rotvec_to_azimuth` → `HeadingCalibrator.add(az, yaw_gps_track)`
-   khi xe chạy đủ xa → `cal.yaw(az)` = heading graph-frame.
-2. Nhánh cos-thấp gọi `path_steer` (geosteer) thay `recovery_steer` v1; **bỏ CEM khi recovery → tick nhanh** (~0.15s).
-3. Health-check: `cal.unreliable()` → fallback (đừng tin heading rotvec).
-4. **Divergence-detector (an toàn):** |cross-track| TĂNG liên tục N tick recovery → tự về neutral (chặn spin).
-   **Cờ recovery OFF mặc định**; chỉ bật khi ra bãi (cap thấp, sân trống, sẵn sàng STOP).
-5. **⚠️ RỦI RO #1 (chỉ kiểm được trên xe):** dấu `steer→yaw` thật. SIM cho thấy **sai dấu = diverge tức
-   thì**. Offline đã đúng dấu + calibrator khử offset rotvec↔graph + Phase-0 xác nhận rotvec cùng chiều
-   GPS-track; nhưng "steer+ → xe quay PHẢI → graph-yaw GIẢM" phải đúng trên xe thật → divergence-detector
-   + off-mặc-định + protocol bãi an toàn là lớp chặn.
+### 7) Phase 4 — ĐÃ WIRE (06-13 chiều), cờ OFF mặc định, CHỜ TEST BÃI
+Đã sửa `scripts/inference_loop.py` (verify offline: py_compile OK, `--help` OK, `geosteer_validate`
+13/13, `geosteer_integration_check` **7/7**):
+1. **Đọc rotvec mỗi tick** (`rx,ry,rz` từ meta) → `rotvec_to_azimuth` → nuôi `HeadingCalibrator` bằng
+   GPS-track yaw (`est_car_heading`, baseline 1.2m) **MỖI tick có GPS** (không chỉ lúc recovery) → offset
+   SẴN SÀNG trước khi cos sập. `cal.yaw(az)` = heading graph-frame.
+2. **Nhánh cos<`--geosteer-recover-cos`** (route tay) → `path_steer` (Stanley) đè `raw_steer`. ĐÈ v1
+   (`--xtrack-recover-cos`) khi bật. HOLD cũng tắt khi geosteer bật.
+3. **Health-check:** `cal.unreliable()` (spread>25°) hoặc chưa calib → KHÔNG override (CEM giữ lái, tag `GS:noheading`).
+4. **Divergence-detector (`--geosteer-div-ticks`, mặc định 4):** |cross| vượt **min-pha-recovery 2m**
+   (>> GPS noise) liên tục N tick HOẶC >8m → DỪNG neutral + stop route. **Min-based** (không per-tick
+   delta) → integration-check chứng minh: KHÔNG false-fire lúc hội tụ, FIRE khi dấu lật (bắt @~5m,
+   trước khi U-turn 11.5m như 06-13). *(per-tick-delta ban đầu false-fire vì GPS noise — test bắt được, đã sửa.)*
+5. **3 flag mới (OFF mặc định, đã ghi trong `run_infer.sh`):** `--geosteer-recover-cos 0` (bật=0.35),
+   `--geosteer-cap 0.5`, `--geosteer-div-ticks 4`. Default = hành vi y HỆT trước (visual-servo trần).
+6. **⚠️ RỦI RO #1 còn lại (chỉ kiểm được TRÊN XE):** dấu `steer→yaw` thật. "steer+ → xe quay PHẢI →
+   graph-yaw GIẢM" phải đúng trên xe → divergence-detector + off-mặc-định + **protocol bãi** (sân trống,
+   cap thấp, ngón tay trên STOP web⛔/CH9-manual) là lớp chặn. **Bật test:** `--geosteer-recover-cos 0.35`.
+
+### 8) Đánh giá SIM (build sim rồi validate) — web-check 06-13
+- **Sim-động-học (bicycle, ĐÃ CÓ):** rẻ, bắt được spin — giữ làm gate.
+- **3DGS closed-loop từ data thật = ROI cao nhất (SAU deadline/paper):** kế hoạch chi tiết →
+  **`docs/SIM_3DGS_PLAN.md`**. Test full stack (V-JEPA+CEM+controller) trong domain thật, lặp ban đêm.
+  Tiền lệ: HUGSIM / GaussianRPG / SplatAD.
+- **NVIDIA Cosmos 3** (web-confirm: ra COMPUTEX 2026, "Open Frontier FM for Physical AI"): KHÔNG hợp
+  sim-validate (nặng >16GB, không GT hình học); HỢP **Cosmos-Transfer** relight (bug lệch-sáng) +
+  điểm so sánh paper (latent vs pixel world model). **Isaac Sim:** overkill, bỏ qua.
+- ⚠ Không sim nào xoá được Rủi ro #1 (dấu steer→yaw) — luôn phải canh với xe.
 
 ## 🔬 2026-06-12 ĐÊM — PHIÊN PHÂN TÍCH SÂU (6 câu hỏi user) — toàn số ĐO ĐƯỢC + 4 artifact mới + GPU chạy đêm
 

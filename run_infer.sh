@@ -21,6 +21,9 @@ PYTHONPATH=src ~/miniforge3/envs/ai/bin/python -u scripts/inference_loop.py \
   --steer-trim=-0.04 \
   --xtrack-recover-cos 0 \
   --xtrack-lookahead-m 1.5 \
+  --geosteer-recover-cos 0 \
+  --geosteer-cap 0.5 \
+  --geosteer-div-ticks 4 \
   --turn-slow 0 \
   --throttle-cap 0.10 \
   --cruise-throttle 0.10 \
@@ -53,6 +56,17 @@ PYTHONPATH=src ~/miniforge3/envs/ai/bin/python -u scripts/inference_loop.py \
 #                       "lệch 5m ko biết bẻ về → đâm bụi" (đo 06-13). 0=TẮT (về cơ chế cũ). Hay bẻ
 #                       về quá sớm/giật → hạ 0.25; còn chạy mù lâu mới bẻ → nâng 0.45.
 #  --xtrack-lookahead-m 1.5  recovery ngắm xa ngần này dọc tuyến. Ngắn(1.0)=bẻ gắt; dài(2.5)=mượt.
+#  ⭐⭐⭐ --geosteer-recover-cos 0  PHASE 4 (06-13) = RECOVERY MỚI thay v1 (v1 xoay vòng vì heading
+#                       GPS-track 1Hz; xem docs/HANDOFF.md). cos control-target < ngưỡng → lái STANLEY
+#                       về tuyến bằng HEADING ROTVEC 50Hz (tự calib offset online). 0=TẮT (mặc định,
+#                       chờ review). BẬT TEST BÃI: đặt 0.35 (TẮT --xtrack-recover-cos = để v1 khỏi đụng).
+#                       Đã PASS offline: geosteer_validate (sim 16/16) + geosteer_integration_check
+#                       (calib-arm + closed-loop + safety). ⚠ RỦI RO #1: dấu steer→yaw chỉ kiểm được
+#                       TRÊN XE → --geosteer-div-ticks tự DỪNG nếu xe đi XA tuyến (nghi sai dấu).
+#                       PROTOCOL bãi: sân TRỐNG, cap thấp, NGÓN TAY trên STOP (web ⛔ / CH9 manual).
+#  --geosteer-cap 0.5   trần |steer| Stanley (0.5=không full-lock→không pivot). Hạ 0.4 nếu gắt.
+#  --geosteer-div-ticks 4  |cross| vượt min-pha-recovery 2m liên tục 4 tick (hoặc >8m) → DỪNG (chặn
+#                       xoay vòng nếu dấu steer→yaw sai trên xe). 0=tắt detector (KHÔNG khuyên ở bãi).
 #  ⚠ --lock-cos để 0: recovery (trên) THAY HOLD. HOLD đóng băng lái RÁC (đo park4: khoá +1.0 → rail
 #                       vào bụi) → tắt. Chỉ bật lại lock-cos nếu --xtrack-recover-cos 0 (tắt recovery).
 #  --kick-throttle 0.10 cú giật đề-pa lúc đứng yên. Vọt/giật → hạ 0.09. Ko lăn → 0.11.
