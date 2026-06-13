@@ -7,6 +7,7 @@ cd /home/pc5070ti/workspace/JEPA
 mkdir -p logs
 LOG="logs/infer_$(date +%Y%m%d_%H%M%S).log"
 echo "[run_infer] log → $LOG"
+echo "[run_infer] geosteer-recover-cos = ${GEO:-0}   ·   BẬT geosteer: GEO=0.35 bash run_infer.sh"
 PYTHONPATH=src ~/miniforge3/envs/ai/bin/python -u scripts/inference_loop.py \
   --web \
   --reach-m 6\
@@ -21,7 +22,7 @@ PYTHONPATH=src ~/miniforge3/envs/ai/bin/python -u scripts/inference_loop.py \
   --steer-trim=-0.04 \
   --xtrack-recover-cos 0 \
   --xtrack-lookahead-m 1.5 \
-  --geosteer-recover-cos 0 \
+  --geosteer-recover-cos ${GEO:-0} \
   --geosteer-cap 0.5 \
   --geosteer-div-ticks 4 \
   --turn-slow 0 \
