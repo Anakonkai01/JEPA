@@ -12,8 +12,11 @@
 # Mặc định AN TOÀN: pure-visual, geosteer/xtrack/HOLD tắt, throttle thấp, ngón tay trên STOP.
 cd /home/pc5070ti/workspace/JEPA
 mkdir -p logs
-POLICY="${POLICY:-checkpoints/policy_recovery_cd4/best.pt}"     # recovery-augment nếu đã build
-[ -f "$POLICY" ] || POLICY="checkpoints/policy_prior_cd4/best.pt"   # else baseline BC (KHÔNG recovery)
+# recovery-augment α=0.6 (DEFAULT, dịu) → α=1.0 (mạnh hơn) → baseline BC (KHÔNG recovery)
+POLICY="${POLICY:-checkpoints/policy_recovery_cd4_a06/best.pt}"
+[ -f "$POLICY" ] || POLICY="checkpoints/policy_recovery_cd4/best.pt"
+[ -f "$POLICY" ] || POLICY="checkpoints/policy_prior_cd4/best.pt"
+# mạnh hơn nếu α=0.6 kéo không đủ về line: POLICY=checkpoints/policy_recovery_cd4/best.pt bash run_policy.sh
 LOG="logs/policy_$(date +%Y%m%d_%H%M%S).log"
 echo "[run_policy] log → $LOG | $([ -n "$STEP" ] && echo 'STEP (validate tay)' || echo 'LIVE 5Hz') | policy=$POLICY | throttle-cap=${THR:-0.10}"
 echo "[run_policy] ⚠ RE-TEACH route cùng buổi. STOP sẵn (web⛔/CH9-manual). Probe recovery --step TRƯỚC (augment chưa kiểm xe)."
