@@ -7,8 +7,8 @@ cd /home/pc5070ti/workspace/JEPA
 mkdir -p logs
 LOG="logs/infer_$(date +%Y%m%d_%H%M%S).log"
 echo "[run_infer] log → $LOG"
-echo "[run_infer] geosteer-recover-cos = ${GEO:-0}   ·   BẬT geosteer: GEO=0.35 bash run_infer.sh"
-echo "[run_infer] throttle=${THR:-0.10} kick=${KICK:-0.0} pop-confirm=${POP:-0.5}   ·   chậm+chắc-pop: THR=0.08 KICK=0.10 POP=0.3 bash run_infer.sh"
+echo "[run_infer] geosteer-recover-cos = ${GEO:-0.35}   ·   TẮT geosteer (baseline): GEO=0 bash run_infer.sh"
+echo "[run_infer] throttle=${THR:-0.08} kick=${KICK:-0.10} pop-confirm=${POP:-0}(0=pop thuần GPS)   ·   pop chặt lại: POP=0.5 · nhanh hơn: THR=0.10"
 PYTHONPATH=src ~/miniforge3/envs/ai/bin/python -u scripts/inference_loop.py \
   --web \
   --reach-m 6\
@@ -18,18 +18,18 @@ PYTHONPATH=src ~/miniforge3/envs/ai/bin/python -u scripts/inference_loop.py \
   --samples 64 --iters 2 \
   --ctrl-lookahead-m 0.5 \
   --heading-cap-deg 35 \
-  --pop-confirm-cos ${POP:-0.5} \
+  --pop-confirm-cos ${POP:-0} \
   --steer-smooth 0.1 \
   --steer-trim=-0.04 \
   --xtrack-recover-cos 0 \
   --xtrack-lookahead-m 1.5 \
-  --geosteer-recover-cos ${GEO:-0} \
+  --geosteer-recover-cos ${GEO:-0.35} \
   --geosteer-cap 0.5 \
   --geosteer-div-ticks 4 \
   --turn-slow 0 \
-  --throttle-cap ${THR:-0.10} \
-  --cruise-throttle ${THR:-0.10} \
-  --kick-throttle ${KICK:-0.0} \
+  --throttle-cap ${THR:-0.08} \
+  --cruise-throttle ${THR:-0.08} \
+  --kick-throttle ${KICK:-0.10} \
   --lock-cos 0 \
   --lock-hold-s 10.0 \
   2>&1 | tee -a "$LOG"
