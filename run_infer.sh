@@ -13,16 +13,19 @@ PYTHONPATH=src ~/miniforge3/envs/ai/bin/python -u scripts/inference_loop.py \
   --no-recover \
   --checkpoint checkpoints/vjepa_ac_car_cd4/vjepa_ac_car/best.pt \
   --policy checkpoints/policy_prior/best.pt \
-  --samples 256 --iters 2 \
+  --samples 64 --iters 2 \
   --ctrl-lookahead-m 0.5 \
   --heading-cap-deg 35 \
   --pop-confirm-cos 0.5 \
   --steer-smooth 0.1 \
+  --steer-trim=-0.04 \
+  --xtrack-recover-cos 0 \
+  --xtrack-lookahead-m 1.5 \
   --turn-slow 0 \
   --throttle-cap 0.10 \
   --cruise-throttle 0.10 \
   --kick-throttle 0.0 \
-  --lock-cos 0.10 \
+  --lock-cos 0 \
   --lock-hold-s 10.0 \
   2>&1 | tee -a "$LOG"
 
@@ -35,13 +38,23 @@ PYTHONPATH=src ~/miniforge3/envs/ai/bin/python -u scripts/inference_loop.py \
 #                       (khớp ma sát đo). kick=0 → đề-pa NGAY TRONG CUA dễ kẹt (scrub >0.10).
 #  ⚠️ ROUTE: teach/dựng lại NGAY TRƯỚC buổi chạy (probe 06-12: khác ánh sáng → ccos sập,
 #                       30/31 subgoal không qua nổi pop-confirm 0.5 với ảnh khác-buổi).
-#  --lock-cos 0.30      GIỮ LÁI XUYÊN VÙNG MÙ (MỚI): cos target tụt < 0.30 giữa cua →
-#                       đóng băng lái ở cú quẹo cuối (cam kết hoàn tất cua), hết noise/chệch.
-#                       Vẫn chệch sớm → nâng 0.40 (giữ sớm hơn). Can thiệp oan → hạ 0.20.
-#  --lock-hold-s 4.0    giữ tối đa 4s; quá mà chưa bắt lại lock → DỪNG (khỏi veer 12m). Cua
-#                       to cần lâu hơn → nâng 5-6.
+#  --lock-cos (HOLD)    ⚠ ĐÃ THAY bằng --xtrack-recover-cos (xem trên). HOLD chỉ đóng băng lái
+#                       CŨ (có thể là rác) → để 0. Lock-hold-s vô hại khi lock-cos 0.
 #  --steer-smooth 0.2   EMA lái. 0.6 (mặc định) = Ì, bóp nửa lực quẹo → đi thẳng.
 #                       Test cua: để 0 (lái tươi, raw thẳng ra bánh). Êm/straight: 0.4.
+#  --steer-trim -0.04   ⭐ LỆCH CƠ KHÍ (đo 06-13: bánh chếch PHẢI, AUTO 0/192 tick đánh phải).
+#                       AUTO bỏ qua subtrim TX (firmware steer=0→1560µs cứng). ÂM = bù TRÁI.
+#                       (-0.08 overcorrect → lệch TRÁI 1m ở park4; -0.04 cân hơn.) Trôi PHẢI →
+#                       -0.06; lố TRÁI → -0.02. (Fix gốc: hạ SERVO_CENTER 1560→~1500 firmware, trim 0.)
+#  --xtrack-recover-cos 0.35  ⭐⭐ CROSS-TRACK RECOVERY (MỚI 06-13, đã test offline 9/9 unit +
+#                       27/28 replay log lỗi bẻ-về-tuyến): cos control-target < 0.35 = mất khớp ảnh
+#                       → ĐÈ CEM, lái pure-pursuit HÌNH HỌC về polyline teach (GPS xy + heading
+#                       track/tangent). Đây là số hạng VỊ TRÍ visual-servo thiếu = thủ phạm GỐC
+#                       "lệch 5m ko biết bẻ về → đâm bụi" (đo 06-13). 0=TẮT (về cơ chế cũ). Hay bẻ
+#                       về quá sớm/giật → hạ 0.25; còn chạy mù lâu mới bẻ → nâng 0.45.
+#  --xtrack-lookahead-m 1.5  recovery ngắm xa ngần này dọc tuyến. Ngắn(1.0)=bẻ gắt; dài(2.5)=mượt.
+#  ⚠ --lock-cos để 0: recovery (trên) THAY HOLD. HOLD đóng băng lái RÁC (đo park4: khoá +1.0 → rail
+#                       vào bụi) → tắt. Chỉ bật lại lock-cos nếu --xtrack-recover-cos 0 (tắt recovery).
 #  --kick-throttle 0.10 cú giật đề-pa lúc đứng yên. Vọt/giật → hạ 0.09. Ko lăn → 0.11.
 #  --heading-cap-deg 35 lookahead dừng khi route xoay ≥ ngần này → vào cua target gần
 #                       lại, còn overlap. Quẹo muộn → hạ 30/25. Khựng → nâng 45.

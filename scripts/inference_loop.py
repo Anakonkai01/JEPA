@@ -57,6 +57,101 @@ except ImportError:  # pragma: no cover
 
 
 # ---------------------------------------------------------------------------
+# Cross-track recovery (lái hình học về polyline teach khi MẤT khớp ảnh)
+# Đo 06-13 (2 run park, parkfix3+park4): visual-servo chỉ khớp ẢNH, KHÔNG có
+# phản hồi vị trí → xe lệch line ~0.6-1m + route cong → cos sập → CEM ra noise/
+# vớ cực hạn (+1.0) → HOLD đóng băng rác → rail vào bụi; "lệch trái 5m mà ko biết
+# bẻ phải về". Đây là số hạng VỊ TRÍ còn thiếu: dùng GPS xy + polyline teach
+# (có sẵn) lái pure-pursuit về tuyến khi cos target thấp. Tách riêng + thuần numpy
+# để UNIT-TEST + REPLAY log lỗi offline trước khi bật trên xe.
+# ---------------------------------------------------------------------------
+def _wrap_pi(a: float) -> float:
+    """gói góc về (-pi, pi]."""
+    return (a + np.pi) % (2 * np.pi) - np.pi
+
+
+def est_car_heading(car_xy, pos_hist, min_move: float = 1.0):
+    """Heading xe (rad, quy ước atan2: CCW dương, 0=+x) từ GPS-track.
+
+    pos_hist = deque/list các (t, xy, ...) — CŨ NHẤT trước. Lấy baseline DÀI nhất
+    (cũ-nhất → hiện tại) đạt >= min_move để hạ nhiễu GPS (noise median ~0.44m).
+    None khi xe chưa đi đủ xa (đứng yên/bò) → recovery KHÔNG kích (an toàn: lúc đó
+    không phải pha bolt nguy hiểm)."""
+    if car_xy is None or not pos_hist:
+        return None
+    car_xy = np.asarray(car_xy, np.float32)
+    for entry in pos_hist:                       # cũ nhất trước → baseline dài nhất
+        p = np.asarray(entry[1], np.float32)
+        d = car_xy - p
+        if float(np.hypot(d[0], d[1])) >= min_move:
+            return float(np.arctan2(d[1], d[0]))
+    return None
+
+
+def purepursuit_steer(car_xy, car_head, poly, cum, lookahead_m: float,
+                      steer_full_rad: float):
+    """Lái hình học (pure-pursuit) về polyline teach.
+
+    car_xy (2,) vị trí xe; car_head rad (None→trả None); poly (N,2) điểm teach;
+    cum (N,) arc-length tích luỹ; lookahead_m: ngắm điểm cách HÌNH-CHIẾU-xe ngần
+    này về phía trước dọc tuyến; steer_full_rad: |góc lệch| ứng full-lock (±1).
+    Trả steer_norm∈[-1,1] (ÂM=trái, DƯƠNG=phải, khớp firmware) hoặc None."""
+    if car_head is None or poly is None:
+        return None
+    poly = np.asarray(poly, np.float32)
+    cum = np.asarray(cum, np.float32)
+    if len(poly) < 2 or len(cum) != len(poly):
+        return None
+    car_xy = np.asarray(car_xy, np.float32)
+    # 1) chiếu xe lên từng segment → điểm gần nhất + vị trí along-track s_proj
+    best_d, s_proj = 1e18, 0.0
+    for i in range(len(poly) - 1):
+        a, b = poly[i], poly[i + 1]
+        ab = b - a
+        L2 = float(ab @ ab)
+        if L2 < 1e-9:
+            continue
+        tt = float(np.clip(((car_xy - a) @ ab) / L2, 0.0, 1.0))
+        d = float(np.hypot(*(car_xy - (a + tt * ab))))
+        if d < best_d:
+            best_d = d
+            s_proj = float(cum[i] + tt * (cum[i + 1] - cum[i]))
+    # 2) điểm lookahead tại arc-length s_proj + lookahead_m
+    s_t = s_proj + max(0.0, lookahead_m)
+    if s_t >= cum[-1]:
+        Lp = poly[-1]
+    else:
+        k = int(np.searchsorted(cum, s_t) - 1)
+        k = max(0, min(k, len(poly) - 2))
+        seg = float(cum[k + 1] - cum[k])
+        f = 0.0 if seg < 1e-9 else (s_t - float(cum[k])) / seg
+        Lp = poly[k] + f * (poly[k + 1] - poly[k])
+    # 3) góc giữa heading xe và vector (xe→Lp). alpha>0 = target bên TRÁI (CCW) →
+    #    quẹo TRÁI = steer ÂM → steer = -alpha/full (saturate ±1).
+    desired = float(np.arctan2(Lp[1] - car_xy[1], Lp[0] - car_xy[0]))
+    alpha = _wrap_pi(desired - float(car_head))
+    if steer_full_rad <= 1e-6:
+        return None
+    return float(np.clip(-alpha / steer_full_rad, -1.0, 1.0))
+
+
+def recovery_steer(car_xy, pos_hist, poly, cum, head, lookahead_m, steer_full_rad,
+                   min_move: float = 0.6):
+    """Steer recovery hoàn chỉnh = pure-pursuit về polyline, với heading lấy theo thứ tự:
+    (1) GPS-track nếu xe đã đi >= min_move (đáng tin khi đang lăn/bolt — pha nguy hiểm);
+    (2) FALLBACK tiếp tuyến route tại hình-chiếu xe khi xe chậm/đứng (replay 06-13: ở ~0.2m/s
+        cửa sổ 3s < 1m → track-heading None nhiều tick). Fallback giả định xe ~thẳng hàng tuyến
+        (đúng cho lệch-SONG-SONG phổ biến; xe quay ngang thì kém nhưng vẫn hơn HOLD đóng băng rác).
+    Trả steer[-1,1] hoặc None (thiếu cả track lẫn route)."""
+    ch = est_car_heading(car_xy, pos_hist, min_move)
+    if ch is None and head is not None and poly is not None and len(poly):
+        poly = np.asarray(poly, np.float32)
+        j = int(np.argmin(np.linalg.norm(poly - np.asarray(car_xy, np.float32), axis=1)))
+        ch = float(np.asarray(head, np.float32)[j])
+    return purepursuit_steer(car_xy, ch, poly, cum, lookahead_m, steer_full_rad)
+
+
+# ---------------------------------------------------------------------------
 # Encoding helpers (mirror engine.encode / engine.encode_patch, but online)
 # ---------------------------------------------------------------------------
 def _to_tensor(rgb_u8: np.ndarray, size: int, device) -> torch.Tensor:
@@ -353,6 +448,20 @@ def main():
                     help="NHÂN steer sau EMA trước khi gửi (clamp ±1) — chữa 'đánh lái yếu' khi model/"
                          "policy ra góc nhỏ (BC park thiên góc bé; indoor OOD). 1.3-1.5 = mạnh hơn "
                          "30-50%%. Lưu ý: gain làm lệch so với action model tin → tăng nhỏ từng nấc.")
+    ap.add_argument("--steer-trim", type=float, default=0.0,
+                    help="CỘNG offset hằng vào steer sau gain (clamp ±1) — chữa LỆCH CƠ KHÍ trim lái "
+                         "ở nhánh AUTO (firmware steer=0 → SERVO_CENTER 1560µs cứng, KHÔNG nghe subtrim "
+                         "tay TX). ÂM = bù sang TRÁI (bánh chếch phải → xe trôi phải, đo 06-13: 0/192 "
+                         "tick đánh phải). Bắt đầu -0.08, trôi phải nữa → -0.12, lố sang trái → -0.05.")
+    ap.add_argument("--xtrack-recover-cos", type=float, default=0.0,
+                    help="CROSS-TRACK RECOVERY (route tay, 0=TẮT): khi cos control-target < ngưỡng "
+                         "này (= MẤT khớp ảnh) → đè CEM, lái pure-pursuit HÌNH HỌC về polyline teach "
+                         "bằng GPS xy + heading GPS-track. Số hạng VỊ TRÍ visual-servo thiếu (đo 06-13: "
+                         "cos sập → CEM noise/HOLD rác → rail vào bụi, 'lệch 5m ko biết bẻ về'). Bật "
+                         "recovery thì HOLD (--lock-cos) TẮT (recovery thay vai). Khuyên ~0.35.")
+    ap.add_argument("--xtrack-lookahead-m", type=float, default=1.5,
+                    help="pure-pursuit recovery ngắm điểm cách hình-chiếu-xe ngần này (m) dọc polyline "
+                         "teach. Ngắn (1.0) = bẻ về gắt; dài (2.5) = về mượt/chậm. Mặc định 1.5.")
     ap.add_argument("--turn-slow", type=float, default=0.5,
                     help="cua thì giảm ga: throt *= (1 - k·|steer|). 0=tắt")
     ap.add_argument("--stale-s", type=float, default=0.4,
@@ -629,7 +738,7 @@ def main():
             manual_hits, manual_last_idx, manual_t0, last_rt_obj = 0, -1, time.time(), None
             man_seen = False                              # LATCH "ảnh đã khớp subgoal hiện tại" (pop khi đi qua)
             man_center, man_vecs = None, None             # centered-cosine route tay (probe_reach 06-12)
-            man_cum, man_head, man_ctrl_idx = None, None, -1  # polyline arc-len + heading route tay (lookahead heading-aware)
+            man_cum, man_head, man_xy, man_ctrl_idx = None, None, None, -1  # polyline arc-len + heading route tay (lookahead heading-aware)
             head_cap_rad = float(np.deg2rad(args.heading_cap_deg))
             hold_steer, hold_t0, manual_ctrl_cos = None, None, None  # giữ-lái-xuyên-vùng-mù (commit-through-turn)
             man_block_idx, goal_block_id = -1, None       # log "GPS tới nhưng ảnh chưa khớp" 1 lần/subgoal
@@ -725,7 +834,7 @@ def main():
                             # arc-length + heading dựng từ xy TEACH (ghi 1 lần lúc quay), GPS noise
                             # live không chạm control target. Heading lấy CENTRAL-DIFF (baseline ~2
                             # subgoal ≈ 2.6m) cho đỡ nhiễu GPS teach. Thiếu xy (indoor) → bỏ lookahead.
-                            man_cum, man_head, man_ctrl_idx = None, None, -1
+                            man_cum, man_head, man_xy, man_ctrl_idx = None, None, None, -1
                             if (args.ctrl_lookahead_m > 0 and len(subs) >= 2
                                     and all(s.get("xy") is not None for s in subs)):
                                 mxy = np.asarray([s["xy"] for s in subs], np.float32)   # (N,2) graph-frame mét
@@ -746,6 +855,7 @@ def main():
                                     a = mxy[i0]; b = mxy[i1]
                                     hd[k] = np.arctan2(b[1] - a[1], b[0] - a[0])
                                 man_head = hd
+                                man_xy = mxy        # giữ polyline cho cross-track recovery
                         if man_center is not None:
                             _v = nav - man_center
                             navn = _v / (np.linalg.norm(_v) + 1e-8)
@@ -1101,13 +1211,31 @@ def main():
                     t_plan = time.time()
                     raw_steer, throt = float(raw_steer), float(throt)
                     model_throt = throt                    # ga model TRƯỚC floors (log/--step)
+                    # CROSS-TRACK RECOVERY (route tay): cos control-target sập = MẤT khớp ảnh →
+                    # CEM hết gradient (đo 06-13: ra noise/vớ +1.0) và HOLD chỉ đóng băng lái rác →
+                    # rail vào bụi. Thay bằng LÁI HÌNH HỌC về polyline teach (GPS xy + heading
+                    # GPS-track) — phản hồi VỊ TRÍ visual-servo thiếu. Đè raw_steer TRƯỚC EMA/gain/
+                    # trim (vẫn qua làm-mượt + sàn ga như thường). TẮT khi --xtrack-recover-cos=0.
+                    recover_tag = ""
+                    recovered = False
+                    if (wp_mode == "manual" and args.xtrack_recover_cos > 0
+                            and manual_ctrl_cos is not None
+                            and manual_ctrl_cos < args.xtrack_recover_cos
+                            and car_xy is not None and man_xy is not None and man_cum is not None):
+                        _pp = recovery_steer(car_xy, pos_hist, man_xy, man_cum, man_head,
+                                             args.xtrack_lookahead_m, float(np.deg2rad(35.0)))
+                        if _pp is not None:
+                            raw_steer = _pp
+                            recovered = True
+                            recover_tag = f" XT{raw_steer:+.2f}"
                     # GIỮ LÁI XUYÊN VÙNG MÙ (commit-through-turn, route tay): vào cua subgoal kế
                     # xoay khỏi overlap → cos target tụt → CEM hết gradient → ra noise ±1 → xe
                     # CHỆCH KHỎI tuyến (đo 06-12 sg14). Khi cos target < --lock-cos: ĐÓNG BĂNG lái
                     # ở cú quẹo CUỐI lúc còn lock (cam kết hoàn tất cua) thay vì noise; cos hồi →
                     # CEM tiếp; giữ > --lock-hold-s vẫn không hồi → DỪNG (khỏi veer đi xa như cũ).
                     hold_tag = ""
-                    if wp_mode == "manual" and args.lock_cos > 0 and manual_ctrl_cos is not None:
+                    if (args.xtrack_recover_cos <= 0          # recovery bật → HOLD tắt (recovery thay vai)
+                            and wp_mode == "manual" and args.lock_cos > 0 and manual_ctrl_cos is not None):
                         if manual_ctrl_cos >= args.lock_cos:
                             hold_steer, hold_t0 = raw_steer, None   # còn lock → cập nhật lái tin cậy
                         elif hold_steer is not None and abs(hold_steer) > 0.25:
@@ -1128,7 +1256,7 @@ def main():
                     # EMA làm mượt lái (chống zigzag/văng đường) + cua thì giảm ga
                     steer = args.steer_smooth * prev_steer + (1.0 - args.steer_smooth) * raw_steer
                     prev_steer = steer                     # EMA giữ giá trị CHƯA gain (không kép)
-                    steer = max(-1.0, min(1.0, steer * args.steer_gain))
+                    steer = max(-1.0, min(1.0, steer * args.steer_gain + args.steer_trim))
                     throt = throt * (1.0 - args.turn_slow * min(1.0, abs(steer)))
                     # BREAKAWAY + CRUISE (chạy thật 06-11): policy/CEM hay ra ga ~0 → xe chạy
                     # kiểu giật-trớn-giật toàn bằng cú kick (lái stale giữa các cú surge → lượn).
@@ -1213,7 +1341,7 @@ def main():
                     emit(steer, throt)                                 # once (phone keeps-alive) or holder (dongle)
                     xy_tag = (f" xy({car_xy[0]:.1f},{car_xy[1]:.1f})"
                               if car_xy is not None else "")           # để đo lateral offset từ log
-                    print(f"[infer] seq{seq} {tag}{hold_tag} steer{steer:+.2f}(raw{raw_steer:+.2f}) throt{throt:+.2f} "
+                    print(f"[infer] seq{seq} {tag}{recover_tag}{hold_tag} steer{steer:+.2f}(raw{raw_steer:+.2f}) throt{throt:+.2f} "
                           f"(ga model {model_throt:+.3f}){xy_tag} "
                           f"({time.time()-t0:.2f}s enc{t_enc-t0:.2f} nav{t_tgt-t_enc:.2f} "
                           f"cem{t_plan-t_tgt:.2f})", flush=True)

@@ -1,9 +1,103 @@
 # HANDOFF — đọc cái này trước khi tiếp tục
 
-> Tóm tắt tình hình cho phiên sau. Cập nhật: **2026-06-12 đêm**.
+> Tóm tắt tình hình cho phiên sau. Cập nhật: **2026-06-13 trưa**.
 > Nền đầy đủ: [../CLAUDE.md](../CLAUDE.md) · [../README.md](../README.md) · [PLAN.md](PLAN.md) ·
 > [LeWorldModel.md](LeWorldModel.md) · [../robot/android/README.md](../robot/android/README.md) ·
 > [../robot/android/DRIVE_SETUP.md](../robot/android/DRIVE_SETUP.md). Cập nhật file này mỗi khi trạng thái đổi.
+
+## 🧭 2026-06-13 TRƯA — PARK THẤT BẠI (xe XOAY VÒNG/QUAY ĐẦU) → CHẨN GỐC = HEADING → DỰNG NỀN `geosteer` (Phase 0-3 PASS offline, Phase 4 CHƯA wire)
+
+> **TL;DR cho phiên/máy sau:** Test bãi sáng-trưa 06-13 **thất bại hoàn toàn**: 4 lần `park4_di_thang`
+> (đi thẳng) + `park3` → xe **queo trái hết cỡ rồi quay đầu** (không phải lệch nhẹ). Mổ log thật ⇒
+> gốc rễ là **HEADING**: recovery-v1 (cross-track, pure-pursuit) lấy heading từ **GPS-track 1Hz** →
+> xe chậm + GPS thưa → ~60% tick heading rỗng (fallback) + steer **bão hoà ±1.0** → **PIVOT tại chỗ /
+> quay đầu** thay vì tịnh tiến về line. Offline-test cũ chỉ kiểm DẤU tĩnh nên KHÔNG bắt được spin (đây
+> là thiếu sót phương pháp). **Đã revert recovery về TẮT** trong `run_infer.sh` (xe hết xoay).
+> Sau đó dựng nền mới `src/jepa_wm/nav/geosteer.py` (heading từ **rotvec 50Hz** + controller
+> **Stanley** cap 0.5) — **Phase 0-3 PASS offline (13/13, exit 0)**. **Phase 4 (wire vào live) CHƯA làm.**
+>
+> **CHƯA RA BÃI LẠI** cho tới khi Phase 4 + divergence-detector xong. Muốn chạy an toàn ngay bây giờ:
+> `bash run_infer.sh` (recovery TẮT = visual-servo trần + trim, đúng hành vi đẹp sáng nay tới sg13).
+
+### 1) Triệu chứng + log
+- 4× `park4_di_thang`, vài lần `parkfix3`/`park3`: xe queo TRÁI hết cỡ → quay đầu. Đều fail.
+- Log thất bại có tag recovery: **`logs/infer_20260613_113626.log`** (route park4_di_thang, **120 tick XT**).
+  Các log khác (110211/105845/102627) recovery=0 tick (chạy trước khi bật, hoặc route khác).
+
+### 2) Chẩn đoán GỐC (mổ log thật, không đoán)
+Dựng lại heading realtime + cross-track cho 120 tick recovery của log trên:
+- **Dấu XT đúng 102/120 (85%)** → KHÔNG phải lỗi dấu/heading cơ bản.
+- **~60% tick heading = FALLBACK** (GPS 1Hz + xe bò → trong 3s không dịch nổi 0.6m → `est_car_heading`
+  trả `None` → dùng tiếp tuyến tuyến). Heading thật từ GPS gần như KHÔNG có.
+- Chuỗi seq1094→1186: `XT+1.00` "đúng" liên tục mà heading quét +180→−132→−155→+174→+132 (**XE XOAY
+  TRÒN**), cross-track TĂNG 0.7→4.4m. ⇒ **full-lock ±1.0 + heading GPS-1Hz-trễ + tốc thấp = PIVOT tại
+  chỗ / quay đầu**, không tịnh tiến về line.
+- **Bài học phương pháp:** replay-offline cũ chỉ kiểm DẤU tại điểm CÓ SẴN (sinh ra KHÔNG có recovery) →
+  không mô phỏng closed-loop động học → không thể bắt spin. Phải SIM động học mới validate được recovery.
+
+### 3) Phát hiện mở đường: HEADING THẬT CÓ SẴN trong stream
+State model = **`[speed, gx,gy,gz, ax,ay,az, rx,ry,rz]`**. Phone **đã stream `rx,ry,rz` = Android
+ROTATION_VECTOR** (orientation tuyệt đối, ~50Hz, không trễ) trong meta live (`MainActivity.kt:303`;
+decode tại `inference_loop.py:229`). Recovery-v1 chỉ **đi sai nguồn** (GPS-track 1Hz thay vì rotvec).
+
+### 4) Kế hoạch có CỔNG (gate phải PASS mới qua bước sau — chống lặp lỗi "tưởng xong")
+| Phase | Nội dung | Trạng thái | Artifact |
+|-------|----------|------------|----------|
+| **0** | rotvec dùng làm heading được không? (data thật, offline) | **✓ PASS** | `scripts/geosteer_rotvec_check.py` |
+| **1** | Heading provider: rotvec→yaw + calibrate offset ONLINE | **✓ DONE** | `src/jepa_wm/nav/geosteer.py` |
+| **2** | Controller Stanley (heading-err+cross-track), cap, chống pivot | **✓ DONE** | `geosteer.py` |
+| **3** | SIM closed-loop offline (cổng bắt buộc trước khi ra xe) | **✓ PASS** | `scripts/geosteer_validate.py` |
+| **4** | Tích hợp vào inference live + divergence-detector | **❌ CHƯA** | (sửa `inference_loop.py`) |
+
+**Phase 0 (số đo robust — median, lọc GPS-glitch, 8 session):** offset rotvec↔graph **~−90° nhất quán
+7/8** session; **median sai số heading 6.5–14.8° (trung vị 10.3°)**; %<25° = 70–89%. ⇒ rotvec DÙNG ĐƯỢC
+(tốt hơn hẳn GPS-track 1Hz vốn vắng 60% tick). **2 điều kiện rút ra:** (a) offset ĐỔI giữa buổi (1
+session lệch +98°) → **calibrate ONLINE mỗi run, KHÔNG hardcode**; (b) cần **health-check runtime**
+(rotvec lệch GPS-track dai dẳng → cờ `unreliable()` → fallback).
+
+**Phase 1 (`HeadingCalibrator`):** offset = circular-median của (azimuth_rotvec − yaw_GPS-track) khi xe
+chạy đủ xa; `unreliable()` khi spread residual >25°. Unit: recover offset 0.72 vs thật 0.70, spread 4°.
+
+**Phase 2 (`path_steer` = STANLEY):** dùng TIẾP TUYẾN tuyến + bù cross-track → ổn định cả khi xe chĩa
+RA XA line (chỗ **pure-pursuit v1 SUY BIẾN** → lật ±cap → đi thẳng ra xa, đã trace chứng minh). **cap
+0.5** (không full-lock → không pivot) + giảm |steer| khi v<v_min (chống bẻ gắt lúc đứng yên). 9 unit dấu PASS.
+
+**Phase 3 (SIM closed-loop):** xe bicycle + GPS 1Hz (noise 0.44m, giữ giữa mẫu) + heading rotvec (noise
+~13°). Thả xe lệch 3m / hướng sai 45-60°, route thẳng+cong, tick 0.15s & 1.5s → **hội tụ 16/16** (final
+cross-track <0.6m, không diverge). Tick 0.15s + cap 0.5 mượt nhất. **Quá trình này bắt 3 bug** (2 bug
+SAI DẤU động học trong sim, 1 lỗi gọi hàm test) — đúng giá trị của SIM động học so với kiểm dấu tĩnh.
+
+**Lệnh re-verify (máy nào cũng chạy được):**
+```bash
+PYTHONPATH=src python scripts/geosteer_validate.py     # Gate 2+3, thuần numpy, KHÔNG cần data → 13/13, exit 0
+python scripts/geosteer_rotvec_check.py                # Gate 0, cần data/raw_towerpro/
+```
+
+### 5) Khác biệt cốt lõi vs recovery-v1 (vụ xoay vòng)
+(1) heading từ **rotvec 50Hz** thay GPS-track 1Hz; (2) **Stanley** thay pure-pursuit (không suy biến khi
+xe chĩa ra xa); (3) **cap 0.5** không full-lock (không pivot).
+
+### 6) Trạng thái repo (uncommitted — commit trong phiên này)
+- **MỚI:** `src/jepa_wm/nav/geosteer.py` · `scripts/geosteer_validate.py` · `scripts/geosteer_rotvec_check.py`.
+- **SỬA `scripts/inference_loop.py`** (138 dòng, từ phiên 06-13 sáng): **recovery-v1** = `recovery_steer()`
+  pure-pursuit + `est_car_heading()` + flag `--xtrack-recover-cos` (**default 0.0 = TẮT**, an toàn) +
+  `--xtrack-lookahead-m` + `--steer-trim`. Đây là v1 ĐÃ HỎNG, giữ nguyên (dormant, off mặc định); **Phase
+  4 sẽ thay nó bằng `geosteer`**. *(Commit cùng `run_infer.sh` vì run_infer tham chiếu các flag này.)*
+- **SỬA `run_infer.sh`** → state AN TOÀN recovery-TẮT: `--no-recover` (back-up recovery của MODEL tắt) +
+  `--xtrack-recover-cos 0` (geo recovery v1 tắt) + `--lock-cos 0` (HOLD tắt) = visual-servo trần +
+  `--steer-trim -0.04` (lệch cơ khí: bánh chếch PHẢI, AUTO bỏ qua subtrim TX → ÂM bù TRÁI).
+
+### 7) Phase 4 — VIỆC TIẾP THEO (chưa làm), làm Ở NHÀ rồi mới ra bãi
+1. Đọc `rx,ry,rz` từ meta live mỗi tick → `rotvec_to_azimuth` → `HeadingCalibrator.add(az, yaw_gps_track)`
+   khi xe chạy đủ xa → `cal.yaw(az)` = heading graph-frame.
+2. Nhánh cos-thấp gọi `path_steer` (geosteer) thay `recovery_steer` v1; **bỏ CEM khi recovery → tick nhanh** (~0.15s).
+3. Health-check: `cal.unreliable()` → fallback (đừng tin heading rotvec).
+4. **Divergence-detector (an toàn):** |cross-track| TĂNG liên tục N tick recovery → tự về neutral (chặn spin).
+   **Cờ recovery OFF mặc định**; chỉ bật khi ra bãi (cap thấp, sân trống, sẵn sàng STOP).
+5. **⚠️ RỦI RO #1 (chỉ kiểm được trên xe):** dấu `steer→yaw` thật. SIM cho thấy **sai dấu = diverge tức
+   thì**. Offline đã đúng dấu + calibrator khử offset rotvec↔graph + Phase-0 xác nhận rotvec cùng chiều
+   GPS-track; nhưng "steer+ → xe quay PHẢI → graph-yaw GIẢM" phải đúng trên xe thật → divergence-detector
+   + off-mặc-định + protocol bãi an toàn là lớp chặn.
 
 ## 🔬 2026-06-12 ĐÊM — PHIÊN PHÂN TÍCH SÂU (6 câu hỏi user) — toàn số ĐO ĐƯỢC + 4 artifact mới + GPU chạy đêm
 
