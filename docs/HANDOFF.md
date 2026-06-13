@@ -1,5 +1,25 @@
 # HANDOFF — đọc cái này trước khi tiếp tục
 
+## 🌙 2026-06-14 ĐÊM (account-2, tự chủ — user ngủ) — FLOOR sửa + RECOVERY-policy VALIDATE offline. Sổ đêm đầy đủ + protocol sáng: **`docs/NIGHT_20260614.md`** (§4)
+
+> **TÓM TẮT CHO 10H SÁNG (mọi việc đêm = OFFLINE, KHÔNG đụng xe):**
+> - **GEOSTEER BỎ HOÀN TOÀN** (quyết định user) → pure-visual; recovery DUY NHẤT = policy mới.
+> - **⭐ FLOOR = default sáng: `bash run_infer.sh`** — đã REVERT về config 06-12 đợt-2 ĐÃ-THẮNG-THẬT
+>   (256/2, lookahead **0.5**, pop-confirm 0.5, reach 6, kick 0). (`run_infer` đang để config 06-13 ĐÃ
+>   FAIL ở bãi — đã sửa.) meas_tail đêm nay đo: nhiều-sample KHÔNG cắt full-lock tail → `SMP=64` (1.6s,
+>   ít lái-mù 3.4×) ≈ 256/2 → nên thử `SMP=64 bash run_infer.sh`.
+> - **UPSIDE = `STEP=1 bash run_policy.sh`** — policy **RECOVERY-AUGMENTED** mới (DAVE-2 cho V-JEPA latent:
+>   dịch token giả lệch-làn + nhãn bẻ-về; KHÔNG cần GPU). Offline **PASS** (REC-3): bẻ-về **3.4× baseline**,
+>   monotone, đúng dấu mọi shift, chạy ở goal-d=1 (deploy), val tốt hơn baseline; trục đúng vật-lý (H-A).
+>   ⚠ Transfer synthetic→THẬT CHƯA chứng minh được offline (không renderer) → **PROBE on-car BẮT BUỘC**:
+>   nhấc xe lệch ~1m TRÁI → `s` → steer ra **PHẢI**? lệch PHẢI → **TRÁI**? Đúng dấu → live; sai/yếu → về FLOOR.
+> - **BẮT BUỘC: teach route CÙNG BUỔI** (`route_from_session.py <sess> <tên> --step-m 0.35`) — pure-visual
+>   không có recovery khi teach lệch buổi → bung. Ngón tay trên STOP (web ⛔ / CH9 manual) mọi lúc.
+> - Ckpt (gitignored, máy khác retrain ~vài phút CPU): floor warm-start `policy_prior_cd4`; recovery
+>   `policy_recovery_cd4_a06` (α=0.6 default) / `policy_recovery_cd4` (α=1.0 mạnh hơn). Scripts:
+>   `pool_recovery_latents.py` → `train_policy_recovery.py` → `eval_recovery_response.py`.
+
+
 ## 🅿️🛑 2026-06-13 CHIỀU/TỐI — PARK (pure-visual): BÁM NỬA ĐẦU RỒI BUNG Ở "COS-DROPOUT" → DỪNG BÃI, FIX Ở NHÀ. Chi tiết đầy đủ: **`docs/CLOSED_LOOP_FAILURE.md`**
 
 > **TL;DR cho phiên/máy sau (đọc CLOSED_LOOP_FAILURE.md để đủ):**
