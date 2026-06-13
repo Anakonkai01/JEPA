@@ -535,6 +535,11 @@ def main():
     ap.add_argument("--warm-std", type=float, default=0.15,
                     help="sigma CEM khi có --policy warm-start, theo tỉ lệ nửa-box mỗi chiều "
                          "(PiJEPA clamp σ nhỏ quanh prior). Chỉ có tác dụng khi mu_init được truyền.")
+    ap.add_argument("--policy-only", action="store_true",
+                    help="PIVOT (06-14): dùng THẲNG action của --policy (1 forward <1ms), BỎ CEM. "
+                         "Quyết-định-nhanh → ít lái-mù giữa tick = lời giải 'chậm mới ăn'. Cần --policy. "
+                         "Offline cd4: |Δsteer| 0.014 thẳng/0.055 full-lock, sign-match recovery 98%. "
+                         "Vẫn qua smoothing/floors/cap như thường. Mặc định TẮT (= CEM, đường an toàn).")
     ap.add_argument("--pulse", action=argparse.BooleanOptionalAction, default=False,
                     help="pulse mode (sense-plan-act): áp action --pulse-move giây rồi NGẮT GA (giữ lái) "
                          "trong lúc encode+CEM → drift lúc tính ≈ 0, frame để plan gần như tĩnh. "
@@ -1260,10 +1265,16 @@ def main():
                             mu0 = mu0.clone()
                             mu0[..., 1] = mu0[..., 1].clamp(min=0.75 * args.throttle_cap)
                     # bf16 autocast quanh CEM (mặc định fp32 → chậm); model train bf16 nên nhất quán.
-                    with torch.autocast("cuda", dtype=torch.bfloat16, enabled=args.device.startswith("cuda")):
-                        raw_steer, throt = planner.plan(z0, s0, target_tokens, mu_init=mu0)
+                    if args.policy_only and mu0 is not None:
+                        # PIVOT (đêm 06-14): action = learned policy TRỰC TIẾP (bỏ CEM) → <1ms/quyết-định
+                        # → ít lái-mù giữa tick (lời giải "chậm mới ăn"). Vẫn qua smoothing/floors/cap dưới.
+                        raw_steer = float(mu0[0].clamp(-1.0, 1.0))
+                        throt = float(mu0[1].clamp(args.throttle_min, args.throttle_cap))
+                    else:
+                        with torch.autocast("cuda", dtype=torch.bfloat16, enabled=args.device.startswith("cuda")):
+                            raw_steer, throt = planner.plan(z0, s0, target_tokens, mu_init=mu0)
+                        raw_steer, throt = float(raw_steer), float(throt)
                     t_plan = time.time()
-                    raw_steer, throt = float(raw_steer), float(throt)
                     model_throt = throt                    # ga model TRƯỚC floors (log/--step)
                     # CROSS-TRACK RECOVERY (route tay): cos control-target sập = MẤT khớp ảnh →
                     # CEM hết gradient (đo 06-13: ra noise/vớ +1.0) và HOLD chỉ đóng băng lái rác →
@@ -1404,26 +1415,48 @@ def main():
                         # DEBUG TỪNG NHỊP (yêu cầu 06-12): neutral → in quyết định + landscape
                         # E(steer) 5 nấc tại tick này → chờ ENTER mới áp đúng 1 nhịp rồi coast.
                         emit(0.0, 0.0)
-                        sw = [-1.0, -0.5, 0.0, 0.5, 1.0]
+                        # --- X-QUANG QUYẾT ĐỊNH: quét energy landscape tại tick này ---
+                        # E = ‖patch dự đoán sau horizon − patch goal‖₁ (V-JEPA energy). THẤP = action
+                        # đó được dự đoán đưa cảnh về GIỐNG goal hơn = CEM thích. Quét 2 trục TÁCH BẠCH:
+                        #   (1) E(steer) giữ ga model  → model muốn lái phía nào, và CÓ CHẮC không
+                        #   (2) E(throt) giữ steer model → model có thấy LỢI khi ĐI tới (đáy>0) không
+                        # contrast = (Emax−Emin)/Emin: cao = đáy sâu/tin được; ~0 = phẳng = model ĐOÁN
+                        # (đúng vùng cos-dropout → full-lock). Tham chiếu in-domain ban ngày ≈ 0.45.
                         ga = max(abs(throt), 0.02)
-                        cand = torch.tensor([[s_, ga] for s_ in sw], dtype=torch.float32,
-                                            device=args.device).unsqueeze(1) \
-                                    .expand(-1, args.horizon, -1).contiguous()
+                        sw = torch.linspace(-1.0, 1.0, 21)
+                        cand = torch.stack([sw, torch.full_like(sw, ga)], dim=-1) \
+                                    .unsqueeze(1).expand(-1, args.horizon, -1).contiguous().to(args.device)
+                        tg = torch.linspace(args.throttle_min, args.throttle_cap, 7)
+                        candt = torch.stack([torch.full_like(tg, raw_steer), tg], dim=-1) \
+                                    .unsqueeze(1).expand(-1, args.horizon, -1).contiguous().to(args.device)
                         with torch.autocast("cuda", dtype=torch.bfloat16,
                                             enabled=args.device.startswith("cuda")):
-                            es = planner.score(z0, s0, target_tokens, cand).tolist()
-                        emin = min(es)
-                        bar = "  ".join(f"{s_:+.1f}:{e:.4f}{'◄' if e == emin else ''}"
-                                        for s_, e in zip(sw, es))
-                        print(f"[step] {tag}\n"
-                              f"[step] model: steer {raw_steer:+.2f} ga {model_throt:+.3f} | "
-                              f"ÁP (sau EMA/gain/floor): steer {steer:+.2f} ga {throt:+.3f}\n"
-                              f"[step] E(steer | ga {ga:.2f}): {bar}  (thấp = CEM thích)", flush=True)
+                            es = planner.score(z0, s0, target_tokens, cand).float().cpu().numpy()
+                            et = planner.score(z0, s0, target_tokens, candt).float().cpu().numpy()
+                        _blk = "▁▂▃▄▅▆▇█"
+                        def _spk(v):                              # đáy (E thấp) = cột THẤP ▁ = chỗ model thích
+                            v = (v - v.min()) / (v.max() - v.min() + 1e-12)
+                            return "".join(_blk[int(x * 7)] for x in v)
+                        c_s = float((es.max() - es.min()) / (es.min() + 1e-9))
+                        c_t = float((et.max() - et.min()) / (et.min() + 1e-9))
+                        amin_s = float(sw[int(es.argmin())]); amin_t = float(tg[int(et.argmin())])
+                        verdict = ("ĐÁY RÕ — tin được" if c_s >= 0.15
+                                   else "⚠ PHẲNG — model KHÔNG phân biệt được lái = ĐANG ĐOÁN")
+                        ccos_str = (f"cos {manual_ctrl_cos:+.3f}  " if manual_ctrl_cos is not None else "")
+                        print(f"\n[step] ───────────── seq{seq}  {ccos_str}{tag}\n"
+                              f"[step] model  steer {raw_steer:+.2f}  ga {model_throt:+.3f}    →    "
+                              f"ÁP  steer {steer:+.2f}  ga {throt:+.3f}{recover_tag}{hold_tag}\n"
+                              f"[step] E(steer)  -1[{_spk(es)}]+1   đáy@{amin_s:+.2f}  "
+                              f"model@{raw_steer:+.2f}  contrast {c_s:.3f}  → {verdict}\n"
+                              f"[step] E(throt)  {args.throttle_min:.2f}[{_spk(et)}]{args.throttle_cap:.2f}   "
+                              f"đáy@{amin_t:+.3f}  contrast {c_t:.3f}  (đáy>0 = model MUỐN đi)",
+                              flush=True)
                         if web is not None:
                             web.frame(rgb)
                             web.status(state="step", seq=seq)
                         try:
-                            ans = input("[step] ENTER=áp 1 nhịp | s=skip | q=bỏ route > ").strip().lower()
+                            ans = input("[step] ENTER=CHẠY 1 nhịp | s=nhìn lại (frame MỚI, KHÔNG chạy) "
+                                        "| q=bỏ route > ").strip().lower()
                         except EOFError:
                             ans = "s"
                         if ans == "q":

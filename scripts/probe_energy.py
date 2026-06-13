@@ -38,6 +38,47 @@ def _spark(vals, width=41):
     return "".join(chars[int(x * (len(chars) - 1))] for x in v)
 
 
+def plot_energy(ex_curves, teas, bests, contrast_med, sign_str, d, out):
+    """2 panel: (trái) vài đường E(steer) chuẩn hoá; (phải) argmin-E vs teacher."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    fig, (axL, axR) = plt.subplots(1, 2, figsize=(11, 4.6))
+    for (g, E, tea, best) in ex_curves:
+        en = (E - E.min()) / (E.max() - E.min() + 1e-12)
+        color = "#d62728" if tea < 0 else "#1f77b4"
+        axL.plot(g, en, "-", color=color, alpha=0.55, lw=1.4)
+        axL.plot(g[int(np.argmin(en))], 0.0, "o", color=color, ms=7, mec="k", mew=0.5)
+        axL.axvline(tea, color=color, ls=":", lw=1.0, alpha=0.5)
+    axL.axvline(0, color="grey", lw=0.6)
+    axL.set_xlabel("steer quét  (−1 = trái … +1 = phải)")
+    axL.set_ylabel("năng lượng chuẩn hoá  ‖P − z_goal‖₁")
+    axL.set_title(f"Energy landscape E(steer), d={d}\nđáy ● = argmin · đường chấm = teacher · "
+                  "đỏ=cua trái, xanh=cua phải", fontsize=9)
+
+    teas, bests = np.asarray(teas), np.asarray(bests)
+    axR.fill([0, 1, 1, 0], [0, 0, 1, 1], color="#2ca02c", alpha=0.06)   # Q1 dấu đúng
+    axR.fill([0, -1, -1, 0], [0, 0, -1, -1], color="#2ca02c", alpha=0.06)  # Q3 dấu đúng
+    same = np.sign(teas) == np.sign(bests)
+    axR.scatter(teas[same], bests[same], c="#2ca02c", s=30, edgecolor="k", linewidth=0.3, label="dấu đúng")
+    axR.scatter(teas[~same], bests[~same], c="#d62728", s=34, marker="x", label="dấu sai")
+    axR.plot([-1, 1], [-1, 1], color="grey", ls="--", lw=0.8)
+    axR.axhline(0, color="grey", lw=0.6)
+    axR.axvline(0, color="grey", lw=0.6)
+    axR.set_xlim(-1.1, 1.1)
+    axR.set_ylim(-1.1, 1.1)
+    axR.set_aspect("equal")
+    axR.set_xlabel("steer teacher (người lái)")
+    axR.set_ylabel("argmin-E (model chọn)")
+    axR.set_title(f"argmin-E vs teacher  ·  sign-đúng {sign_str}\nmedian contrast {contrast_med:.2f} "
+                  "(landscape có đáy rõ, đúng phía cua)", fontsize=9)
+    axR.legend(fontsize=8, loc="lower right")
+    fig.tight_layout()
+    fig.savefig(out, dpi=160, bbox_inches="tight")
+    print("wrote", out)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--checkpoint", default="checkpoints/vjepa_ac_car_cd4/vjepa_ac_car/best.pt")
@@ -60,6 +101,7 @@ def main():
     ap.add_argument("--dt", type=float, default=0.22)
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     ap.add_argument("--seed", type=int, default=0)
+    ap.add_argument("--plot", default=None, help="lưu hình energy-landscape (PNG) vào đường dẫn này")
     args = ap.parse_args()
 
     ckpt = torch.load(args.checkpoint, map_location=args.device, weights_only=False)
@@ -151,6 +193,8 @@ def main():
     print(f"{'win':>5} {'tea_steer':>9} {'argminE':>8} {'contrast':>9}  E(steer) -1 … +1   (^ = teacher)")
 
     derr, signs, contrasts, shown = [], [], [], 0
+    teas_all, bests_all, ex_curves = [], [], []
+    grid_np = grid.numpy()
     for i in order:
         item = ds[int(i)]
         a_raw = item["actions"].float()
@@ -173,6 +217,10 @@ def main():
         if abs(tea) > 0.15:
             signs.append(np.sign(best) == np.sign(tea))
         contrasts.append(contrast)
+        teas_all.append(tea)
+        bests_all.append(best)
+        if args.plot and len(ex_curves) < 7 and abs(tea) > 0.15:
+            ex_curves.append((grid_np, np.asarray(E), tea, best))
         if shown < 8:
             curve = _spark(E)
             tpos = int(round((tea + 1) / 2 * (args.grid - 1)))
@@ -186,6 +234,10 @@ def main():
     print(f"\n[probe] {len(derr)} window: median |argminE − teacher| = {np.median(derr):.3f}"
           f" | sign-đúng khi quẹo (|tea|>0.15): {int(np.sum(signs))}/{len(signs)}"
           f" | median contrast = {np.median(contrasts):.3f}")
+
+    if args.plot:
+        plot_energy(ex_curves, teas_all, bests_all, float(np.median(contrasts)),
+                    f"{int(np.sum(signs))}/{len(signs)}", d, args.plot)
 
 
 if __name__ == "__main__":

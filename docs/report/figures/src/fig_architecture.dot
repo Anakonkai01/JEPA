@@ -1,0 +1,27 @@
+// Kiến trúc hệ thống — render: dot -Tpng fig_architecture.dot -o ../fig_architecture.png
+digraph arch {
+  rankdir=LR;
+  graph [fontname="DejaVu Sans", bgcolor="white", nodesep=0.35, ranksep=0.55, pad=0.2];
+  node  [fontname="DejaVu Sans", shape=box, style="rounded,filled", fontsize=11, margin="0.16,0.10"];
+  edge  [fontname="DejaVu Sans", fontsize=9, color="#444444"];
+
+  X   [label="frame x_k", fillcolor="#e8f0fe"];
+  ENC [label="V-JEPA 2.1 ViT-L\n(ĐÓNG BĂNG, per-frame)", fillcolor="#9ec5fe", penwidth=2, color="#0d6efd"];
+  Z   [label="z_k\n576 × 1024 patch tokens", fillcolor="#e8f0fe"];
+  S   [label="state s_k\nspeed + IMU + rotvec", fillcolor="#fff3cd"];
+  A   [label="action a_k\nsteer, throttle, domain", fillcolor="#fff3cd"];
+  P   [label="AC Predictor\nblock-causal transformer (~26M)", fillcolor="#a3cfbb", penwidth=2, color="#198754"];
+  ZH  [label="z_hat (k+1)\npatch tokens dự đoán", fillcolor="#e8f0fe"];
+  CEM [label="CEM planner\nenergy = |P - z_goal| (L1)", fillcolor="#f1aeb5"];
+  ESP [label="ESP32 -> servo / ESC", fillcolor="#dee2e6"];
+
+  X -> ENC -> Z -> P;
+  S -> P;
+  A -> P;
+  P -> ZH -> CEM -> ESP;
+
+  { rank=same; S; A; }
+  labelloc="t";
+  label="Frozen V-JEPA 2.1 -> AC predictor (latent world model) -> CEM -> hành động  ·  encode offline 1 lần, KHÔNG backprop qua encoder";
+  fontname="DejaVu Sans"; fontsize=10;
+}
