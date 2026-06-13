@@ -13,6 +13,10 @@
 >   monotone, đúng dấu mọi shift, chạy ở goal-d=1 (deploy), val tốt hơn baseline; trục đúng vật-lý (H-A).
 >   ⚠ Transfer synthetic→THẬT CHƯA chứng minh được offline (không renderer) → **PROBE on-car BẮT BUỘC**:
 >   nhấc xe lệch ~1m TRÁI → `s` → steer ra **PHẢI**? lệch PHẢI → **TRÁI**? Đúng dấu → live; sai/yếu → về FLOOR.
+> - **★ Vì sao policy ĐÁNG thử (không chỉ fallback):** thất bại 06-13 = CEM mất gradient ở cos-dropout →
+>   bung. Policy là MLP nhạy-goal-yếu (H3) → KHÔNG mất gradient, chỉ phản-xạ current-view + recovery →
+>   **miễn nhiễm cos-dropout**. Trên route thẳng/tự-giống hay-bung, policy CÓ THỂ ăn hơn floor (đổi lại:
+>   lái phản-xạ, không ngắm goal → hợp route 1-hành-lang). Route nhiều điểm-rẽ → floor (CEM) goal-directed hơn.
 > - **BẮT BUỘC: teach route CÙNG BUỔI** (`route_from_session.py <sess> <tên> --step-m 0.35`) — pure-visual
 >   không có recovery khi teach lệch buổi → bung. Ngón tay trên STOP (web ⛔ / CH9 manual) mọi lúc.
 > - Ckpt (gitignored, máy khác retrain ~vài phút CPU): floor warm-start `policy_prior_cd4`; recovery
