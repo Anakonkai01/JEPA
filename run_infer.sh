@@ -1,88 +1,55 @@
 #!/usr/bin/env bash
-# Inference route tay (teach&repeat). Chạy: bash run_infer.sh
-# Sửa số bên dưới rồi chạy lại — KHỎI paste lệnh dài (hết lỗi đứt dòng).
-# Mỗi run TỰ GHI LOG vào logs/infer_<ngày_giờ>.log (vẫn in ra màn hình như cũ)
-# → về nhà phân tích lại được (06-12: 4 run đẹp nhất không có log vì chạy terminal trần).
+# Inference route tay (teach&repeat) — PURE-VISUAL CEM.   Chạy: bash run_infer.sh
+# Sửa số qua ENV (vd: THR=0.12 bash run_infer.sh) — KHỎI paste lệnh dài (hết lỗi đứt dòng).
+# Mỗi run TỰ GHI LOG → logs/infer_<ngày_giờ>.log (vẫn in màn hình).
+#
+# DEFAULT = config ĐÃ-CHỨNG-MINH ở bãi 06-12 tối đợt-2 ("qua cua nhiều run liên tiếp, RẤT
+#   HÀI LÒNG" — lần đầu xe tự qua cua): 256/2 + lookahead NGẮN 0.5 + pop-confirm 0.5 +
+#   reach 6 + kick 0. (06-13 đổi lookahead 2.0/128/geosteer rồi BUNG ở bãi → đã revert.)
+# GEOSTEER ĐÃ BỎ HOÀN TOÀN (quyết định user 06-14) → đây là PURE-VISUAL, KHÔNG có recovery
+#   GPS/rotvec. ⇒ recovery duy nhất (nếu có) = policy recovery-augmented (run_policy.sh).
 cd /home/pc5070ti/workspace/JEPA
 mkdir -p logs
 LOG="logs/infer_$(date +%Y%m%d_%H%M%S).log"
-echo "[run_infer] log → $LOG"
-echo "[run_infer] samples=${SMP:-128} (tick: 48≈1.1s · 128≈2.8s) · geosteer-recover-cos = ${GEO:-0} (0=TẮT, pure-visual; rotvec đang hỏng → BẬT test: GEO=0.35)"
-echo "[run_infer] throttle=${THR:-0.08} kick=${KICK:-0.10} pop-confirm=${POP:-0}(0=pop thuần GPS)   ·   pop chặt lại: POP=0.5 · nhanh hơn: THR=0.10"
-echo "[run_infer] geosteer-heading = $([ -n "$GSH" ] && echo GPS-track || echo rotvec+calib)   ·   thử heading GPS (fix he±150°): GSH=1 bash run_infer.sh · mổ heading: GSDBG=1 bash run_infer.sh"
-echo "[run_infer] VISUAL-CTRL: lookahead=${LOOK:-2.0}m horizon=${HOR:-6} steer-smooth=${SMOOTH:-0.3}   ·   target xa hơn=gradient lái mạnh hơn (fix CEM lật-dấu); ngắn lại cho cua: LOOK=1.2 bash run_infer.sh"
+echo "[run_infer] log → $LOG | PURE-VISUAL CEM (geosteer bỏ)"
+echo "[run_infer] samples=${SMP:-256}/iters=${ITERS:-2} (256/2 ≈ 5.5s/tick — nhiều-sample CẮT full-lock outlier; ga thấp → đi-mù ít. Nhanh hơn: SMP=64≈1.6s)"
+echo "[run_infer] throttle=${THR:-0.10} kick=${KICK:-0} pop-confirm=${POP:-0.5} lookahead=${LOOK:-0.5}m reach=${REACH:-6}m steer-smooth=${SMOOTH:-0.1}"
+echo "[run_infer] ⚠ TEACH/dựng route NGAY TRƯỚC buổi (cùng ánh sáng) — khác buổi → ccos sập, pop miss. route_from_session.py <session> <tên> --step-m 0.35"
 PYTHONPATH=src ~/miniforge3/envs/ai/bin/python -u scripts/inference_loop.py \
   --web \
-  --reach-m 4\
-  --no-recover \
   --checkpoint checkpoints/vjepa_ac_car_cd4/vjepa_ac_car/best.pt \
-  --policy checkpoints/policy_prior/best.pt \
-  --samples ${SMP:-128} --iters ${ITERS:-2} \
-  --horizon ${HOR:-6} \
-  --ctrl-lookahead-m ${LOOK:-2.0} \
+  --policy checkpoints/policy_prior_cd4/best.pt \
+  --no-recover \
+  --samples ${SMP:-256} --iters ${ITERS:-2} \
+  --horizon ${HOR:-4} \
+  --reach-m ${REACH:-6} \
+  --ctrl-lookahead-m ${LOOK:-0.5} \
   --heading-cap-deg 35 \
-  --pop-confirm-cos ${POP:-0.2} \
+  --pop-confirm-cos ${POP:-0.5} \
   --steer-smooth ${SMOOTH:-0.1} \
   --steer-trim=-0.04 \
-  --xtrack-recover-cos 0 \
-  --xtrack-lookahead-m 1.5 \
-  --geosteer-recover-cos ${GEO:-0} \
-  --geosteer-cap 0.5 \
-  --geosteer-div-ticks 4 \
-  ${GSH:+--geosteer-gps-heading} \
-  ${GSDBG:+--geosteer-debug} \
   --turn-slow 0 \
-  --throttle-cap ${THR:-0.08} \
-  --cruise-throttle ${THR:-0.08} \
-  --kick-throttle ${KICK:-0.085} \
-  --lock-cos 0 \
+  --throttle-cap ${THR:-0.10} \
+  --cruise-throttle ${THR:-0.10} \
+  --kick-throttle ${KICK:-0} \
+  --lock-cos ${LOCK:-0.10} \
   --lock-hold-s 10.0 \
+  --xtrack-recover-cos 0 \
+  --geosteer-recover-cos 0 \
   2>&1 | tee -a "$LOG"
 
-# ── KNOB hay chỉnh ──────────────────────────────────────────────
-#  --samples/--iters    TICK ĐO THẬT (06-12 đêm, desktop): 32/1=0.5s · 64/2=1.6s ·
-#                       128/2=2.9s · 256/2=5.5s/quyết-định. 256/2 = xe đi "MÙ" ~5.5s
-#                       (0.3-0.5m/s ≈ 1.5-2.7m ≈ 4-7 subgoal) → "hơi lệch" phần lớn từ đây;
-#                       offline 256/2 KHÔNG hơn 64/2 (Δsteer d1 0.041 vs 0.040). KHUYÊN 64/2.
-#  --kick-throttle 0.08 kick giờ STEER-AWARE ×(1+0.5|steer|): 0.08 thẳng → 0.12 full-lock
-#                       (khớp ma sát đo). kick=0 → đề-pa NGAY TRONG CUA dễ kẹt (scrub >0.10).
-#  ⚠️ ROUTE: teach/dựng lại NGAY TRƯỚC buổi chạy (probe 06-12: khác ánh sáng → ccos sập,
-#                       30/31 subgoal không qua nổi pop-confirm 0.5 với ảnh khác-buổi).
-#  --lock-cos (HOLD)    ⚠ ĐÃ THAY bằng --xtrack-recover-cos (xem trên). HOLD chỉ đóng băng lái
-#                       CŨ (có thể là rác) → để 0. Lock-hold-s vô hại khi lock-cos 0.
-#  --steer-smooth 0.2   EMA lái. 0.6 (mặc định) = Ì, bóp nửa lực quẹo → đi thẳng.
-#                       Test cua: để 0 (lái tươi, raw thẳng ra bánh). Êm/straight: 0.4.
-#  --steer-trim -0.04   ⭐ LỆCH CƠ KHÍ (đo 06-13: bánh chếch PHẢI, AUTO 0/192 tick đánh phải).
-#                       AUTO bỏ qua subtrim TX (firmware steer=0→1560µs cứng). ÂM = bù TRÁI.
-#                       (-0.08 overcorrect → lệch TRÁI 1m ở park4; -0.04 cân hơn.) Trôi PHẢI →
-#                       -0.06; lố TRÁI → -0.02. (Fix gốc: hạ SERVO_CENTER 1560→~1500 firmware, trim 0.)
-#  --xtrack-recover-cos 0.35  ⭐⭐ CROSS-TRACK RECOVERY (MỚI 06-13, đã test offline 9/9 unit +
-#                       27/28 replay log lỗi bẻ-về-tuyến): cos control-target < 0.35 = mất khớp ảnh
-#                       → ĐÈ CEM, lái pure-pursuit HÌNH HỌC về polyline teach (GPS xy + heading
-#                       track/tangent). Đây là số hạng VỊ TRÍ visual-servo thiếu = thủ phạm GỐC
-#                       "lệch 5m ko biết bẻ về → đâm bụi" (đo 06-13). 0=TẮT (về cơ chế cũ). Hay bẻ
-#                       về quá sớm/giật → hạ 0.25; còn chạy mù lâu mới bẻ → nâng 0.45.
-#  --xtrack-lookahead-m 1.5  recovery ngắm xa ngần này dọc tuyến. Ngắn(1.0)=bẻ gắt; dài(2.5)=mượt.
-#  ⭐⭐⭐ --geosteer-recover-cos 0  PHASE 4 (06-13) = RECOVERY MỚI thay v1 (v1 xoay vòng vì heading
-#                       GPS-track 1Hz; xem docs/HANDOFF.md). cos control-target < ngưỡng → lái STANLEY
-#                       về tuyến bằng HEADING ROTVEC 50Hz (tự calib offset online). 0=TẮT (mặc định,
-#                       chờ review). BẬT TEST BÃI: đặt 0.35 (TẮT --xtrack-recover-cos = để v1 khỏi đụng).
-#                       Đã PASS offline: geosteer_validate (sim 16/16) + geosteer_integration_check
-#                       (calib-arm + closed-loop + safety). ⚠ RỦI RO #1: dấu steer→yaw chỉ kiểm được
-#                       TRÊN XE → --geosteer-div-ticks tự DỪNG nếu xe đi XA tuyến (nghi sai dấu).
-#                       PROTOCOL bãi: sân TRỐNG, cap thấp, NGÓN TAY trên STOP (web ⛔ / CH9 manual).
-#  --geosteer-cap 0.5   trần |steer| Stanley (0.5=không full-lock→không pivot). Hạ 0.4 nếu gắt.
-#  --geosteer-div-ticks 4  |cross| vượt min-pha-recovery 2m liên tục 4 tick (hoặc >8m) → DỪNG (chặn
-#                       xoay vòng nếu dấu steer→yaw sai trên xe). 0=tắt detector (KHÔNG khuyên ở bãi).
-#  ⚠ --lock-cos để 0: recovery (trên) THAY HOLD. HOLD đóng băng lái RÁC (đo park4: khoá +1.0 → rail
-#                       vào bụi) → tắt. Chỉ bật lại lock-cos nếu --xtrack-recover-cos 0 (tắt recovery).
-#  --kick-throttle 0.10 cú giật đề-pa lúc đứng yên. Vọt/giật → hạ 0.09. Ko lăn → 0.11.
-#  --heading-cap-deg 35 lookahead dừng khi route xoay ≥ ngần này → vào cua target gần
-#                       lại, còn overlap. Quẹo muộn → hạ 30/25. Khựng → nâng 45.
-#  --ctrl-lookahead-m 1.5  target cách xe ngần này (m). Cua thì để ngắn (1.0–1.5).
-#  --turn-slow 0        KHÔNG cắt ga trong cua. Mặc định cắt ~nửa ở full-lock → scrub
-#                       kẹt (bug subgoal 3). Full-lock cần NHIỀU ga hơn đi thẳng, ko ít.
-#                       Đặt >0 (0.2) lại nếu xe phóng quá đà vào lề khi đã qua được cua.
-#  --cruise-throttle 0.12 / --throttle-cap 0.13  ga lúc lăn. Full-lock scrub cần ~0.12
-#                       (×1.5 ngưỡng đi thẳng 0.07). Kẹt ở cua → nâng cruise 0.13/0.14;
-#                       straight phóng quá → hạ 0.10. (cruise = sàn ga hằng, kick 0 đủ đề-pa.)
+# ── KNOB (sửa qua ENV: VD `THR=0.12 LOOK=0.6 bash run_infer.sh`) ─────────────────
+#  SMP/ITERS  256/2 (proven, ~5.5s/tick) — nhiều sample CẮT đuôi full-lock (energy phẳng
+#             → ít sample bốc ±1). Ga THẤP nên đi-mù 5.5s vẫn dịch ít. Nhanh hơn: SMP=64
+#             (~1.6s) — chỉ dùng nếu đuôi full-lock OK (xem logs/meas_tail đêm 06-14).
+#  LOOK=0.5   ⭐ NGẮN cho cua: target gần → còn overlap → đòi quẹo. 06-13 để 2.0 → vào cua
+#             ngắm subgoal quanh-góc (out-of-overlap) → CEM ra ~0 (thẳng) → đi thẳng rồi chết.
+#  POP=0.5    pop-confirm-cos. Latch + geo-confirm (<1.5m) đã fix pop-stuck (06-12 đợt-2).
+#             Khác buổi/route thẳng tự-giống cos sập → POP=0 (pop thuần GPS, reach 6m) né kẹt.
+#  THR=0.10   ga cruise=cap (sàn hằng, kick 0 đủ đề-pa êm). Kẹt đề-pa lúc đứng/cua → KICK=0.10
+#             (kick steer-aware ×(1+0.5|steer|)). Phóng quá đà → THR=0.08.
+#  SMOOTH=0.1 EMA lái. 0.6 (mặc định cũ) = Ì → bóp nửa lực quẹo → đi thẳng. Twitchy → 0.2-0.3.
+#  LOCK=0.10  HOLD đóng băng lái khi cos<ngưỡng (gần-tắt, chỉ khi MẤT HẲN target). =0 để tắt.
+#  steer-trim -0.04  ⭐ lệch CƠ KHÍ (bánh chếch PHẢI). Trôi PHẢI → sửa trong file -0.06; lố TRÁI → -0.02.
+#  HEADING-CAP 35°  lookahead dừng khi route xoay ≥ → vào cua target gần lại. Quẹo muộn → 30/25.
+#  ⚠ ROUTE cùng buổi (probe 06-12: khác sáng → 30/31 subgoal ko qua pop-confirm 0.5).
