@@ -22,6 +22,20 @@
 > - Ckpt (gitignored, máy khác retrain ~vài phút CPU): floor warm-start `policy_prior_cd4`; recovery
 >   `policy_recovery_cd4_a06` (α=0.6 default) / `policy_recovery_cd4` (α=1.0 mạnh hơn). Scripts:
 >   `pool_recovery_latents.py` → `train_policy_recovery.py` → `eval_recovery_response.py`.
+>
+> **06-14 SÁNG (live-prep, đã push):**
+> - **Web tạo route đầy đủ (khỏi CLI):** card "📁 Route từ Session" trong `web/route_planner.html`
+>   + endpoints `/api/sessions|session_track|session_frame|session_build` (`route_web.py`); lõi build
+>   tách hàm dùng chung ở `route_from_session.py`. Flow: chọn session → đường vẽ trên map + tua ảnh →
+>   chỉnh option (step-m/turn°/start-end-s/max-acc) → Build → ▶ Run. Teach 📸 vẫn còn.
+> - **Debug bundle mỗi run** (`inference_loop.py` `RunRecorder`, mặc định BẬT): `logs/run_<ts>/`
+>   = config.json (full args+ckpt+git) + frames/<seq>.jpg (live mỗi tick) + run.jsonl (per-tick
+>   steer/raw/throt/model_throt/tag/recover/hold/xy). Tắt: `--no-save-run`/`--no-save-frames`. logs/ gitignore.
+> - **Đính chính lighting:** CEM lái = **patchL1** (ít nhạy sáng, §0 minh oan), chỉ cosine/localize nhạy
+>   → route khác buổi vẫn chạy nếu **POP=0** (pop GPS). Bài kiểm L1 cross-session ("chạy thử rồi biết")
+>   CHƯA chạy — backlog, không chặn ra bãi.
+> - ⚠ **route_web chạy nền trong session Claude** sẽ TẮT khi end session → ra bãi tự chạy `bash run_web.sh`
+>   trong terminal RIÊNG (persistent) + `bash run_infer.sh`/`run_policy.sh` khi sẵn sàng.
 
 
 ## 🅿️🛑 2026-06-13 CHIỀU/TỐI — PARK (pure-visual): BÁM NỬA ĐẦU RỒI BUNG Ở "COS-DROPOUT" → DỪNG BÃI, FIX Ở NHÀ. Chi tiết đầy đủ: **`docs/CLOSED_LOOP_FAILURE.md`**
