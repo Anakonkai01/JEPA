@@ -435,6 +435,13 @@ def main():
                     help="full-nav: goal = node gần toạ độ (mét) này nhất — đọc X,Y trên scripts/pick_goal.py map")
     ap.add_argument("--control-only", action="store_true",
                     help="bỏ graph/nav: CEM lái thẳng để cảnh hiện tại khớp ảnh goal (chạy được trong nhà, không cần GPS; model OOD ngoài park)")
+    ap.add_argument("--goal-mode", action="store_true",
+                    help="route TAY kiểu META (V-JEPA 2-AC reach) QUA WEB: coi ẢNH CUỐI của route là "
+                         "GOAL DUY NHẤT, CEM lái thẳng tới nó — TẮT toàn bộ pop/cosine-chain/timeout. "
+                         "Snap 1 ảnh (hoặc nhiều, lấy ảnh cuối) trên web → ▶ Run → xe lái tới goal tới "
+                         "khi bạn bấm STOP. NÉ tường descriptor (control chấm patch-L1 lighting-robust; "
+                         "cosine chỉ dùng cho pop, mà giờ không pop). ⚠ goal phải TRONG TẦM NHÌN (CEM "
+                         "cần overlap để có gradient) — giống Meta reach. = --control-only nhưng dùng web.")
     ap.add_argument("--port", type=int, default=5055)
     ap.add_argument("--horizon", type=int, default=4, help="CEM (MPC) lookahead steps")
     ap.add_argument("--samples", type=int, default=64, help="CEM samples (giảm = nhanh hơn)")
@@ -540,6 +547,17 @@ def main():
                          "full-nav (subgoal giữa route graph vẫn GPS — target control là lookahead, "
                          "pop chặt sẽ ì). Ảnh không khớp mãi → route tay có timeout, full-nav cứ "
                          "chạy tiếp tới khi khớp. Chữa 'xe trong bụi cỏ vẫn báo đạt goal'.")
+    ap.add_argument("--pop-spatial", action="store_true",
+                    help="route TAY: metric cosine pop dùng SPATIAL-TOKEN thay vì mean-pool (06-14). "
+                         "mean-pool gộp 576 token → 1 vec 1024 = MẤT bố cục không gian → 2 cảnh khác "
+                         "layout vẫn pool giống nhau (trong nhà cos bão hoà 'cái gì cũng giống'); centering "
+                         "đỡ bão hoà nhưng vẫn coarse + nhạy sáng. --pop-spatial: CENTER theo TỪNG patch "
+                         "(trừ mean-token-theo-vị-trí của các subgoal) rồi cosine per-patch, lấy MEAN 576 "
+                         "patch → đòi KHỚP CỤC BỘ (layout), sắc hơn nhiều, bớt nhạy thay-đổi-sáng-toàn-cục. "
+                         "⚠ thang cos KHÁC mean-pool (thường biên độ hẹp hơn) → soi cột cos vài tick rồi "
+                         "chỉnh --manual-reach/near-cos + --manual-pop-rise cho hợp. ⚠ POSITION-ALIGNED → "
+                         "vẫn cứng với LỆCH HEADING lớn (qua mốc khác hướng = patch không khớp); chỉ cứu "
+                         "ca lệch-sáng/khác-layout, KHÔNG cứu ca xe đi sai chỗ (đó là bệnh STEERING).")
     ap.add_argument("--manual-reach-cos", type=float, default=0.80,
                     help="route TAY (teach&repeat): subgoal không có GPS (indoor) coi là ĐẠT khi cosine "
                          "≥ ngưỡng này. ⚠️ Từ 06-12 cosine là CENTERED (trừ mean pooled các subgoal "
@@ -560,6 +578,17 @@ def main():
                          "giờ chạm --manual-reach-cos (lệch sáng/heading). KHÔNG dựa GPS (cos chỉ đỉnh "
                          "khi view THẬT khớp → xe đâm tường/lệch hướng thì cos không đỉnh → không pop "
                          "bừa như GPS). 0 = tắt luật này.")
+    ap.add_argument("--manual-pop-rise", type=float, default=0.07,
+                    help="route TAY không GPS, mở rộng luật pop thứ 3 cho LỆCH SÁNG (06-14): cos là "
+                         "TƯƠNG ĐỐI — chỉ cần ánh sáng đổi nhẹ là cả thang tụt → đỉnh không bao giờ "
+                         "chạm --manual-near-cos tuyệt đối (đo bãi: sg2 đỉnh 0.357 < 0.40 → kẹt tới "
+                         "timeout dù xe đã đi qua). Thay vì đòi đỉnh ≥ ngưỡng tuyệt đối, coi là ĐÃ TIẾN "
+                         "TỚI subgoal khi cos ĐỈNH cao hơn cos lúc subgoal vừa active (baseline) ít nhất "
+                         "ngần này (RISE bất biến theo sáng); sau đó cos tụt > --manual-pop-drop = đã "
+                         "qua → pop. Đỉnh tuyệt đối ≥ --manual-near-cos VẪN pop như cũ (OR). Default 0.07 "
+                         "= bắt cả subgoal khớp YẾU (đo bãi 06-14: sg2 rise 0.55 / sg3 0.19 pop OK ở 0.12 "
+                         "nhưng sg4 chỉ rise 0.078 → kẹt; 0.07 bắt nốt). Nhạy hơn → 0.05; chống pop-bừa → "
+                         "0.15. 0 = tắt nhánh tương đối (chỉ còn gate tuyệt đối).")
     ap.add_argument("--manual-timeout-s", type=float, default=60.0,
                     help="route TAY: 1 subgoal quá ngần này giây không đạt → DỪNG route chờ lệnh web "
                          "(an toàn indoor: không GPS = không có stuck-recovery). 0 = tắt.")
@@ -835,7 +864,9 @@ def main():
             manual_hits, manual_last_idx, manual_t0, last_rt_obj = 0, -1, time.time(), None
             man_seen = False                              # LATCH "ảnh đã khớp subgoal hiện tại" (pop khi đi qua)
             man_cos_peak = -1.0                            # đỉnh cosine tới subgoal hiện tại (pop peak-then-decline)
+            man_cos_base = None                            # cos lúc subgoal vừa active (baseline đo RISE tương đối, bất biến sáng)
             man_center, man_vecs = None, None             # centered-cosine route tay (probe_reach 06-12)
+            man_tcenter, man_tvecs = None, None           # centered SPATIAL-token route tay (--pop-spatial, 06-14)
             man_cum, man_head, man_xy, man_ctrl_idx = None, None, None, -1  # polyline arc-len + heading route tay (lookahead heading-aware)
             head_cap_rad = float(np.deg2rad(args.heading_cap_deg))
             hold_steer, hold_t0, manual_ctrl_cos = None, None, None  # giữ-lái-xuyên-vùng-mù (commit-through-turn)
@@ -917,12 +948,14 @@ def main():
                             last_rt_obj, manual_hits, manual_last_idx = rt, 0, -1
                             man_seen = False
                             man_cos_peak = -1.0               # reset đỉnh cosine pop khi đổi route
+                            man_cos_base = None               # reset baseline RISE khi đổi route
                             hold_steer, hold_t0 = None, None  # reset giữ-lái-xuyên-vùng-mù
                             # CENTERED cosine (probe_reach 06-12): cos pooled THÔ saturate trong nhà
                             # (mọi cặp 0.89–0.99, kề-vs-xa chênh ~0.04 → "cosine nào cũng cao");
                             # TRỪ MEAN pooled các subgoal route rồi mới cos → kề ~+0.5 / xa ~−0.4,
                             # nearest-neighbor đúng 10/10. Cần ≥2 ảnh; 1 ảnh rơi về cos thô cũ.
                             man_center, man_vecs = None, None
+                            man_tcenter, man_tvecs = None, None
                             try:
                                 _pools = [manual_patch(sg["img"])[0].float().cpu().numpy()
                                           for sg in subs]
@@ -931,8 +964,30 @@ def main():
                                     man_vecs = [(p - man_center)
                                                 / (np.linalg.norm(p - man_center) + 1e-8)
                                                 for p in _pools]
+                                # SPATIAL-token centered (06-14): cùng ý tưởng centering nhưng giữ 576
+                                # patch (KHÔNG pool) → center theo TỪNG vị-trí patch, normalize per-patch.
+                                # _mcos sẽ lấy MEAN per-patch-cosine → đòi khớp CỤC BỘ (layout), sắc hơn
+                                # mean-pool (vốn gộp mất bố cục → cảnh khác layout vẫn giống).
+                                if args.pop_spatial and len(subs) >= 2:
+                                    _toks = np.stack([manual_patch(sg["img"])[1].float().cpu().numpy()
+                                                      for sg in subs])          # (K,576,1024) LN'd
+                                    man_tcenter = _toks.mean(0)                  # (576,1024) mean-token/vị-trí
+                                    _tv = _toks - man_tcenter                    # (K,576,1024) bỏ chung-cảnh
+                                    _tv /= (np.linalg.norm(_tv, axis=-1, keepdims=True) + 1e-8)
+                                    man_tvecs = _tv.astype(np.float32)           # per-patch unit vec
                             except FileNotFoundError:
                                 pass                          # ảnh thiếu → nhánh dưới báo lỗi như cũ
+                            if args.goal_mode:
+                                print(f"[infer] route tay '{rt['name']}': 🎯 GOAL-MODE (Meta) — ngắm ẢNH "
+                                      f"CUỐI ({len(subs)}/{len(subs)}) làm GOAL, CEM patch-L1, KHÔNG pop/"
+                                      f"timeout. STOP từ web để dừng. ⚠ goal phải TRONG TẦM NHÌN.", flush=True)
+                            else:
+                                _metric = ("SPATIAL-token (per-patch centered)" if man_tvecs is not None
+                                           else "mean-pool centered" if man_vecs is not None
+                                           else "cos thô (1 ảnh)")
+                                print(f"[infer] route tay '{rt['name']}': metric pop = {_metric}"
+                                      + (" — ⚠ thang cos KHÁC mean-pool, soi cột cos vài tick rồi chỉnh "
+                                         "reach/near/pop-rise" if man_tvecs is not None else ""), flush=True)
                             # POLYLINE route tay (cho lookahead heading-aware) — KHÔNG cần GPS LIVE:
                             # arc-length + heading dựng từ xy TEACH (ghi 1 lần lúc quay), GPS noise
                             # live không chạm control target. Heading lấy CENTRAL-DIFF (baseline ~2
@@ -964,8 +1019,15 @@ def main():
                             navn = _v / (np.linalg.norm(_v) + 1e-8)
                         else:
                             navn = nav / (np.linalg.norm(nav) + 1e-8)
+                        cur_tvecn = None                      # view hiện tại trong không-gian SPATIAL centered
+                        if man_tvecs is not None:
+                            _ct = ctrl_tokens.float().cpu().numpy() - man_tcenter   # (576,1024) bỏ chung-cảnh
+                            _ct /= (np.linalg.norm(_ct, axis=-1, keepdims=True) + 1e-8)
+                            cur_tvecn = _ct.astype(np.float32)
                         try:
                             def _mcos(i):                     # cosine(view hiện tại, subgoal i)
+                                if cur_tvecn is not None and man_tvecs is not None and i < len(man_tvecs):
+                                    return float((cur_tvecn * man_tvecs[i]).sum() / cur_tvecn.shape[0])  # MEAN per-patch cosine
                                 if man_vecs is not None and i < len(man_vecs):
                                     return float(navn @ man_vecs[i])
                                 return float(navn @ manual_patch(subs[i]["img"])[2])
@@ -984,7 +1046,9 @@ def main():
                             # và đã latch thì bỏ luôn cổng reach-m (GPS lệch >reach hết kẹt).
                             def _mdist(i):
                                 return float(np.linalg.norm(car_xy - np.asarray(subs[i]["xy"], np.float32)))
-                            while (web.wp_idx < len(subs) and car_xy is not None
+                            if args.goal_mode:
+                                web.wp_idx = len(subs) - 1     # META: luôn ngắm GOAL (ảnh cuối), KHÔNG pop
+                            while (web.wp_idx < len(subs) and car_xy is not None and not args.goal_mode
                                    and subs[web.wp_idx].get("xy") is not None):
                                 if args.pop_confirm_cos > 0 and not man_seen:
                                     cc = _mcos(web.wp_idx)
@@ -1019,6 +1083,7 @@ def main():
                                 else:
                                     print(f"[web] ✓ subgoal tay {web.wp_idx + 1}/{len(subs)} (GPS)", flush=True)
                                 web.wp_idx += 1; manual_hits = 0; man_seen = False
+                                man_cos_peak = -1.0; man_cos_base = None  # subgoal kế: đo lại đỉnh/baseline RISE từ đầu
                             cos_v = gps_dist = None
                             if web.wp_idx < len(subs):
                                 sub = subs[web.wp_idx]
@@ -1028,6 +1093,8 @@ def main():
                                 else:
                                     cos_next = _mcos(web.wp_idx + 1) if web.wp_idx + 1 < len(subs) else None
                                     man_cos_peak = max(man_cos_peak, cos_v)
+                                    if man_cos_base is None:
+                                        man_cos_base = cos_v  # cos đầu tiên khi subgoal active = baseline RISE
                                     # margin "gần hơn RÕ RỆT": thang centered rộng (kề ~0.5/xa ~−0.4)
                                     # → 0.10; thang thô (route 1 ảnh) giữ 0.02 như đo park e2e 06-12
                                     mg = 0.10 if man_vecs is not None else 0.02
@@ -1041,21 +1108,29 @@ def main():
                                     # điểm gần nhất → pop. Running-max + 2-tick confirm = chống JPEG-
                                     # hỏng 1 frame; cos chỉ đỉnh khi view THẬT khớp → đâm tường/lệch
                                     # hướng không pop bừa (khác GPS pop theo vị-trí bất kể đúng/sai).
-                                    passed = (args.manual_pop_drop > 0 and args.manual_near_cos > 0
-                                              and man_cos_peak >= args.manual_near_cos
+                                    # "đã TIẾN tới subgoal" = đỉnh tuyệt đối ≥ near (thang ổn) HOẶC
+                                    # đỉnh cao hơn baseline ≥ pop-rise (RISE tương đối, bất biến sáng:
+                                    # bãi 06-14 sg2 đỉnh 0.357 < near 0.40 nhưng rose 0.357−0.032=0.33
+                                    # ≫ rise → xác nhận đã tiến tới, dù cả thang cos bị tụt do lệch sáng).
+                                    rose = (man_cos_peak - man_cos_base) if man_cos_base is not None else 0.0
+                                    approached = ((args.manual_near_cos > 0 and man_cos_peak >= args.manual_near_cos)
+                                                  or (args.manual_pop_rise > 0 and rose >= args.manual_pop_rise))
+                                    passed = (args.manual_pop_drop > 0 and approached
                                               and cos_v < man_cos_peak - args.manual_pop_drop)
                                     why = ("reach" if cos_v >= args.manual_reach_cos
                                            else "kế-gần-hơn" if near else "qua-đỉnh" if passed else "")
                                     hit = cos_v >= args.manual_reach_cos or near or passed
                                     manual_hits = manual_hits + 1 if hit else 0
-                                    if manual_hits >= 2:      # 2 tick liên tiếp — chống alias/JPEG 1 frame
+                                    if manual_hits >= 2 and not args.goal_mode:  # 2 tick liên tiếp — chống alias/JPEG 1 frame
                                         nxt = f" next{cos_next:.3f}" if cos_next is not None else ""
                                         print(f"[web] ✓ subgoal tay {web.wp_idx + 1}/{len(subs)} "
-                                              f"({why}: cos {cos_v:.3f} đỉnh{man_cos_peak:.3f}{nxt})", flush=True)
-                                        web.wp_idx += 1; manual_hits = 0; man_cos_peak = -1.0
+                                              f"({why}: cos {cos_v:.3f} đỉnh{man_cos_peak:.3f} "
+                                              f"rise{rose:+.3f}{nxt})", flush=True)
+                                        web.wp_idx += 1; manual_hits = 0
+                                        man_cos_peak = -1.0; man_cos_base = None
                                         if web.wp_idx < len(subs):
                                             cos_v = _mcos(web.wp_idx)
-                                            man_cos_peak = cos_v
+                                            man_cos_peak = man_cos_base = cos_v
                             if web.wp_idx >= len(subs):       # hết chuỗi ảnh → xong route
                                 emit(0.0, 0.0); prev_steer = 0.0
                                 print(f"[web] 🏁 route tay '{rt['name']}' HOÀN THÀNH "
@@ -1069,7 +1144,8 @@ def main():
                                 continue
                             if web.wp_idx != manual_last_idx:
                                 manual_last_idx, manual_t0 = web.wp_idx, time.time()
-                            if args.manual_timeout_s > 0 and time.time() - manual_t0 > args.manual_timeout_s:
+                            if (args.manual_timeout_s > 0 and not args.goal_mode
+                                    and time.time() - manual_t0 > args.manual_timeout_s):
                                 emit(0.0, 0.0); prev_steer = 0.0
                                 print(f"[web] ⏱ subgoal tay {web.wp_idx + 1}/{len(subs)} quá "
                                       f"{args.manual_timeout_s:.0f}s không đạt (cos {cos_v:.3f}) "
@@ -1110,7 +1186,8 @@ def main():
                         gd = f" d={gps_dist:.1f}m" if gps_dist is not None else ""
                         la = (f" →la{man_ctrl_idx + 1}" if man_ctrl_idx >= 0
                               and man_ctrl_idx != web.wp_idx else "")
-                        tag = f"manual {web.wp_idx + 1}/{len(subs)}{la} cos{cos_v:.3f}{gd}"
+                        tag = (f"GOAL(meta) cos{cos_v:.3f}{gd}" if args.goal_mode
+                               else f"manual {web.wp_idx + 1}/{len(subs)}{la} cos{cos_v:.3f}{gd}")
                     else:
                         if graph is None:                     # manual-only (--graph none): teach/idle
                             if web.route is not None:

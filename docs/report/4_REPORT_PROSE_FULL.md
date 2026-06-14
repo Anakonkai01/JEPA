@@ -362,6 +362,32 @@ sang một bên, kiểm tra dấu lái trả về). Đây là một đóng góp 
 liệu thành một augmentation latent rẻ kèm bộ tiêu chí đánh giá offline, với ranh giới minh bạch giữa
 "đã chứng minh offline" và "cần xác minh trên xe".
 
+### 7.6. Tường ánh sáng = giới hạn DESCRIPTOR, không phải đo-lường (SeqSLAM/multi-ref đều không cứu)
+
+Một confound độc lập với recovery là **lệch ánh sáng giữa teach và repeat** (nắng→mây): cosine của
+khâu *định vị/POP* sụp về 0 rồi âm, khiến subgoal không "pop". Vì sequence-matching kiểu **SeqSLAM** là
+giải pháp chuẩn của tài liệu cho bất-biến-điều-kiện (ngày↔đêm, hè↔đông), chúng tôi dựng một probe offline
+(`scripts/probe_seqslam_lighting.py`, thuần CPU trên latent đã mã hoá) để **định lượng** liệu nó có cứu
+được không, trên các cặp session cross-lighting tự-tìm (cách nhau ~53 giờ, chênh độ sáng 11–18/255).
+
+Phép đo quyết định, **không phụ thuộc thuật toán matching**, là *thứ hạng theo cosine của khung-tham-chiếu
+đúng-hình-học* (khung teach gần nhất theo GPS, sai số < 1,5 m). Khi ánh sáng *gần* (chênh ~11), khung đúng
+đứng **hạng 0** (top-1 79%) — biểu diễn rất tốt. Khi ánh sáng *xa* (chênh ~18), khung đúng rơi xuống **hạng
+trung vị 41–62 trên 557–776** (top-20 chỉ 1–15%). Vì matching theo chuỗi chỉ có thể nâng hạng các ứng viên
+*đã gần đỉnh*, một khung đúng nằm ở hạng 41 là **ngoài tầm cứu của mọi mẹo thời gian** — và đúng như dự
+đoán, cả seq-RAW (cộng dồn chuỗi) lẫn seq-NORM (contrast-normalization chuẩn SeqSLAM) đều giữ nguyên 0%
+định vị đúng (seq-NORM còn tệ hơn do các session đa-vòng vi phạm giả định một-lượt của SeqSLAM). Hướng
+**multi-reference** (lưu nhiều ảnh/chỗ ở nhiều điều kiện sáng) cũng thất bại: kể cả khi **chặn theo GPS
+≤ 5 m đúng như lúc triển khai**, khung-tham-chiếu đúng là khớp-ngoại-hình tốt nhất chỉ **1%** số lần
+(top-3: 4%). Kết luận: bức tường ánh sáng là **giới hạn của bản thân descriptor** (đặc trưng pooled đóng
+băng của V-JEPA), không sửa được ở tầng đo-lường — nhất quán với việc chuẩn-hoá-quang-trắc (CLAHE/khớp-
+histogram/mean-std) cũng không cứu. Điều khiển (CEM trên **patch-L1**) không dính vì patch-L1 bất-biến-sáng
+(<5% thay đổi). Hệ quả thiết kế: lời giải nguyên-lý là một **descriptor học được bất-biến-sáng / đầu
+reachability kiểu ViNG** huấn luyện cross-session trên chính bộ 181 session (đã sẵn cặp dương cross-lighting:
+cùng GPS+heading khác buổi), với encoder đóng băng; còn giải pháp kịp-thời là **teach lại cùng buổi** (vì
+descriptor rất tốt khi ánh sáng gần). Đây tiếp tục là một **negative finding** sạch ở tầng nav-localize,
+không ảnh hưởng tới đóng góp chính (world model offline + control).
+
 ---
 
 ## 8. Thảo luận & Hạn chế

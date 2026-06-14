@@ -1,5 +1,66 @@
 # HANDOFF — đọc cái này trước khi tiếp tục
 
+## 🛠️ 2026-06-14 FIELD (route tay) — POP-FIX + metric SPATIAL-token + GOAL-MODE (kiểu Meta single-goal). Code đã đổi, validate bãi DANG DỞ
+
+> **TL;DR:** buổi chạy thật route tay (teach&repeat) sửa loạt "xe ĐÃ qua subgoal mà KHÔNG pop". 3 thay
+> đổi trong `scripts/inference_loop.py` + knob `run_infer.sh` + runner mới `run_goal.sh`. Chốt hướng:
+> dùng **GOAL-MODE** (1 goal, bỏ pop-chain) cho demo vì né hẳn tường descriptor.
+>
+> 1. **Pop "qua-đỉnh" lighting-robust** (`--manual-pop-rise`, env `POPRISE`, default **0.07**): cos
+>    centered là TƯƠNG ĐỐI → đổi sáng nhẹ là cả thang tụt → đỉnh không chạm `near`(0.40) tuyệt đối
+>    (đo bãi: sg2 đỉnh 0.357, sg4 đỉnh 0.186 → kẹt timeout DÙ đã qua). FIX: arm qua-đỉnh khi đỉnh cao
+>    hơn **BASELINE** (`man_cos_base` = cos lúc subgoal vừa active) ≥ POPRISE — bất biến sáng; vẫn cần
+>    cos tụt >POPDROP, 2-tick. OR gate tuyệt đối cũ (đỉnh≥near) giữ nguyên. → pop được sg2/sg3 ở bãi.
+> 2. **Metric pop SPATIAL-token** (`--pop-spatial`, env `SPATIAL`, default **bật**): thay mean-pool
+>    (gộp 576 token→mất bố cục, nhạy sáng-toàn-cục) bằng CENTER per-patch → cosine per-patch → mean
+>    576. Test tổng hợp (shift sáng + noise): tách biệt đúng-vs-sai subgoal **0.31 (spatial) vs 0.06
+>    (pool)** = bền ~5×. ⚠ thang cos KHÁC (hẹp hơn) + POSITION-ALIGNED → **vẫn cứng với LỆCH HEADING**.
+>    `SPATIAL=0` = mean-pool cũ (A/B).
+> 3. **GOAL-MODE kiểu META** (`--goal-mode`, env `GOALMODE`; hoặc CLI `run_goal.sh <ảnh>` = `--control-only`):
+>    coi **ẢNH CUỐI** route là GOAL DUY NHẤT, CEM lái thẳng tới (**patch-L1 lighting-robust**), TẮT hẳn
+>    pop/cosine-chain/timeout/completion → **NÉ tường descriptor**. Web: `GOALMODE=1 POLICY= TMIN=0.07
+>    bash run_infer.sh` → snap goal → ▶Run → STOP. ⚠ goal phải **TRONG TẦM NHÌN** (CEM cần overlap, y
+>    như Meta reach). KHÔNG có reach-stop (user bấm STOP). **Hướng hứa hẹn nhất cho demo.**
+>
+> **Tình trạng:** pop-fix + spatial giúp pop tốt hơn NHƯNG vẫn kẹt khi xe lệch HEADING/off-route (lái
+> giật full-lock → cos sập âm). Khớp kết luận đợt-3: **cosine là TRIỆU CHỨNG; gốc = camera-động +
+> heading + steering**. ⇒ GOAL-MODE (single-goal) né được vòng localize đa-subgoal.
+>
+> **Việc tiếp:** validate GOAL-MODE ở bãi (goal in-view); tốt → demo + report. Auto reach-stop (patch-L1
+> < ngưỡng → neutral) CHƯA làm. Knob mới đều ở cuối `run_infer.sh` (NEARCOS/POPRISE/SPATIAL/GOALMODE).
+
+## 🔦 2026-06-14 TỐI (đợt 3, offline) — "VẤN ĐỀ COSINE" CHẨN ĐÚNG GỐC: descriptor V-JEPA KHÔNG bất-biến-sáng. SeqSLAM + multi-ref ĐỀU KHÔNG cứu → hướng = LEARNED head
+
+> **TL;DR (eval offline thuần, KHÔNG đụng xe/inference — chỉ ra số quyết hướng cho "tường ánh sáng"):**
+> Bám tiếp tường-ánh-sáng (đợt 2 dưới). Câu hỏi: POP/localize sập khi đổi sáng — **sequence-matching
+> (SeqSLAM)** có cứu được như literature không? **KHÔNG.** Đã dựng probe `scripts/probe_seqslam_lighting.py`
+> (thuần numpy/CPU, dùng latent đã encode; tự tìm cặp session cross-lighting Δt≈53h, Δbright 11–18/255).
+>
+> 1. **CHẨN ĐOÁN QUYẾT ĐỊNH (assumption-free): rank của ref ĐÚNG-HÌNH-HỌC theo cosine.** Sáng-gần
+>    (Δbright 11): median rank **0**, %top1 **79** → descriptor TỐT. Sáng-xa (Δbright 18): median rank
+>    **41–62 / 557–776**, %top1 **0–3**, %top20 **1–15** → ref đúng BỊ CHÔN sâu. ⇒ tín hiệu **per-frame
+>    SAI**, không phải mờ/ambiguous.
+> 2. **SeqSLAM FAIL.** seq-RAW (cộng-dồn chuỗi) ≈ single-frame (cùng 0% khi sáng-xa); seq-NORM (contrast-
+>    norm chuẩn SeqSLAM) **TỆ HƠN** (locks-onto-lap sai vì towerpro đa-vòng, revisit 7–15). Lý do gốc:
+>    chuỗi chỉ rerank được ứng-viên GẦN-TOP — ref đúng ở rank 41 thì **không trick temporal nào kéo nổi**.
+> 3. **Multi-reference (đa-sáng) cũng FAIL** — kể cả **GPS-GATED (≤5m, đúng cách deploy gate)**: bank 6
+>    session, ref-đúng là best-appearance trong gate chỉ **%top1 1 / %top3 4**. Distractor + sai-appearance
+>    lấn. ⇒ **không phải artifact distractor-xa**; descriptor THẬT SỰ sai dưới đổi-sáng.
+> 4. **Control KHÔNG dính** (đã xác nhận lại): CEM chấm **patch-L1** (`cem.py:159-178`), lighting-robust
+>    (sun→cloud <5%). Vấn đề CHỈ ở **POP/localize = centered-pooled-cosine** (`inference_loop.py:962-971`).
+>
+> **➡️ KẾT LUẬN HƯỚNG (cho report + sau deadline):** "tường ánh sáng" là **giới hạn DESCRIPTOR**, không
+> sửa được bằng đo-lường (cosine/seq/multi-ref/photometric đều ngõ cụt — xem cả đợt 2). **Fix nguyên-lý
+> DUY NHẤT = LEARNED lighting-invariant descriptor / reachability-head (ViNG)** trên frozen V-JEPA, train
+> cross-session (dataset 181 session ĐÃ có positive cross-lighting: cùng xy+heading khác buổi). Rẻ (head
+> nhỏ, backbone đóng băng). **Deadline fallback KHÔNG đổi:** re-teach CÙNG BUỔI (descriptor tốt khi sáng-gần
+> — rank-0 79%). Đóng góp chính (world-model offline + control patch-L1) VẪN VỮNG; đây là negative-finding
+> trung thực ở tầng nav-localize.
+>
+> **Lệnh tái lập:** `PYTHONPATH=src python scripts/probe_seqslam_lighting.py --auto-pairs 3 --multiref 6`
+> (CPU ~3'). Probe có cờ `--with-patch` (thử base patch-L1, nặng) — chưa chạy; prior `probe_route_sim`
+> đã đo patch-L1 localize cross-session cũng ≈ random 15%. **KHÔNG sửa inference phiên này** (scope = eval).
+
 ## 🔁 2026-06-14 CHIỀU (đợt 2) — ĐÍNH CHÍNH "OOD": KHÔNG OOD. Flat-landscape = XE ĐỨNG YÊN. 3 fix + tường mới = ÁNH SÁNG
 
 > **TL;DR (ghi đè kết luận "OOD" của đợt sáng — đợt sáng SAI vì so xe-chạy với xe-đứng):**
