@@ -1,3 +1,12 @@
+> # ⚠️ ĐÍNH CHÍNH (2026-06-14 CHIỀU đợt 2) — KẾT LUẬN "OOD" DƯỚI ĐÂY ĐÃ SAI/NHIỄU
+> **Đọc `docs/HANDOFF.md` section đầu trước.** Toàn bộ §8b ("OOD XÁC NHẬN") so **xe-chạy (in-domain
+> 0.413)** với **xe-ĐỨNG (bãi ~0.02)** = so táo-cam. Sự thật đo lại:
+> - Ép `speed=0` trên CHÍNH VAL train → contrast tụt 0.413 → **0.107/0.300** mà KHÔNG đổi cảnh.
+> - Live **cold tại park này**: ga≥0.07 → contrast **0.2–0.57** (vượt 0.41); chỉ phẳng khi ga<0.06.
+> - ⇒ **KHÔNG OOD.** Phẳng = regime ĐỨNG YÊN (dynamics `yaw=k_yaw·steer·speed`→0). Gốc thật =
+>   **deadlock đứng yên** (hộp ga đè vùng chết <0.06); fix = sàn ga `TMIN=0.07`. Tường kế = **ánh sáng**.
+> - §8b/§5 H2 bên dưới GIỮ làm lịch sử nhưng **đừng trích "OOD" làm kết luận.**
+
 # CEM KHÔNG TẠO ĐƯỢC TÍN HIỆU LÁI — chẩn đoán bằng `--step` energy landscape (2026-06-14 TRƯA, bãi)
 
 > **Mục đích file:** lưu ĐẦY ĐỦ phát hiện + log thật của buổi probe `--step` ở công viên 06-14 trưa,

@@ -17,7 +17,7 @@ echo "[run_infer] log → $LOG | PURE-VISUAL CEM (geosteer/HOLD/off-route/GPS Đ
 echo "[run_infer] samples=${SMP:-256}/iters=${ITERS:-2} (256/2 ≈ 5.5s/tick — nhiều-sample CẮT full-lock outlier; ga thấp → đi-mù ít. Nhanh hơn: SMP=64≈1.6s)"
 echo "[run_infer] THUẦN VISUAL: --graph none (pop cosine, KHÔNG GPS) | lookahead=${LOOK:-0.5}m | LÁI=raw_steer (smooth=${SMOOTH:-0}) | HOLD=${LOCK:-0} | kickstart-clamp TẮT"
 echo "[run_infer] WARM-START policy = $([ -z "${POLICY-x}" ] && echo 'TẮT (CEM cold, --policy rỗng)' || echo "${POLICY-checkpoints/policy_prior_cd4/best.pt}")  ←A/B: 'POLICY= bash run_infer.sh' = TẮT warm-start"
-echo "[run_infer]   → pop subgoal khi cos≥manual-reach(${REACHCOS:-0.6}) HOẶC (cos≥near(0.40) & subgoal-kế gần hơn rõ); 2 tick liên tiếp. reach/pop-confirm GPS BỎ QUA."
+echo "[run_infer]   → pop subgoal khi cos≥manual-reach(${REACHCOS:-0.6}) HOẶC (cos≥near(0.40) & kế gần hơn rõ) HOẶC QUA-ĐỈNH (cos tụt >${POPDROP:-0.08} dưới đỉnh, đỉnh≥0.40 = đã đi qua); 2 tick liên tiếp. GPS BỎ QUA."
 echo "[run_infer]   GA = THUẦN MODEL: CEM chọn trong [${TMIN:-0}, ${THR:-0.10}], cruise=${CRUISE:-0} (floor TẮT), kick=${KICK:-0}. Model muốn nhả ga để bẻ về thì ĐƯỢC nhả (không bị cruise ghim tốc)."
 echo "[run_infer]   ℹ ga: COLD CEM (POLICY=) ra ga 0.05-0.10 bình thường, xe chạy. WARM-START + clamp-tắt → ga sụp ~0 (policy standstill-attractor). Vấn đề gốc = STEERING, không phải ga. (xem docs/CEM_STEERING_FLAT_20260614.md)"
 echo "[run_infer] ⚠ TEACH/dựng route NGAY TRƯỚC buổi (cùng ánh sáng) — khác buổi → ccos sập, pop miss. route_from_session.py <session> <tên> --step-m 0.35"
@@ -36,6 +36,7 @@ PYTHONPATH=src ~/miniforge3/envs/ai/bin/python -u scripts/inference_loop.py \
   --ctrl-lookahead-m ${LOOK:-0.5} \
   --heading-cap-deg 35 \
   --manual-reach-cos ${REACHCOS:-0.6} \
+  --manual-pop-drop ${POPDROP:-0.08} \
   --manual-timeout-s $MTO \
   --pop-confirm-cos ${POP:-0.5} \
   --steer-smooth ${SMOOTH:-0} \
@@ -64,6 +65,11 @@ PYTHONPATH=src ~/miniforge3/envs/ai/bin/python -u scripts/inference_loop.py \
 #  REACHCOS=0.6  LUẬT-1 pop: cos≥ngưỡng = "nhìn giống hệt subgoal" → pop. ⚠ cos CENTERED thang
 #             ~[-0.4,0.5] (subgoal kề ~+0.5) → 0.6 vẫn có thể KHÔNG đạt; lúc đó pop dựa LUẬT-2
 #             (near 0.40 + subgoal-kế gần hơn). NHÌN cột cos mỗi tick để biết thang thật route mình.
+#  POPDROP=0.08 LUẬT-3 pop QUA-ĐỈNH (06-14, route ảnh-thuần KHÔNG GPS): theo dõi cos ĐỈNH tới
+#             subgoal; cos tụt > POPDROP dưới đỉnh (đỉnh đã ≥0.40) = xe ĐÃ ĐI QUA → pop. Sửa
+#             đúng bệnh 06-14 (xe qua mốc mà reach 0.6×2 / near không kịp → kẹt 1/13 → timeout).
+#             0 = tắt. Nhạy hơn → 0.06; chống pop-sớm → 0.12. KHÔNG pop bừa khi đâm tường (cos
+#             không đỉnh) — khác GPS pop theo vị trí.
 #  POP=0.5    pop-confirm-cos — CHỈ dùng nhánh GPS (đã chết vì --graph none). Để đây cho mode graph.
 #  THR=0.10   ga TRẦN (= throttle-cap). Kẹt đề-pa lúc đứng/cua → KICK=0.10
 #             (kick steer-aware ×(1+0.5|steer|)). Phóng quá đà → THR=0.08.

@@ -1,6 +1,44 @@
 # HANDOFF — đọc cái này trước khi tiếp tục
 
-## 🔬 2026-06-14 TRƯA/CHIỀU — BÃI: probe `--step` CHỨNG MINH CEM KHÔNG SINH NỔI TÍN HIỆU LÁI. Chi tiết + LOG đầy đủ: **`docs/CEM_STEERING_FLAT_20260614.md`**
+## 🔁 2026-06-14 CHIỀU (đợt 2) — ĐÍNH CHÍNH "OOD": KHÔNG OOD. Flat-landscape = XE ĐỨNG YÊN. 3 fix + tường mới = ÁNH SÁNG
+
+> **TL;DR (ghi đè kết luận "OOD" của đợt sáng — đợt sáng SAI vì so xe-chạy với xe-đứng):**
+>
+> 1. **OOD BỊ BÁC.** Landscape lái phẳng KHÔNG phải scene-OOD mà là **regime ĐỨNG YÊN/ga thấp**.
+>    Bằng chứng: (a) offline trên VAL train, ép `speed=0` → contrast tụt **0.413 → 0.107 (thr0.02) /
+>    0.300 (thr0.10)** mà KHÔNG đổi cảnh (`/tmp/probe_speed_confound.py`); (b) **live cold ngay tại
+>    park này**: ga≥0.07 → contrast **0.2–0.57** (nhiều cái VƯỢT in-domain 0.41); ga<0.06 → phẳng
+>    0.01–0.02. Tương quan throttle↔contrast gần như hoàn hảo. Cơ chế: dynamics `yaw = k_yaw·steer·
+>    **speed**` → speed=0 thì lái = 0 yaw, predictor học đúng "xe đứng không quay". **Park KHÔNG OOD;
+>    model lái tốt tại đây khi ĐỦ GA.** (Đợt sáng đo toàn nhịp warm-start ga<0.06 → tưởng OOD.)
+> 2. **Gốc "xe không đi + không lái" = DEADLOCK ĐỨNG YÊN.** Hộp ga CEM `[0,0.10]` chứa **vùng chết
+>    `[0,0.06)`** (GT user: <0.06 xe KHÔNG chạy). Warm-start nuốt ga; cold thì CEM thi thoảng vẫn ra
+>    <0.06 → xe đứng → speed=0 → landscape phẳng → ra rác → lại <0.06. **Fix = SÀN GA `TMIN=0.07`**
+>    → ga giữ 0.07–0.10, **xe chạy, lái khoẻ trở lại** (đã chạy thật xác nhận). ⚠ infer cảnh báo
+>    `--throttle-min>0` nên dùng `--cruise-throttle` (sàn thực thi, cho CEM vẫn nhả ga) — cân nhắc đổi.
+> 3. **"Qua mốc mà không pop" = THẬT (đã chứng minh bằng frame).** Replay live-frame vs teach: best-match
+>    tiến **sg0→1→3** mà bộ đếm pop đứng ì "1–2/13". graph=none + route ảnh (xy=null) → pop CHỈ cosine;
+>    reach 0.6×2 hụt (đỉnh 0.61 đúng 1 tick), near+kế-gần-hơn chết trên route thẳng tự-giống, GPS-pop tắt.
+>    **FIX = pop THUẦN-VISUAL "qua-đỉnh"** (`--manual-pop-drop`, env `POPDROP`, default 0.08): cos tụt
+>    >drop dưới ĐỈNH running-max & đỉnh≥near(0.40), 2-tick. KHÔNG pop bừa khi đâm tường (cos không lên
+>    đỉnh) — khác GPS. Replay chuỗi cos thật: pop sg2 @seq322 thay vì timeout @seq506. ✅
+> 4. **TƯỜNG MỚI = LỆCH ÁNH SÁNG (nắng→mây).** Teach 12:51 nắng; 13:41 mây → cos sụp **0.635→0.19→ÂM**
+>    → kẹt sg1, xe lái ra lề (steer ramp full-lock đuổi target lệch). Xác nhận bằng MẮT (cùng chỗ, mây).
+>    **Photometric-norm (CLAHE/hist-match/mean-std) KHÔNG cứu** (`/tmp/lighting_fix_test.py`): raw-pooled
+>    cos đã ~0.97 (bão hoà, không phân biệt) → centering mới phân biệt được nhưng centering KHUẾCH ĐẠI
+>    lệch sáng. Pixel-norm = ngõ cụt. Đây là **giới hạn nền tảng** (đã ghi Q1 06-12: "khác sáng = sập").
+>
+> **➡️ VIỆC NGAY (deadline 06-15):** **RE-TEACH route DƯỚI ÁNH SÁNG HIỆN TẠI rồi chạy LIỀN** (5') —
+> đúng-buổi là cách CHỮA GỐC duy nhất kịp deadline. Rồi `POLICY= TMIN=0.07 bash run_infer.sh` (cold +
+> sàn ga + pop qua-đỉnh default 0.08). **Hướng SAU deadline (lighting-invariance):** SeqSLAM (khớp CHUỖI
+> frame), reachability/temporal-distance head (ViNG), multi-lighting reference per subgoal + fine-tune,
+> Cosmos relight. Đóng góp chính (world-model offline + lái in-domain khi đủ ga) VẪN VỮNG.
+>
+> **Code đổi (commit phiên này):** `scripts/inference_loop.py` (+arg `--manual-pop-drop`, peak-then-
+> decline pop, `man_cos_peak`), `run_infer.sh` (env `POPDROP`, echo, knob doc). Probe offline ở `/tmp`
+> (gitignored, KHÔNG theo repo): `probe_speed_confound.py`, `overshoot_check.py`, `lighting_fix_test.py`.
+
+## 🔬 2026-06-14 TRƯA/CHIỀU — BÃI: probe `--step` CHỨNG MINH CEM KHÔNG SINH NỔI TÍN HIỆU LÁI. Chi tiết + LOG đầy đủ: **`docs/CEM_STEERING_FLAT_20260614.md`** (⚠ kết luận OOD ĐÃ BỊ ĐÍNH CHÍNH ở section trên — đọc section trên trước)
 
 > **TL;DR cho session/máy sau:** Strip `run_infer.sh` về **CEM thuần visual** (tắt geosteer/HOLD/
 > off-route/GPS/floor/cruise/kick/EMA/kickstart-clamp) + `--step` (in energy landscape L1 mỗi nhịp) →

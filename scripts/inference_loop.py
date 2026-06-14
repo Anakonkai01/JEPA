@@ -552,6 +552,14 @@ def main():
                          "trông gần hơn RÕ RỆT (margin 0.10 thang centered / 0.02 thang thô) → coi như "
                          "đã qua. Chống kẹt khi ngưỡng tuyệt đối không bao giờ đạt (lệch sáng). "
                          "Outdoor đừng dựa cosine, dùng GPS. 0 = tắt.")
+    ap.add_argument("--manual-pop-drop", type=float, default=0.08,
+                    help="route TAY không GPS, luật pop thứ 3 (PEAK-then-DECLINE, 06-14): theo dõi "
+                         "cosine ĐỈNH tới subgoal hiện tại; khi cosine TỤT quá ngần này dưới đỉnh "
+                         "(= đã đi QUA điểm gần nhất) VÀ đỉnh từng ≥ --manual-near-cos → coi như đã "
+                         "qua subgoal → pop. Bắt overshoot trên route THẲNG tự-giống mà cos không bao "
+                         "giờ chạm --manual-reach-cos (lệch sáng/heading). KHÔNG dựa GPS (cos chỉ đỉnh "
+                         "khi view THẬT khớp → xe đâm tường/lệch hướng thì cos không đỉnh → không pop "
+                         "bừa như GPS). 0 = tắt luật này.")
     ap.add_argument("--manual-timeout-s", type=float, default=60.0,
                     help="route TAY: 1 subgoal quá ngần này giây không đạt → DỪNG route chờ lệnh web "
                          "(an toàn indoor: không GPS = không có stuck-recovery). 0 = tắt.")
@@ -826,6 +834,7 @@ def main():
             # route TAY: dwell cosine, đồng hồ timeout per-subgoal, route đang bám (reset khi giao mới)
             manual_hits, manual_last_idx, manual_t0, last_rt_obj = 0, -1, time.time(), None
             man_seen = False                              # LATCH "ảnh đã khớp subgoal hiện tại" (pop khi đi qua)
+            man_cos_peak = -1.0                            # đỉnh cosine tới subgoal hiện tại (pop peak-then-decline)
             man_center, man_vecs = None, None             # centered-cosine route tay (probe_reach 06-12)
             man_cum, man_head, man_xy, man_ctrl_idx = None, None, None, -1  # polyline arc-len + heading route tay (lookahead heading-aware)
             head_cap_rad = float(np.deg2rad(args.heading_cap_deg))
@@ -907,6 +916,7 @@ def main():
                         if rt is not last_rt_obj:             # route mới giao → reset dwell/đồng hồ
                             last_rt_obj, manual_hits, manual_last_idx = rt, 0, -1
                             man_seen = False
+                            man_cos_peak = -1.0               # reset đỉnh cosine pop khi đổi route
                             hold_steer, hold_t0 = None, None  # reset giữ-lái-xuyên-vùng-mù
                             # CENTERED cosine (probe_reach 06-12): cos pooled THÔ saturate trong nhà
                             # (mọi cặp 0.89–0.99, kề-vs-xa chênh ~0.04 → "cosine nào cũng cao");
@@ -1017,20 +1027,35 @@ def main():
                                     gps_dist = float(np.linalg.norm(car_xy - np.asarray(sub["xy"], np.float32)))
                                 else:
                                     cos_next = _mcos(web.wp_idx + 1) if web.wp_idx + 1 < len(subs) else None
+                                    man_cos_peak = max(man_cos_peak, cos_v)
                                     # margin "gần hơn RÕ RỆT": thang centered rộng (kề ~0.5/xa ~−0.4)
                                     # → 0.10; thang thô (route 1 ảnh) giữ 0.02 như đo park e2e 06-12
                                     mg = 0.10 if man_vecs is not None else 0.02
-                                    hit = cos_v >= args.manual_reach_cos or (
-                                        args.manual_near_cos > 0 and cos_next is not None
-                                        and cos_v >= args.manual_near_cos and cos_next > cos_v + mg)
+                                    near = (args.manual_near_cos > 0 and cos_next is not None
+                                            and cos_v >= args.manual_near_cos and cos_next > cos_v + mg)
+                                    # Luật 3 — PEAK-then-DECLINE (06-14): route thẳng tự-giống + lệch
+                                    # sáng → cos đỉnh chỉ ~0.6 (1 tick) rồi tụt; reach 0.6×2 không đạt,
+                                    # near chết (ảnh kế ≈ ảnh này) → xe ĐI QUA mà KHÔNG pop (đo log
+                                    # 06-14: best-match tiến sg0→1→3 mà bộ đếm pop đứng ì 1/13). Đã
+                                    # từng tới gần (đỉnh ≥ near) rồi cos tụt > drop dưới đỉnh = đã qua
+                                    # điểm gần nhất → pop. Running-max + 2-tick confirm = chống JPEG-
+                                    # hỏng 1 frame; cos chỉ đỉnh khi view THẬT khớp → đâm tường/lệch
+                                    # hướng không pop bừa (khác GPS pop theo vị-trí bất kể đúng/sai).
+                                    passed = (args.manual_pop_drop > 0 and args.manual_near_cos > 0
+                                              and man_cos_peak >= args.manual_near_cos
+                                              and cos_v < man_cos_peak - args.manual_pop_drop)
+                                    why = ("reach" if cos_v >= args.manual_reach_cos
+                                           else "kế-gần-hơn" if near else "qua-đỉnh" if passed else "")
+                                    hit = cos_v >= args.manual_reach_cos or near or passed
                                     manual_hits = manual_hits + 1 if hit else 0
-                                    if manual_hits >= 2:      # 2 tick liên tiếp — chống alias 1 frame
+                                    if manual_hits >= 2:      # 2 tick liên tiếp — chống alias/JPEG 1 frame
                                         nxt = f" next{cos_next:.3f}" if cos_next is not None else ""
                                         print(f"[web] ✓ subgoal tay {web.wp_idx + 1}/{len(subs)} "
-                                              f"(cos {cos_v:.3f}{nxt})", flush=True)
-                                        web.wp_idx += 1; manual_hits = 0
+                                              f"({why}: cos {cos_v:.3f} đỉnh{man_cos_peak:.3f}{nxt})", flush=True)
+                                        web.wp_idx += 1; manual_hits = 0; man_cos_peak = -1.0
                                         if web.wp_idx < len(subs):
                                             cos_v = _mcos(web.wp_idx)
+                                            man_cos_peak = cos_v
                             if web.wp_idx >= len(subs):       # hết chuỗi ảnh → xong route
                                 emit(0.0, 0.0); prev_steer = 0.0
                                 print(f"[web] 🏁 route tay '{rt['name']}' HOÀN THÀNH "
