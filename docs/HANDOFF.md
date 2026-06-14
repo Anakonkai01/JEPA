@@ -1,5 +1,37 @@
 # HANDOFF — đọc cái này trước khi tiếp tục
 
+## 🎬 2026-06-15 — DEMO OPEN-LOOP "model-vs-người lái" trên VIDEO (web 8070 + export MP4): visual-hoá `probe_energy`, KHÔNG phải closed-loop
+
+> **TL;DR:** Chạy thật ngoài bãi fail (tường ánh-sáng tầng localize + thiếu lateral-recovery) → dựng
+> DEMO **OFFLINE** minh-hoạ trực quan "world-model CÓ Ý NGHĨA": lấy 1 session VAL, mỗi frame quét
+> `E(steer)` (goal = mốc **d=4 ~0.9s phía trước CÙNG session**, throttle=teacher) → so góc model
+> (argmin E = đáy thung lũng) với góc người lái. **OPEN-LOOP**: video chạy theo người, model chỉ ĐỀ
+> XUẤT — KHÔNG để action lái vì video không phản ứng counterfactual (frame kế đã đóng đinh bởi người
+> lái). = **visual-hoá `probe_energy`**, KHÔNG khám phá gì mới (số đã biết từ offline).
+>
+> 1. **Kết quả (≥4 session VAL held-out, nhất quán):** sign-turn **844/897 = 94.1%** (93.6–94.6%/cái);
+>    |Δsteer|med 0.05–0.10; contrast med 0.31–0.63 (turn 0.28–0.42) — KHỚP probe toàn-VAL (96%/0.06/
+>    0.41). `demo_precompute.py` = **copy nguyên `planner.score` từ `probe_energy`** → số không lệch.
+> 2. **Stack MỚI (đã commit):** `scripts/demo_precompute.py` (1 session → `data/demo/<s>/demo.json`;
+>    ~0.6s/frame GPU, fp32 grid21; mirror `probe_energy`) · `scripts/demo_web.py` (Flask **8070**: rank
+>    VAL, serve JSON/frame, precompute + **export MP4** on-demand) · `scripts/demo_export_mp4.py`
+>    (cv2+ffmpeg H.264, **CPU**, → `data/demo/<s>/<s>.mp4` cho slide; text ASCII) · `web/demo.html`
+>    (player: **landscape `E(steer)` ĐỘNG = nhân vật chính** (thứ BC không vẽ được), kim model-vs-người,
+>    ảnh GOAL lộ thiên, sparkline contrast click-nhảy, ⏭ khúc-quẹo-kế, nút ⬇Export MP4, HUD 2 lớp
+>    held-out+frame, banner OPEN-LOOP) · `run_demo.sh`. **PLAY/export không cần GPU** (precompute xong).
+> 3. **Chạy:** `bash run_demo.sh` (terminal RIÊNG, persistent) → http://localhost:8070 (Tailscale
+>    100.110.165.40:8070). Precompute: `PYTHONPATH=src python scripts/demo_precompute.py <session> -d 4`;
+>    export: nút web hoặc `python scripts/demo_export_mp4.py <session>`. **`data/demo/` gitignored**
+>    (JSON+MP4 regenerable, KHÔNG theo repo). ⚠ torch 2.10 in warning "skipping cpp extensions" — vô hại.
+> 4. **Khung báo cáo (story 3 tầng trung thực):** world-model dynamics offline ✓ · planner OPEN-LOOP
+>    khớp expert ~94% (DEMO này) · closed-loop vật lý = **negative finding** (tường ánh-sáng tầng
+>    localize + thiếu lateral-recovery; cần môi trường phản ứng → 3DGS sim). Goal lấy CÙNG session
+>    KHÔNG tautology vì: dẫn bằng **contrast** + báo **trên khúc-quẹo** + **hiện goal lộ thiên**; phải
+>    TRÁNH goal=ảnh-cuối/frame-kế. **⚠ Demo KHÔNG chứng minh closed-loop — đừng hiểu lầm "xe tự lái".**
+>
+> **Sessions precompute (local, data/ gitignored):** short-rich 173932/161957/181006/161437 + dài
+> 174901(4248fr)/164545/162959 (chạy nền). Việc tiếp (tùy): thử d=6/8; thêm session; tinh layout.
+
 ## 🛠️ 2026-06-14 FIELD (route tay) — POP-FIX + metric SPATIAL-token + GOAL-MODE (kiểu Meta single-goal). Code đã đổi, validate bãi DANG DỞ
 
 > **TL;DR:** buổi chạy thật route tay (teach&repeat) sửa loạt "xe ĐÃ qua subgoal mà KHÔNG pop". 3 thay
