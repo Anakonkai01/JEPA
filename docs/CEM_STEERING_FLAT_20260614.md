@@ -36,11 +36,11 @@ config/warm-start/subgoal-spacing. Đây là **giới hạn model** (đúng nega
 giờ **chứng minh bằng mắt** qua landscape. Hai nghi can chính: **route thẳng tự-giống = ca tệ nhất**
 (bẻ lái gần như không đổi cảnh dự đoán) + **OOD** (cảnh park khác data train).
 
-**Phép thử quyết định cho session sau:** teach một route **CÓ CUA RÕ + vật mốc đặc trưng** (không
-thẳng, không tự-giống) → `STEP=1 bash run_infer.sh` → đọc `contrast` ở khúc cua:
-- contrast **nhảy lên** (≥0.2) ở cua → route thẳng chỉ là ca tệ nhất; model DÙNG ĐƯỢC chỗ có cue.
-- contrast **vẫn ~0.02** + ga ~0 → checkpoint **OOD/vô dụng** ở môi trường này → phải retrain
-  (recovery data / đúng domain / 3DGS sim), KHÔNG knob nào ở bãi sửa được.
+**✅ ĐÃ PHÂN ĐỊNH (offline, §8b):** chạy `probe_energy.py` trên VAL data train (CÙNG scoring) →
+**contrast in-domain = 0.413, sign-đúng 96%, argminE khớp người lái trong 0.06**. Bãi ~0.02 = **thấp
+20×**. ⇒ **OOD XÁC NHẬN: model LÀNH, cảnh park 06-14 ngoài phân bố train.** "CEM không biết lái" =
+generalization gap, KHÔNG phải bug. Việc chính = giải OOD (fine-tune data park / recovery / 3DGS sim),
+không phải knob bãi. (Chi tiết §8b, §8.)
 
 ---
 
@@ -147,15 +147,43 @@ là **triệu chứng OOD/thoái hoá**, không phải do data. (Đừng lặp c
 - stdout đầy đủ: `logs/infer_20260614_120908.log` (B), `logs/infer_20260614_121659.log` (A).
 - ⚠ Máy khác KHÔNG có các file này (gitignored) — log cốt lõi đã NHÚNG trong §2/§3 file này.
 
-## 8. Việc tiếp (ưu tiên) — H4 đã bác, còn H1/H2
+## 8b. ✅ KẾT QUẢ OFFLINE (chạy ngay 06-14) — **OOD XÁC NHẬN, model LÀNH**
 
-1. **H2 (OOD) — offline, LÀM TRƯỚC (rẻ, không cần xe):** chạy `eval_goal_reaching_ac` (hoặc viết
-   probe tương đương) trên **data train** với CÙNG cách tính contrast của `--step`. Nếu in-domain
-   offline contrast ~**0.45** mà bãi ~**0.02** → khẳng định **OOD** (model OK trên train, hỏng trên
-   cảnh park 06-14). Nếu offline cũng ~0.02 → model/checkpoint hỏng tổng thể (nghiêm trọng hơn).
-2. **H1 — route CÓ CUA + vật mốc** (cần ra bãi): teach route quẹo rõ → `STEP=1 bash run_infer.sh` →
-   contrast ở cua tăng? Tăng → straight chỉ là ca tệ nhất. Vẫn ~0.02 → OOD/giới hạn xác nhận.
-3. Nếu H1/H2 xác nhận OOD/giới hạn: retrain recovery-data / đúng domain / 3DGS sim (CLOSED_LOOP_FAILURE §8).
+Chạy `scripts/probe_energy.py` (CÙNG `planner.score` + CÙNG công thức contrast của `--step`, nhưng
+trên **VAL window data train** in-domain ban ngày, d=4 khớp HOR park, grid 21):
+
+```
+PYTHONPATH=src python scripts/probe_energy.py --checkpoint checkpoints/vjepa_ac_car_cd4/vjepa_ac_car/best.pt -d 4 --n-windows 300
+→ 300 window: median |argminE − teacher| = 0.058 | sign-đúng khi quẹo (|tea|>0.15): 98/102 | median contrast = 0.413
+```
+
+| Chỉ số | IN-DOMAIN (VAL train) | BÃI park 06-14 (`--step`) | Tỉ lệ |
+|--------|----------------------|---------------------------|-------|
+| **median contrast E(steer)** | **0.413** | **~0.02–0.11** | **~20× thấp hơn ở bãi** |
+| argminE vs teacher (lệch) | 0.058 (rất khớp) | đáy ở CỰC ±1.0 (vô nghĩa) | — |
+| sign-đúng khi quẹo | **98/102 (96%)** | ~ngẫu nhiên | — |
+
+(Bản `--turn-only` 200 window CHỈ lúc quẹo: **contrast 0.335, sign 191/200 (95.5%)**, argminE lệch 0.139
+— in-domain model phân biệt lái TỐT ngay cả riêng các khúc cua → loại trừ "model dở ở cua".)
+
+→ **Model + CEM HOÀN TOÀN LÀNH trên data train**: landscape có **lòng chảo thật** (contrast 0.41),
+đáy lái **khớp người lái trong 0.06**, **đúng dấu 96%** lúc quẹo. Vậy **landscape phẳng ở bãi KHÔNG
+phải model hỏng** — mà là **OOD: cảnh park 06-14 nằm ngoài phân bố train** → predictor thoái hoá →
+energy phẳng → CEM không bám được.
+
+**⇒ CHỐT NGUYÊN NHÂN "CEM không biết lái" = OOD generalization gap, KHÔNG phải bug config/CEM/warm-start.**
+World-model offline (đóng góp chính của paper) **vẫn vững** (đây chính là bằng chứng định lượng nó hoạt
+động in-domain); gap nằm ở **khái quát hoá sang cảnh mới**. Đây là negative-finding TRUNG THỰC, đo được.
+
+## 8. Việc tiếp (ưu tiên) — H4 đã bác, H2(OOD) ✅ XÁC NHẬN, còn H1
+
+1. ~~H2 (OOD) offline~~ → **✅ ĐÃ LÀM (§8b): OOD XÁC NHẬN** (in-domain contrast 0.413 vs bãi ~0.02).
+2. **GIẢI OOD = việc chính giờ** (không phải knob bãi): (a) **thu data Ở CHÍNH công viên này** rồi
+   fine-tune predictor (rẻ nhất, đúng domain); (b) **recovery-data augmentation** (CLOSED_LOOP_FAILURE §8);
+   (c) **3DGS sim** từ data park để lặp closed-loop trong nhà (SIM_3DGS_PLAN.md). Cosmos-Transfer relight
+   nếu gap là ánh sáng.
+3. (phụ, xác nhận thêm) **H1 — route CÓ CUA** ở bãi: nếu contrast vẫn ~0.02 trên route quẹo → đóng
+   đinh OOD theo chiều closed-loop; nhưng §8b đã đủ kết luận, H1 chỉ là cross-check.
 4. (phụ) Warm-start path: ga sụp ~0 khi kickstart-clamp tắt — nếu muốn dùng warm-start, BẬT lại
    `--kickstart-clamp` (mặc định inference_loop = True; run_infer đang ép `--no-kickstart-clamp`).
 

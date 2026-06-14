@@ -14,10 +14,16 @@
 >   warm-start + clamp-tắt mới sụp ga~0 (policy standstill-attractor). ⇒ **vấn đề gốc = STEERING**, ga ổn.
 > - **H4 (phẳng do probe ga thấp) ĐÃ BÁC:** cold run probe steer ở ga 0.05–0.10 vẫn phẳng.
 >
-> **➡️ Việc tiếp (CEM_STEERING_FLAT_20260614.md §8):** (1) **OFFLINE TRƯỚC** — đo contrast landscape
-> trên DATA TRAIN (`eval_goal_reaching_ac`): in-domain ~0.45 mà bãi ~0.02 ⇒ khẳng định **OOD**. (2)
-> bãi: route **CÓ CUA + vật mốc** → contrast ở cua tăng không? (3) OOD/giới hạn xác nhận → retrain
-> recovery-data / đúng domain / 3DGS sim.
+> **✅ ĐÃ PHÂN ĐỊNH NGAY (offline, `probe_energy.py` trên VAL data train, cùng scoring):** in-domain
+> **contrast = 0.413** (turn-only 0.335), **sign-đúng 96%**, argminE khớp người lái trong 0.06 — bãi
+> ~0.02 = **thấp 20×**. ⇒ **OOD XÁC NHẬN: model + CEM LÀNH, cảnh park 06-14 ngoài phân bố train.**
+> "CEM không biết lái" = generalization gap, KHÔNG phải bug/config. World-model offline VẪN VỮNG (đây
+> là bằng chứng định lượng nó chạy in-domain). Lệnh: `PYTHONPATH=src python scripts/probe_energy.py
+> --checkpoint checkpoints/vjepa_ac_car_cd4/vjepa_ac_car/best.pt -d 4 --n-windows 300`.
+>
+> **➡️ Việc chính giờ = GIẢI OOD (không phải knob bãi):** (a) thu data Ở CHÍNH park này → fine-tune
+> predictor (rẻ, đúng domain); (b) recovery-data aug (CLOSED_LOOP_FAILURE §8); (c) 3DGS sim từ data
+> park (SIM_3DGS_PLAN.md). Cosmos-Transfer relight nếu gap là ánh sáng.
 >
 > **`run_infer.sh` + `inference_loop.py` đổi phiên này (đã commit):** knob env mới `POLICY=`(A/B warm-start),
 > `TMIN`/`THR`(ga band), `REACHCOS`(pop reach, default 0.6), `CHUNK`(score-chunk auto khi HOR>4); flag mới
