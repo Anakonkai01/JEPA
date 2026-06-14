@@ -358,6 +358,37 @@ class WebBridge:
                     [int(cv2.IMWRITE_JPEG_QUALITY), 70])
 
 
+class RunRecorder:
+    """Bundle DEBUG mỗi run (yêu cầu 06-14): logs/run_<ts>/ gồm
+       - config.json  : TOÀN BỘ config (args + checkpoint/policy/route/git) — để biết run này chạy gì.
+       - frames/<seq>.jpg : frame LIVE xe gửi về mỗi tick (đặt tên theo seq → khớp run.jsonl + log stdout).
+       - run.jsonl    : mỗi dòng = 1 tick {seq,t,steer,raw_steer,throt,model_throt,tag,recover,hold,xy}.
+    → mở lại 1 run: xem frame nào → quyết định gì, không cần xe. logs/ đã .gitignore (không lên repo)."""
+
+    def __init__(self, config: dict, save_frames: bool = True, root: Path | None = None):
+        ts = time.strftime("%Y%m%d_%H%M%S")
+        base = Path(root) if root else (Path(__file__).resolve().parents[1] / "logs")
+        self.dir = base / f"run_{ts}"
+        (self.dir / "frames").mkdir(parents=True, exist_ok=True)
+        self.save_frames = save_frames
+        self.n = 0
+        (self.dir / "config.json").write_text(json.dumps(config, indent=1, default=str))
+        self._jl = open(self.dir / "run.jsonl", "a", buffering=1)
+        print(f"[infer] 📁 RUN DIR = {self.dir} (config.json + frames/ + run.jsonl)"
+              f"{'' if save_frames else ' [frames TẮT]'}", flush=True)
+
+    def tick(self, seq, rgb, rec: dict):
+        try:
+            if self.save_frames and rgb is not None:
+                cv2.imwrite(str(self.dir / "frames" / f"{int(seq):06d}.jpg"),
+                            rgb[:, :, ::-1], [int(cv2.IMWRITE_JPEG_QUALITY), 80])
+            rec = {"seq": int(seq), "t": round(time.time(), 3), **rec}
+            self._jl.write(json.dumps(rec, default=str) + "\n")
+            self.n += 1
+        except Exception as e:                    # ghi log KHÔNG được phép làm gãy vòng lái
+            print(f"[infer] (recorder lỗi, bỏ qua: {e})", flush=True)
+
+
 # ---------------------------------------------------------------------------
 def build_state(meta: dict, columns) -> torch.Tensor:
     """Raw state vector from stream meta, in the model's column order. gz==yaw_rate; prev-action =
@@ -585,6 +616,12 @@ def main():
                     help="bật cầu nối web planner (scripts/route_web.py): nhận route/STOP từ "
                          "DIR/active.json, ghi live_status.json + live_frame.jpg. Không cần "
                          "--goal-* (route giao từ web; xe idle + localize trong lúc chờ).")
+    ap.add_argument("--save-run", action=argparse.BooleanOptionalAction, default=True,
+                    help="lưu bundle debug mỗi run → logs/run_<ts>/ (config.json + frames/<seq>.jpg + "
+                         "run.jsonl). Mặc định BẬT. Tắt: --no-save-run.")
+    ap.add_argument("--save-frames", action=argparse.BooleanOptionalAction, default=True,
+                    help="trong bundle run, có lưu ảnh frame live mỗi tick không (tắt = chỉ run.jsonl, "
+                         "cho run dài đỡ tốn đĩa). Mặc định BẬT.")
     ap.add_argument("--device", default="cuda" if torch.cuda.is_available() else "cpu")
     args = ap.parse_args()
     if cv2 is None:
@@ -730,6 +767,21 @@ def main():
 
     dongle = ctl.SerialDongleSender() if args.dongle else None
     web = WebBridge(args.web) if args.web else None
+    # --- DEBUG run bundle (config đầy đủ trong log + frames live + per-tick jsonl) ---
+    cfg_dump = dict(vars(args))
+    try:
+        cfg_dump["ckpt_mtime"] = time.ctime(Path(args.checkpoint).stat().st_mtime)
+    except Exception:
+        pass
+    try:
+        import subprocess as _sp
+        cfg_dump["git_commit"] = _sp.check_output(
+            ["git", "rev-parse", "--short", "HEAD"], cwd=Path(__file__).resolve().parents[1],
+            stderr=_sp.DEVNULL).decode().strip()
+    except Exception:
+        pass
+    print(f"[infer] CONFIG: {json.dumps(cfg_dump, default=str, ensure_ascii=False)}", flush=True)
+    recorder = RunRecorder(cfg_dump, save_frames=args.save_frames) if args.save_run else None
     period = 1.0 / max(args.rate, 0.1)
     try:
         while True:
@@ -1479,6 +1531,14 @@ def main():
                           f"(ga model {model_throt:+.3f}){xy_tag} "
                           f"({time.time()-t0:.2f}s enc{t_enc-t0:.2f} nav{t_tgt-t_enc:.2f} "
                           f"cem{t_plan-t_tgt:.2f})", flush=True)
+                    if recorder is not None:               # DEBUG bundle: frame<seq>.jpg + run.jsonl
+                        recorder.tick(seq, rgb, {
+                            "tag": tag, "steer": round(steer, 3), "raw_steer": round(raw_steer, 3),
+                            "throt": round(throt, 3), "model_throt": round(model_throt, 3),
+                            "recover": recover_tag.strip(), "hold": hold_tag.strip(),
+                            "xy": ([round(float(car_xy[0]), 2), round(float(car_xy[1]), 2)]
+                                   if car_xy is not None else None),
+                            "enc_s": round(t_enc - t0, 3), "cem_s": round(t_plan - t_tgt, 3)})
 
                     if web is not None:                    # live cho web planner (map + camera)
                         web.frame(rgb)
