@@ -27,9 +27,16 @@ from flask import Flask, jsonify, request, send_file
 
 from jepa_wm.nav.graph import TopoGraph
 
+import sys as _sys
+_sys.path.insert(0, str(Path(__file__).resolve().parent))   # cho phép import route_from_session
+from route_from_session import load_session_track, build_route_from_session
+
 ROOT = Path(__file__).resolve().parents[1]
 ROUTES_DIR = ROOT / "data" / "routes"
 HTML_PATH = ROOT / "web" / "route_planner.html"
+RAW_DIRS = {"towerpro": ROOT / "data" / "raw_towerpro",
+            "kds": ROOT / "data" / "raw_kds",
+            "mixed": ROOT / "data" / "raw_mixed"}
 
 app = Flask(__name__)
 G: TopoGraph | None = None
@@ -299,6 +306,101 @@ def api_live_frame():
     if not p.exists():
         return jsonify({"error": "no frame"}), 404
     return send_file(p, mimetype="image/jpeg", max_age=0)
+
+
+# ---------------- Route từ SESSION đã REC (build offline trên web) ----------------
+@app.get("/api/sessions")
+def api_sessions():
+    """Liệt kê session trong data/raw_* (có gps + actions_synced) + số frame."""
+    out = []
+    for dom, base in RAW_DIRS.items():
+        if not base.exists():
+            continue
+        for sd in sorted(p for p in base.iterdir() if p.is_dir()):
+            if not (sd / "gps.csv").exists() or not (sd / "actions_synced.csv").exists():
+                continue
+            try:
+                nf = sum(1 for _ in open(sd / "actions_synced.csv")) - 1
+            except Exception:
+                nf = 0
+            out.append({"dom": dom, "name": sd.name, "frames": nf,
+                        "has_frames": (sd / "frames").is_dir()})
+    return jsonify(out)
+
+
+def _session_dir(dom, name):
+    base = RAW_DIRS.get(dom)
+    if base is None:
+        return None
+    sd = base / _safe_name(name)
+    return sd if sd.is_dir() else None
+
+
+@app.get("/api/session_track")
+def api_session_track():
+    """Polyline xy (hệ graph) + danh sách frame_idx để vẽ map + tua ảnh."""
+    sd = _session_dir(request.args.get("dom", ""), request.args.get("name", ""))
+    if sd is None:
+        return jsonify({"error": "session không tồn tại"}), 404
+    if G is None:
+        return jsonify({"error": "chưa có graph (cần origin để xy cùng hệ)"}), 409
+    lat0, lon0 = G.origin
+    try:
+        tr = load_session_track(sd, lat0, lon0)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+    fx, fy, fidx = tr["fx"], tr["fy"], tr["fidx"]
+    xy = [[round(float(a), 2), round(float(b), 2)] for a, b in zip(fx, fy)]
+    return jsonify({"n": len(xy), "xy": xy, "fidx": [int(i) for i in fidx],
+                    "thr": [round(float(t), 2) for t in tr["thr"]],
+                    "extent": [float(fx.min()), float(fx.max()), float(fy.min()), float(fy.max())]})
+
+
+@app.get("/api/session_frame")
+def api_session_frame():
+    """Ảnh frame thật (idx = số file trong frames/, lấy từ fidx của track)."""
+    sd = _session_dir(request.args.get("dom", ""), request.args.get("name", ""))
+    if sd is None:
+        return jsonify({"error": "session không tồn tại"}), 404
+    try:
+        idx = int(request.args.get("idx", 0))
+    except ValueError:
+        return jsonify({"error": "idx lạ"}), 400
+    p = sd / "frames" / f"{idx:06d}.jpg"
+    if not p.exists():
+        return jsonify({"error": "missing"}), 404
+    return send_file(p, mimetype="image/jpeg", max_age=0)
+
+
+@app.post("/api/session_build")
+def api_session_build():
+    """Build route từ session với option do web gửi → lưu vào data/routes."""
+    body = request.get_json(force=True)
+    sd = _session_dir(body.get("dom", ""), body.get("session", ""))
+    if sd is None:
+        return jsonify({"error": "session không tồn tại"}), 404
+    try:
+        name = _safe_name(body.get("name", ""))
+    except ValueError:
+        return jsonify({"error": "tên route trống/không hợp lệ"}), 400
+    if G is None:
+        return jsonify({"error": "chưa có graph (cần origin)"}), 409
+    lat0, lon0 = G.origin
+    opts = {}
+    for k in ("step_m", "turn_deg", "turn_step_m", "start_s", "end_s", "max_acc"):
+        if body.get(k) not in (None, ""):
+            try:
+                opts[k] = float(body[k])
+            except (ValueError, TypeError):
+                return jsonify({"error": f"option {k} không phải số"}), 400
+    try:
+        r = build_route_from_session(sd, name, lat0, lon0, routes_dir=str(ROUTES_DIR),
+                                     force=bool(body.get("force", False)), **opts)
+    except FileExistsError as e:
+        return jsonify({"error": f"{e} — tích 'ghi đè'"}), 409
+    except Exception as e:
+        return jsonify({"error": str(e)}), 400
+    return jsonify(r)
 
 
 def main():

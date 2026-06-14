@@ -109,6 +109,40 @@
     </div>
   </div>
 
+  <div class="card" id="sesscard">
+    <h3>📁 Route từ Session (REC đã thu)</h3>
+    <div class="muted" style="margin-bottom:6px">Chọn session → xem đường + tua ảnh → chỉnh option → Build.
+      <span style="color:var(--warn)">Khác buổi: pop nên GPS (POP=0); CEM lái = L1 ít nhạy sáng.</span></div>
+    <div class="row">
+      <select id="sesssel" style="flex:1"><option value="">— đang tải —</option></select>
+      <button class="small" onclick="sessLoad()">xem</button>
+    </div>
+    <div id="sessbox" style="display:none;margin-top:6px">
+      <div class="muted" id="sessinfo"></div>
+      <img id="sessimg" alt="frame" style="width:100%;border-radius:6px;margin-top:4px">
+      <div class="row" style="margin-top:4px">
+        <input type="range" id="sessscrub" min="0" max="0" value="0" style="flex:1" oninput="sessScrub()">
+        <span class="muted" id="sessfpos" style="min-width:60px;text-align:right"></span>
+      </div>
+      <div class="row wrap" style="margin-top:6px;gap:4px">
+        <label class="muted">step-m<input type="number" id="o_step" value="0.4" step="0.05" style="width:54px"></label>
+        <label class="muted">turn°<input type="number" id="o_turndeg" value="15" step="1" style="width:46px"></label>
+        <label class="muted">turn-m<input type="number" id="o_turnstep" value="0.25" step="0.05" style="width:54px"></label>
+      </div>
+      <div class="row wrap" style="margin-top:4px;gap:4px">
+        <label class="muted">start-s<input type="number" id="o_start" value="0" step="0.5" style="width:46px"></label>
+        <label class="muted">end-s<input type="number" id="o_end" value="0" step="0.5" style="width:46px"></label>
+        <label class="muted">max-acc<input type="number" id="o_acc" value="15" step="1" style="width:46px"></label>
+      </div>
+      <div class="muted" id="sesspreview" style="margin-top:4px"></div>
+      <div class="row" style="margin-top:6px">
+        <input type="text" id="sessrname" placeholder="tên route (vd: park_tu_session)">
+        <label class="muted" style="white-space:nowrap"><input type="checkbox" id="sessforce"> ghi đè</label>
+      </div>
+      <button class="acc" style="width:100%;margin-top:6px" onclick="sessBuild()">🛠 Build route từ session</button>
+    </div>
+  </div>
+
   <div class="card" id="preview" style="display:none">
     <h3>Node <span id="selid"></span></h3>
     <img id="selimg" alt="node frame">
@@ -162,6 +196,7 @@ let N=0, XY=null, SUID=null, HD=null, EXT=[0,1,0,1];
 let cam={x:0,y:0,scale:5};                 // world(m) -> screen: s=(p-c)*scale (+flip y)
 let sel=null, hov=null, wps=[], suggest=null, live=null, trail=[];
 let activeRoute=null;
+let SESS=null, SESSframe=0;          // Route từ Session: track đang xem + vị trí tua
 // node theo bucket hướng (24 × 15°) để tô màu nhanh
 const NHUE=24, BSTYLE=[...Array(NHUE)].map((_,b)=>`hsl(${b*360/NHUE},65%,55%)`);
 let BIDX=null;
@@ -209,6 +244,15 @@ function draw(){
   // vết xe — vẽ DƯỚI CÙNG (trước đây đè lên node, khó nhìn); 🧹 ở card Live để xoá
   if(trail.length>1){ctx.lineWidth=1.5;ctx.strokeStyle='#ff525266';ctx.beginPath();
     trail.forEach((p,k)=>{const[sx,sy]=W2S(p[0],p[1]);k?ctx.lineTo(sx,sy):ctx.moveTo(sx,sy);});ctx.stroke();}
+  // session đang xem (Route từ Session) — polyline cam sáng + chấm frame hiện tại
+  if(SESS&&SESS.xy&&SESS.xy.length>1){
+    ctx.lineWidth=2.5; ctx.strokeStyle='#f0a500'; ctx.beginPath();
+    SESS.xy.forEach((p,k)=>{const[sx,sy]=W2S(p[0],p[1]);k?ctx.lineTo(sx,sy):ctx.moveTo(sx,sy);});
+    ctx.stroke();
+    const c=SESS.xy[Math.min(SESSframe,SESS.xy.length-1)];const[cx,cy]=W2S(c[0],c[1]);
+    ctx.fillStyle='#ffd24d';ctx.beginPath();ctx.arc(cx,cy,6,0,7);ctx.fill();
+    ctx.strokeStyle='#000';ctx.lineWidth=1.5;ctx.stroke();
+  }
   // session polylines (suid contiguous ranges)
   ctx.lineWidth=1; ctx.strokeStyle='#2e3c49';
   let i=0;
@@ -477,9 +521,53 @@ async function pollLive(){
     txt.style.color='var(--dim)';st.textContent='';img.style.display='none';sub.style.display='none';}
   draw();}
 
+// ---------- Route từ Session ----------
+async function loadSessions(){
+  try{const ss=await jget('/api/sessions');
+    const sel=document.getElementById('sesssel');
+    if(!ss.length){sel.innerHTML='<option value="">(không có session trong data/raw_*)</option>';return;}
+    sel.innerHTML='<option value="">— chọn session ('+ss.length+') —</option>'+
+      ss.map(s=>`<option value="${s.dom}|${s.name}">${s.name} · ${s.frames}f${s.has_frames?'':' ⚠no-frames'}</option>`).join('');
+  }catch(e){toast('lỗi tải session: '+e.message);}
+}
+async function sessLoad(){
+  const v=document.getElementById('sesssel').value; if(!v){toast('chọn session đã');return;}
+  const [dom,name]=v.split('|');
+  try{
+    const t=await jget(`/api/session_track?dom=${dom}&name=${encodeURIComponent(name)}`);
+    SESS={dom,name,xy:t.xy,fidx:t.fidx,n:t.n}; SESSframe=0;
+    document.getElementById('sessbox').style.display='';
+    const sc=document.getElementById('sessscrub'); sc.max=Math.max(0,t.n-1); sc.value=0;
+    let L=0; for(let k=1;k<t.xy.length;k++)L+=Math.hypot(t.xy[k][0]-t.xy[k-1][0],t.xy[k][1]-t.xy[k-1][1]);
+    document.getElementById('sessinfo').textContent=`${t.n} frame · dài ~${L.toFixed(1)}m (đường CAM trên map)`;
+    const rn=document.getElementById('sessrname'); if(!rn.value)rn.value=name.replace(/^session_/,'r_');
+    sessScrub();
+    cam.x=(t.extent[0]+t.extent[1])/2; cam.y=(t.extent[2]+t.extent[3])/2;
+    const r=mapEl.getBoundingClientRect();
+    cam.scale=Math.min(r.width/(t.extent[1]-t.extent[0]+4),r.height/(t.extent[3]-t.extent[2]+4),60);
+    draw();
+  }catch(e){toast('lỗi: '+e.message);}
+}
+function sessScrub(){
+  if(!SESS)return; const pos=+document.getElementById('sessscrub').value; SESSframe=pos;
+  document.getElementById('sessimg').src=`/api/session_frame?dom=${SESS.dom}&name=${encodeURIComponent(SESS.name)}&idx=${SESS.fidx[pos]}`;
+  document.getElementById('sessfpos').textContent=`${pos+1}/${SESS.n}`; draw();
+}
+async function sessBuild(){
+  if(!SESS){toast('chọn + xem session đã');return;}
+  const name=document.getElementById('sessrname').value.trim(); if(!name){toast('đặt tên route');return;}
+  const g=id=>document.getElementById(id).value;
+  try{const r=await jpost('/api/session_build',{dom:SESS.dom,session:SESS.name,name,
+      step_m:g('o_step'),turn_deg:g('o_turndeg'),turn_step_m:g('o_turnstep'),
+      start_s:g('o_start'),end_s:g('o_end'),max_acc:g('o_acc'),force:document.getElementById('sessforce').checked});
+    document.getElementById('sesspreview').textContent=`✓ ${r.n} subgoal · ${r.length_m}m · median ${r.spacing_med}m · ${r.dense_turn} đoạn dày-cua`;
+    toast(`✓ route '${r.name}' đã tạo (${r.n} subgoal) — ▶ Run ở "Route đã lưu"`); loadRoutes();
+  }catch(e){toast('build lỗi: '+e.message);}
+}
+
 // ---------- init ----------
 (async function(){
-  renderWps(); loadRoutes(); setInterval(pollLive,800);
+  renderWps(); loadRoutes(); loadSessions(); setInterval(pollLive,800);
   try{const g=await jget('/api/graph');
     N=g.n;
     if(!N){ // manual-only (route_web --graph none): không có map — teach & repeat thuần ảnh
