@@ -1,5 +1,30 @@
 # HANDOFF — đọc cái này trước khi tiếp tục
 
+## 🔬 2026-06-14 TRƯA/CHIỀU — BÃI: probe `--step` CHỨNG MINH CEM KHÔNG SINH NỔI TÍN HIỆU LÁI. Chi tiết + LOG đầy đủ: **`docs/CEM_STEERING_FLAT_20260614.md`**
+
+> **TL;DR cho session/máy sau:** Strip `run_infer.sh` về **CEM thuần visual** (tắt geosteer/HOLD/
+> off-route/GPS/floor/cruise/kick/EMA/kickstart-clamp) + `--step` (in energy landscape L1 mỗi nhịp) →
+> soi TRỰC TIẾP trên route `test_di_thang` (thẳng, teach cùng buổi):
+> - **E(steer) contrast ~0.02–0.11 MỌI nhịp** (in-domain ban ngày ≈ 0.45) → landscape **phẳng 10–20×**.
+>   Model **không phân biệt nổi lái**, NGAY CẢ khi cos cao (0.66). KHÔNG phải cos-dropout.
+> - Hình landscape = **U-NGƯỢC/ramp** → đáy ở CỰC → CEM ra **full-lock ±1.0** mọi nhịp. Trên route
+>   THẲNG, model cho **center (thẳng) là TỆ NHẤT** → đảo ngược vật lý → nghi **OOD**.
+> - **CÓ và KHÔNG warm-start đều full-lock** → warm-start KHÔNG cứu (giả thuyết đã bác bằng log).
+> - **Throttle (đính chính):** cold CEM (`POLICY=`) ra ga 0.05–0.10 **bình thường, xe chạy**; chỉ
+>   warm-start + clamp-tắt mới sụp ga~0 (policy standstill-attractor). ⇒ **vấn đề gốc = STEERING**, ga ổn.
+> - **H4 (phẳng do probe ga thấp) ĐÃ BÁC:** cold run probe steer ở ga 0.05–0.10 vẫn phẳng.
+>
+> **➡️ Việc tiếp (CEM_STEERING_FLAT_20260614.md §8):** (1) **OFFLINE TRƯỚC** — đo contrast landscape
+> trên DATA TRAIN (`eval_goal_reaching_ac`): in-domain ~0.45 mà bãi ~0.02 ⇒ khẳng định **OOD**. (2)
+> bãi: route **CÓ CUA + vật mốc** → contrast ở cua tăng không? (3) OOD/giới hạn xác nhận → retrain
+> recovery-data / đúng domain / 3DGS sim.
+>
+> **`run_infer.sh` + `inference_loop.py` đổi phiên này (đã commit):** knob env mới `POLICY=`(A/B warm-start),
+> `TMIN`/`THR`(ga band), `REACHCOS`(pop reach, default 0.6), `CHUNK`(score-chunk auto khi HOR>4); flag mới
+> `--no-kickstart-clamp`, `--score-chunk`; SMOOTH default 0 (raw steer); STEP→manual-timeout 0 (**vá bug
+> 60s tự dừng khi đang step**); floor mặc định TẮT (cruise=0). Memory mới: `throttle-data-not-zero`
+> (data ga median 0.084, KHÔNG ~0 — đừng lặp claim sai).
+
 ## 🌙 2026-06-14 ĐÊM (account-2, tự chủ — user ngủ) — FLOOR sửa + RECOVERY-policy VALIDATE offline. Sổ đêm đầy đủ + protocol sáng: **`docs/NIGHT_20260614.md`** (§4)
 
 > **TÓM TẮT CHO 10H SÁNG (mọi việc đêm = OFFLINE, KHÔNG đụng xe):**

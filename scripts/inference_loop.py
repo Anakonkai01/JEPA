@@ -440,6 +440,9 @@ def main():
     ap.add_argument("--samples", type=int, default=64, help="CEM samples (giảm = nhanh hơn)")
     ap.add_argument("--elite", type=int, default=12)
     ap.add_argument("--iters", type=int, default=2, help="CEM iterations (giảm = nhanh hơn)")
+    ap.add_argument("--score-chunk", type=int, default=0,
+                    help="chấm CEM theo CHUNK N mẫu/lần (0=cả batch) — chống OOM khi horizon dài "
+                         "(256 mẫu × d≥6 vỡ 16GB). Đặt 64 cho HOR 6-8. Chậm hơn chút, trần VRAM phẳng.")
     ap.add_argument("--throttle-cap", type=float, default=0.08,
                     help="ga TỐI ĐA cho lần chạy (an toàn): box throttle = [throttle-min, cap]")
     ap.add_argument("--throttle-min", type=float, default=0.0,
@@ -571,6 +574,11 @@ def main():
                          "Quyết-định-nhanh → ít lái-mù giữa tick = lời giải 'chậm mới ăn'. Cần --policy. "
                          "Offline cd4: |Δsteer| 0.014 thẳng/0.055 full-lock, sign-match recovery 98%. "
                          "Vẫn qua smoothing/floors/cap như thường. Mặc định TẮT (= CEM, đường an toàn).")
+    ap.add_argument("--kickstart-clamp", action=argparse.BooleanOptionalAction, default=True,
+                    help="khi xe đứng yên (spd<--stuck-speed) ÉP ga KHỞI TẠO của warm-start ≥0.75·cap "
+                         "(thắng 'standstill attractor' của BC prior — người lái lúc đứng cũng ga~0). "
+                         "Chỉ chạm mu0 (init CEM), CEM vẫn refine. --no-kickstart-clamp = ga warm-start "
+                         "THUẦN policy, không ép (thí nghiệm 06-14: xem model tự ra ga gì lúc đề-pa).")
     ap.add_argument("--pulse", action=argparse.BooleanOptionalAction, default=False,
                     help="pulse mode (sense-plan-act): áp action --pulse-move giây rồi NGẮT GA (giữ lái) "
                          "trong lúc encode+CEM → drift lúc tính ≈ 0, frame để plan gần như tĩnh. "
@@ -671,7 +679,8 @@ def main():
                            horizon=args.horizon, n_samples=args.samples, n_elite=args.elite,
                            n_iter=args.iters, throttle_min=args.throttle_min,  # default 0 = forward-only
                            throttle_max=args.throttle_cap, warm_std=args.warm_std,
-                           prev_action_idx=prev_idx, domain=domain, device=args.device)
+                           prev_action_idx=prev_idx, domain=domain,
+                           score_chunk=(args.score_chunk or None), device=args.device)
 
     policy = None
     if args.policy:
@@ -1313,7 +1322,7 @@ def main():
                         # thì CEM không thoát ra được (ga ~0.01 < ma sát tĩnh → xe đứng im / recovery
                         # lùi vô hạn). Xe đang đứng yên → ép mu ga ≥ 0.75·cap cho pulse đầu đủ lực;
                         # lăn bánh rồi thì policy điều ga bình thường.
-                        if spd_est < args.stuck_speed:
+                        if spd_est < args.stuck_speed and args.kickstart_clamp:
                             mu0 = mu0.clone()
                             mu0[..., 1] = mu0[..., 1].clamp(min=0.75 * args.throttle_cap)
                     # bf16 autocast quanh CEM (mặc định fp32 → chậm); model train bf16 nên nhất quán.
