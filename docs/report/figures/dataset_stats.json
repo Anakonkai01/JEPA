@@ -27,7 +27,9 @@
   "docs/report/figures/fig_data_throttle_hist.png",
   "docs/report/figures/fig_data_speed_hist.png",
   "docs/report/figures/fig_data_sessions.png",
-  "docs/report/figures/fig_data_timeofday.png"
+  "docs/report/figures/fig_data_timeofday.png",
+  "docs/report/figures/fig_data_steer_timeseries.png",
+  "docs/report/figures/fig_data_steer_throttle_2d.png"
  ],
  "overall": {
   "frames": 228511,
@@ -38,6 +40,7 @@
   "speed_median_mps": 1.051,
   "speed_p90_mps": 2.906
  },
+ "example_session": "session_20260605_153411_kds",
  "per_session": [
   {
    "session": "session_20260605_142516_kds",

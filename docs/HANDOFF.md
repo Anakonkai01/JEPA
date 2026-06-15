@@ -1,5 +1,31 @@
 # HANDOFF — đọc cái này trước khi tiếp tục
 
+## 📝 2026-06-15 (khuya) — REPORT VIẾT LẠI THEO CĂN CỨ (sửa các claim nghi "chém gió")
+
+> **TL;DR:** Viết lại bộ `docs/report/*` chuyên-nghiệp-hơn theo yêu cầu user, **đo lại trực tiếp** các
+> số nghi ngờ (không tin HANDOFF cũ). Thay đổi đáng chú ý về SỐ + KHUNG:
+> - **Action-sensitivity (probe_energy, 300 turn-window VAL):** lái sign-turn **285/300=95%**, contrast
+>   **turn 0.33** (số cũ "0.413" thực ra là **all-frame**; turn ~0.33). Ga contrast **0.27**, muốn-tiến
+>   **83%**, med **+0.11**. (Joint demo vẫn 841/893=94.2%, ga 91.9%, contrast joint 0.52 — khớp.)
+> - **B đứng-yên — số CŨ "0.41→0.11" KHÔNG tái lập** (script chỉ ở `/tmp`). Viết MỚI
+>   `scripts/probe_speed_confound.py` (3 điều kiện): baseline xe-chạy **0.335** → stalled (speed≡0 suốt
+>   horizon, ga≈0) **0.088** (×3.8, CÙNG cảnh). Cơ chế `yaw=k·steer·speed` (dynamics.py:43). Fix=sàn ga TMIN=0.07.
+> - **A lighting — KHÔNG phải "V-JEPA hỏng".** `probe_seqslam_lighting.py` chấm trên **latent mean-pool
+>   + cosine** = chỉ indict **descriptor ĐỊNH-VỊ**; control path dùng **patch-L1 vẫn bền**. Confound
+>   heading. Report nói rõ phân biệt này.
+> - **BỎ HẲN:** nhãn "OOD"; "thiếu recovery" (data CÓ corrective driving — 13,871 sự kiện quẹo, có
+>   biểu đồ); phần encoder R²(speed); phép tính tham số dài (chỉ ghi ≈39.2M); câu out-of-scope; câu torch.hub;
+>   từ "trung thực" (label). **Domain reframe:** servo KDS **hỏng→thay TowerPro** (không phải "thiết kế 2 domain").
+> - **Closed-loop = 2 nguyên nhân** (A descriptor định-vị / B đứng-yên đã-vá), KHÔNG 3.
+> - **Hình mới (PNG):** `fig_arch_ours/arch_meta` (mermaid src `figures/src/*.mmd`, render bằng graphviz
+>   vì mermaid-cli chromium hỏng trong sandbox), `fig_encoder_pipeline`, `fig_data_pipeline`,
+>   `fig_transfer`, `fig_data_steer_timeseries`, `fig_data_steer_throttle_2d`, `fig_energy_landscape` (vẽ lại rõ).
+> - **Script mới/sửa:** `probe_speed_confound.py`, `plot_energy_landscape.py`, `plot_transfer.py`,
+>   `dataset_stats.py` (+2 chart). Mọi số §18.1 tái lập được.
+> - **Code mermaid nhúng INLINE** cạnh mỗi sơ đồ trong `2_REPORT_FULL.md` + `4_REPORT_PROSE_FULL.md`
+>   (kèm PNG render bằng graphviz). Source `.mmd` ở `figures/src/`. **Đã commit + push lên main.**
+
+
 ## 📝 2026-06-15 (tối) — VIẾT LẠI SẠCH BỘ REPORT + DEMO JOINT (lái×ga) + ĐO LẠI MỌI SỐ
 
 > **TL;DR:** Viết lại hoàn toàn 4 file `docs/report/*` (cấu trúc mới: **phần cứng + dữ liệu TRƯỚC** kiến

@@ -43,6 +43,7 @@ def turning_events(steer):
 def main():
     per_session = []          # dict per session
     agg = defaultdict(lambda: {"steer": [], "throt": [], "speed": []})
+    series = {}               # name -> (t, steer, throt) for the time-series example chart
     hour_frames = defaultdict(int)
     for dom, root in DOMAINS.items():
         for sdir in sorted(Path(root).glob("session_*")):
@@ -74,6 +75,7 @@ def main():
             })
             # subsample for global histograms (keep memory small)
             agg[dom]["steer"].append(st); agg[dom]["throt"].append(th); agg[dom]["speed"].append(sp[:n])
+            series[sdir.name] = (t, st, th)
 
     for d in agg:
         for k in agg[d]:
@@ -141,6 +143,37 @@ def main():
     plt.xlabel("giờ trong ngày"); plt.ylabel("số frame"); plt.title("Phủ thời gian thu data (giờ)")
     plt.tight_layout(); p = FIG / "fig_data_timeofday.png"; plt.savefig(p, dpi=130); plt.close()
     summ["figures"].append(str(p)); print("wrote", p)
+
+    # steering+throttle TIME SERIES of one busy session — shows the human constantly
+    # correcting left/right (i.e. corrective / recovery-like driving IS present in the data).
+    ex_name = max(per_session, key=lambda r: r["turn_events"])["session"]
+    t, st, th = series[ex_name]
+    tt = (t - t.min()) / 1000.0
+    m = tt <= min(tt.max(), 90.0)                      # first ~90 s for readability
+    fig, ax = plt.subplots(figsize=(8, 3.2))
+    ax.axhline(0, color="grey", lw=0.6)
+    ax.plot(tt[m], st[m], color="#6a3d9a", lw=1.4, label="góc lái (steer)")
+    ax.plot(tt[m], th[m], color="#ff7f0e", lw=1.0, alpha=0.8, label="ga (throttle)")
+    ax.fill_between(tt[m], -1, 1, where=np.abs(st[m]) > TURN, color="#6a3d9a", alpha=0.06)
+    ax.set_xlabel("thời gian (s)"); ax.set_ylabel("lệnh chuẩn hoá [-1,1]")
+    ax.set_ylim(-1.05, 1.05)
+    ax.set_title(f"Lái tay dao động hai phía liên tục ({ex_name}, {int(m.sum())} frame)\n"
+                 "→ dữ liệu CHỨA hành vi điều chỉnh / sửa lệch (không phải lái-một-đường-thẳng)",
+                 fontsize=9)
+    ax.legend(fontsize=8, loc="upper right")
+    plt.tight_layout(); p = FIG / "fig_data_steer_timeseries.png"; plt.savefig(p, dpi=140); plt.close()
+    summ["figures"].append(str(p)); print("wrote", p)
+
+    # 2-D density steer x throttle (joint action coverage)
+    plt.figure(figsize=(5.4, 4.2))
+    h = plt.hist2d(all_steer, all_throt, bins=[60, 50], range=[[-1, 1], [-0.2, 0.3]],
+                   cmap="magma", cmin=1)
+    plt.colorbar(h[3], label="số frame")
+    plt.xlabel("góc lái (steer)"); plt.ylabel("ga (throttle)")
+    plt.title("Mật độ chung góc-lái × ga (toàn dataset)")
+    plt.tight_layout(); p = FIG / "fig_data_steer_throttle_2d.png"; plt.savefig(p, dpi=140); plt.close()
+    summ["figures"].append(str(p)); print("wrote", p)
+    summ["example_session"] = ex_name
 
     summ["per_session"] = per_session
     Path("docs/report/figures/dataset_stats.json").write_text(json.dumps(summ, indent=1))

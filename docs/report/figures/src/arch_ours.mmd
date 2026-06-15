@@ -1,0 +1,15 @@
+%%{init: {'theme':'base','themeVariables':{'fontSize':'15px','primaryColor':'#eaf2fb','primaryBorderColor':'#0275d8','lineColor':'#555'}}}%%
+flowchart LR
+  IMG["Frame x_t<br/>ảnh 384px"] --> ENC["<b>V-JEPA 2.1 ViT-L 384</b><br/>ĐÓNG BĂNG · per-frame"]
+  ENC --> TOK["z_t : 576 patch token × 1024-D"]
+  ACT["action a_t (3-D)<br/>steer · throttle · domain_id"] --> GRP
+  ST["state s_t (12-D)<br/>speed · gyro · accel · rotvec<br/>prev_steer · prev_throttle"] --> GRP
+  TOK --> GRP{{"interleave mỗi frame<br/>[action, state, patch×576] = 578 token"}}
+  GRP --> PRED["<b>AC Predictor — block-causal Transformer</b><br/>12 lớp · 512-rộng · 8 head · ≈ 39.2M tham số<br/>(chỉ predictor; encoder đóng băng không tính)"]
+  PRED --> ZH["ẑ_t+1 : 576 patch token dự đoán"]
+  ZH --> CEM["<b>CEM</b> + bicycle-model<br/>argmin E = ‖ẑ − z_goal‖₁"]
+  CEM --> OUT["[steer, throttle]<br/>→ ESP32 → servo / ESC"]
+  classDef frozen fill:#fdecea,stroke:#d9534f,stroke-width:2px;
+  classDef train fill:#eaf2fb,stroke:#0275d8,stroke-width:2px;
+  class ENC frozen;
+  class PRED train;
