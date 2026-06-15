@@ -85,6 +85,11 @@ def main():
     ap.add_argument("-d", "--distance", type=int, default=4, help="goal = d bước phía trước")
     ap.add_argument("--n-windows", type=int, default=24)
     ap.add_argument("--grid", type=int, default=21, help="số điểm quét steer trong [-1,1]")
+    ap.add_argument("--with-throttle", action="store_true",
+                    help="thêm quét trục GA (giữ lái = teacher) → in contrast_thr + ga model muốn (aggregate)")
+    ap.add_argument("--grid-thr", type=int, default=19, help="số điểm quét throttle")
+    ap.add_argument("--thr-min", type=float, default=-0.1)
+    ap.add_argument("--thr-max", type=float, default=0.25)
     ap.add_argument("--turn-only", action="store_true",
                     help="chỉ lấy window người lái đang quẹo (|steer| > 0.15)")
     ap.add_argument("--frames-dir", default=None,
@@ -192,7 +197,9 @@ def main():
           f"| grid {args.grid} điểm steer, throttle = teacher")
     print(f"{'win':>5} {'tea_steer':>9} {'argminE':>8} {'contrast':>9}  E(steer) -1 … +1   (^ = teacher)")
 
+    grid_thr = torch.linspace(args.thr_min, args.thr_max, args.grid_thr)
     derr, signs, contrasts, shown = [], [], [], 0
+    contrasts_thr, model_thr = [], []
     teas_all, bests_all, ex_curves = [], [], []
     grid_np = grid.numpy()
     for i in order:
@@ -213,6 +220,14 @@ def main():
         k = int(np.argmin(E))
         best = float(grid[k])
         contrast = float((E.max() - E.min()) / (E.min() + 1e-9))
+        if args.with_throttle:                       # quét GA, giữ lái = teacher
+            seqs_t = torch.zeros(args.grid_thr, d, 2, device=args.device)
+            seqs_t[:, :, 0] = tea
+            seqs_t[:, :, 1] = grid_thr[:, None].to(args.device)
+            with torch.no_grad():
+                E_t = planner.score(z[:1], s0, z[d], seqs_t, domain=dom).cpu().numpy()
+            contrasts_thr.append(float((E_t.max() - E_t.min()) / (E_t.min() + 1e-9)))
+            model_thr.append(float(grid_thr[int(np.argmin(E_t))]))
         derr.append(abs(best - tea))
         if abs(tea) > 0.15:
             signs.append(np.sign(best) == np.sign(tea))
@@ -234,6 +249,11 @@ def main():
     print(f"\n[probe] {len(derr)} window: median |argminE − teacher| = {np.median(derr):.3f}"
           f" | sign-đúng khi quẹo (|tea|>0.15): {int(np.sum(signs))}/{len(signs)}"
           f" | median contrast = {np.median(contrasts):.3f}")
+    if args.with_throttle and contrasts_thr:
+        mt = np.asarray(model_thr)
+        print(f"[probe-throttle] median contrast_thr = {np.median(contrasts_thr):.3f}"
+              f" | ga model muốn: median {np.median(mt):+.3f} (mean {mt.mean():+.3f})"
+              f" | % muốn TIẾN (>0): {100 * np.mean(mt > 0):.0f}%")
 
     if args.plot:
         plot_energy(ex_curves, teas_all, bests_all, float(np.median(contrasts)),

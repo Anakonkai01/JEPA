@@ -31,6 +31,26 @@
 >
 > **Sessions precompute (local, data/ gitignored):** short-rich 173932/161957/181006/161437 + dài
 > 174901(4248fr)/164545/162959 (chạy nền). Việc tiếp (tùy): thử d=6/8; thêm session; tinh layout.
+>
+> **🔧 2026-06-15 (chiều) — DEMO UI revamp + LANDSCAPE GA (theo yêu cầu user).** Đổi: (1) **bỏ banner vàng**
+> → chip nhỏ `ⓘ open-loop` (click mới xổ; giữ caveat "không phải xe tự chạy"). (2) **Theme sáng/tối** (nút
+> ☀/🌙, nhớ localStorage; mọi canvas đọc màu từ CSS var). (3) **Độ đo mới client-side** (từ JSON sẵn, KHÔNG
+> re-precompute): Pearson r + MAE lái toàn session, |Δlái| & sign-acc tích luỹ tới frame, **scatter agreement**
+> (model vs người, đường chéo=khớp), **thanh ga người lái**. (4) **HERO = heatmap energy TOÀN SESSION** (cột=frame
+> × hàng=góc lái; magma, thung lũng sáng=góc model muốn; phủ đường người+model; cache offscreen → play mượt
+> session 4000+fr; thay panel "lái theo thời gian" cũ). (5) **TRỤC GA (user đòi "xe phải có ga"):** sửa
+> `scripts/demo_precompute.py` quét THÊM `E(throttle)` (giữ lái=teacher; grid 19; range −0.1..0.25) → thêm
+> `grid_thr`/`E_thr`/`model_throttle`/`contrast_thr` vào `demo.json`; `web/demo.html` hiện **heatmap ga thứ 2**
+> CHỈ khi JSON có `E_thr` (7 session cũ steer-only vẫn chạy OK). `scripts/probe_energy.py +--with-throttle`
+> (validated aggregate, steer-only vẫn là số chính): **ga CÓ tín hiệu** — 300 VAL: contrast_thr **0.298**, ga
+> model muốn **med +0.094/mean +0.086** (≈ data median 0.084), **81% muốn TIẾN (>0)**; lái vẫn **0.413 / sign-turn
+> 98/102=96%** (không đổi). **Precompute lại CÓ ga (data/ gitignored, GPU ~1.2s/frame):** `161437` xong; **top-4**
+> (173932/164545/162959/174901, ngắn→dài) **đang chạy nền ~2.7h**. **Energy & contrast (giải thích cho report):**
+> `E`=L1(latent DỰ ĐOÁN sau roll action‑seq qua AC predictor, latent GOAL) trên token không‑gian 576×1024
+> (`cem.py:177`); **`contrast=(Emax−Emin)/Emin`** = độ sâu tương đối thung lũng (khử thang tuyệt đối) → cao=model
+> "có chính kiến" phân biệt action; ~0=phẳng=mất tín hiệu (đúng "tường phẳng" ở bãi). **Precompute chậm = GPU
+> THẬT** (rollout predictor 40 chuỗi×4 bước trên latent 576×1024/frame), KHÔNG phải CPU. Việc tiếp (tùy): xem
+> top-4 trên web; cân nhắc đưa landscape ga vào MP4 export (`demo_export_mp4.py` chưa đụng).
 
 ## 🛠️ 2026-06-14 FIELD (route tay) — POP-FIX + metric SPATIAL-token + GOAL-MODE (kiểu Meta single-goal). Code đã đổi, validate bãi DANG DỞ
 

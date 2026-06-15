@@ -50,6 +50,9 @@ def main():
     ap.add_argument("--checkpoint", default="checkpoints/vjepa_ac_car_cd4/vjepa_ac_car/best.pt")
     ap.add_argument("-d", "--distance", type=int, default=4, help="goal = d bước phía trước (~0.9s)")
     ap.add_argument("--grid", type=int, default=21, help="số điểm quét steer trong [-1,1]")
+    ap.add_argument("--grid-thr", type=int, default=19, help="số điểm quét throttle (landscape ga)")
+    ap.add_argument("--thr-min", type=float, default=-0.1, help="ga thấp nhất khi quét (lùi nhẹ)")
+    ap.add_argument("--thr-max", type=float, default=0.25, help="ga cao nhất khi quét (tiến)")
     ap.add_argument("--dt", type=float, default=0.22)
     ap.add_argument("--history", type=int, default=2)
     ap.add_argument("--out", default=None, help="mặc định data/demo/<session>/demo.json")
@@ -105,9 +108,11 @@ def main():
     fidx = _read_fidx(root["raw_dir"], args.session)
     grid = torch.linspace(-1.0, 1.0, args.grid)
     grid_np = grid.numpy()
+    grid_thr = torch.linspace(args.thr_min, args.thr_max, args.grid_thr)
+    grid_thr_np = grid_thr.numpy()
 
     frames_out = []
-    derr, contrasts, contrasts_turn = [], [], []
+    derr, contrasts, contrasts_turn, contrasts_thr = [], [], [], []
     sign_ok_n = sign_tot_n = 0
     for k in range(len(ds)):
         _, i = ds.index[k]
@@ -121,11 +126,19 @@ def main():
         seqs = torch.zeros(args.grid, d, 2, device=args.device)
         seqs[:, :, 0] = grid[:, None].to(args.device)
         seqs[:, :, 1] = thr
+        # throttle landscape: hold steer = teacher, sweep throttle (so we can show ga too)
+        seqs_t = torch.zeros(args.grid_thr, d, 2, device=args.device)
+        seqs_t[:, :, 0] = tea
+        seqs_t[:, :, 1] = grid_thr[:, None].to(args.device)
         with torch.no_grad():
             E = planner.score(z[:1], s0, z[d], seqs, domain=dom).cpu().numpy()
+            E_thr = planner.score(z[:1], s0, z[d], seqs_t, domain=dom).cpu().numpy()
         kbest = int(np.argmin(E))
         best = float(grid_np[kbest])
+        best_thr = float(grid_thr_np[int(np.argmin(E_thr))])
         contrast = float((E.max() - E.min()) / (E.min() + 1e-9))
+        contrast_t = float((E_thr.max() - E_thr.min()) / (E_thr.min() + 1e-9))
+        contrasts_thr.append(contrast_t)
         is_turn = abs(tea) > TURN
         sign_ok = bool(np.sign(best) == np.sign(tea)) if is_turn else None
         derr.append(abs(best - tea))
@@ -141,10 +154,13 @@ def main():
             "human_steer": round(tea, 4),
             "human_throttle": round(thr, 4),
             "model_steer": round(best, 4),
+            "model_throttle": round(best_thr, 4),
             "contrast": round(contrast, 4),
+            "contrast_thr": round(contrast_t, 4),
             "is_turn": is_turn,
             "sign_ok": sign_ok,
             "E": [round(float(x), 5) for x in E],
+            "E_thr": [round(float(x), 5) for x in E_thr],
         })
 
     summary = {
@@ -156,6 +172,7 @@ def main():
         "median_abs_dsteer": round(float(np.median(derr)), 3),
         "median_contrast": round(float(np.median(contrasts)), 3),
         "median_contrast_turn": round(float(np.median(contrasts_turn)), 3) if contrasts_turn else None,
+        "median_contrast_thr": round(float(np.median(contrasts_thr)), 3) if contrasts_thr else None,
         "is_val": is_val,
     }
     out = {
@@ -163,6 +180,7 @@ def main():
         "d": d, "stride": stride, "dt": args.dt,
         "goal_lead_s": round(d * stride * 0.11, 2),
         "grid": [round(float(x), 4) for x in grid_np],
+        "grid_thr": [round(float(x), 4) for x in grid_thr_np],
         "is_val": is_val,
         "summary": summary,
         "frames": frames_out,
