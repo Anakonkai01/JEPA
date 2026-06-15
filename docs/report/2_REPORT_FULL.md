@@ -1,659 +1,658 @@
-# BÁO CÁO CHI TIẾT — Action-Conditioned World Model dựa trên V-JEPA 2.1 cho Điều hướng Xe RC
+# BÁO CÁO CHI TIẾT — World Model Hành-động-điều-kiện dựa trên V-JEPA 2.1 cho Xe RC
 
-**Phụ đề (gợi ý):** *Đánh giá Offline và Phân tích Triển khai Closed-loop của một World Model Latent
-dùng Encoder Video Nền-tảng Đóng băng trên Robot Di động.*
+**Đề tài.** Đóng băng encoder video nền-tảng **V-JEPA 2.1 (ViT-L, 384px)** làm biểu diễn thị giác,
+huấn luyện một **AC Predictor** nhỏ học "hành động nào gây thay đổi hình ảnh nào" trong không gian latent,
+rồi dùng **CEM planning** để **lái xe lặp lại một tuyến đã được dạy (teach & repeat)** bằng cách bám
+ảnh-mục-tiêu.
 
-> **Cách dùng file này:** đây là **kho nội dung chi tiết** (mọi khâu, mọi giai đoạn, mọi vấn đề) để
-> dán/biên tập vào Word và bổ sung cho bản paper khi paper thiếu. Mọi con số đã verify từ repo
-> (`docs/HANDOFF.md`, `docs/CLOSED_LOOP_FAILURE.md`, `docs/VJEPA2_AC_CAR.md`, `README.md`, `CLAUDE.md`).
-> Placeholder cần điền: `[Họ tên]`, `[MSSV]`, `[Lớp/Môn CV]`, `[GVHD]`, `[ngày]`.
+> **Cách dùng file này:** đây là kho nội dung chi tiết để biên tập vào Word. **Mọi con số trong bản này
+> đều tái lập được từ repo** — kèm script sinh ra nó (xem §Phụ lục). Đặc biệt: tham số mô hình **đếm trực
+> tiếp từ checkpoint** (§8.2), thống kê dữ liệu **quét lại từ `data/raw_*`** (§6), R²(speed) **đo lại bằng
+> `scripts/measure_speed_r2.py`** (§7). Placeholder cần điền: `[Họ tên]`, `[MSSV]`, `[Lớp/Môn]`, `[GVHD]`.
 
 ---
 
 ## Mục lục
-1. Tóm tắt (Abstract) & Đóng góp
+1. Tóm tắt & Đóng góp
 2. Giới thiệu & Động lực
 3. Phát biểu bài toán & Phạm vi
 4. Nền tảng & Công trình liên quan
-5. Hệ thống phần cứng & Thu thập dữ liệu
-6. Encoder V-JEPA 2.1 (đóng băng) & phát hiện về tốc độ
-7. Kiến trúc AC Predictor (đóng góp chính)
-8. Huấn luyện & Kết quả Offline
-9. Điều hướng: Topological Graph
-10. Lập kế hoạch: CEM + Car Dynamics + Policy Prior
-11. Triển khai Closed-loop (Teach & Repeat)
-12. Phân tích Thất bại Closed-loop (lõi phân tích)
-13. Tổng hợp các vấn đề kỹ thuật đã gặp & cách xử lý
-14. Hạn chế
-15. Hướng phát triển
-16. Kết luận
-17. Phụ lục (tái lập, config, bản đồ file)
+5. **Hệ thống phần cứng & cách thu thập dữ liệu** *(mô tả TRƯỚC kiến trúc)*
+6. **Dữ liệu & Thống kê** *(số liệu + biểu đồ)*
+7. Encoder V-JEPA 2.1 (đóng băng) & đo khả năng mã hoá tốc độ
+8. AC Predictor — kiến trúc (đóng góp chính) + **phép tính tham số**
+9. TẦNG 1 — Dynamics offline (✅)
+10. TẦNG 2 — Planner open-loop khớp người lái (✅)
+11. Lập kế hoạch: CEM + động học xe + policy prior
+12. TẦNG 3 — Closed-loop ngoài trời (❌ negative finding)
+13. Đánh giá dữ liệu IMU & vì sao không dự đoán toàn bộ next-state
+14. Đính chính & bài học phương pháp
+15. Hạn chế
+16. Hướng phát triển
+17. Kết luận
+18. Phụ lục (tái lập, config, bản đồ file)
 
 ---
 
-## 1. Tóm tắt (Abstract) & Đóng góp
+## 1. Tóm tắt & Đóng góp
 
-**Tóm tắt.** Chúng tôi nghiên cứu việc dùng một **encoder video nền-tảng đóng băng (frozen
-foundation video encoder) — V-JEPA 2.1 ViT-L** — làm biểu diễn cho một **world model hành-động-điều-kiện
-(action-conditioned world model)** trên một **xe RC di động**, rồi dùng **CEM planning** để điều hướng
-tới ảnh-mục-tiêu theo kiểu *teach & repeat* (lái một vòng để "dạy" chuỗi subgoal ảnh, sau đó cho xe tự
-"lặp lại"). Về mặt **offline**, một AC predictor nhỏ (~26M tham số) đặt trên latent đóng băng **vượt
-baseline "đứng yên" (identity)** ở mọi horizon (rollout@1 ratio = **0.744**), có **độ nhạy hành động**
-đo được (argmin năng lượng đúng hướng cua **58/60**, contrast 0.37), và đặc biệt cho thấy **transfer
-chéo-domain-servo có lợi** (train trộn 2 loại servo → eval trên servo mới đạt **0.65** so với **1.073**
-khi chỉ train trên servo đó). Tầng điều hướng dựng **topological graph** 92 session (29,699 node) định
-vị (localize) **trung vị 2.1m**. Tuy nhiên, khi **triển khai closed-loop** ngoài thực địa, hệ thống
-**bám tuyến tốt ở nửa đầu route rồi "bung" ra lề tại điểm "cos-dropout"** — nơi ảnh live không khớp ảnh
-teach làm cosine tụt <0.1, CEM mất gradient và lái loạn, trong khi **không có tín hiệu kéo về** (không
-có dữ liệu recovery). Không run nào (trong ~10 run) về tới đích. Chúng tôi phân tích cơ chế thất bại
-này một cách định lượng và chỉ ra rằng **giới hạn nằm ở tầng nav-robustness + control, không ở chất
-lượng biểu diễn** — một *negative finding* trung thực về việc triển khai world model latent trên cảnh
-ngoài trời.
+**Tóm tắt.** Chúng tôi nghiên cứu việc dùng một **encoder video nền-tảng đóng băng (V-JEPA 2.1 ViT-L
+384)** làm biểu diễn cho một **world model hành-động-điều-kiện** trên **xe RC di động**, rồi dùng **CEM
+planning** để **lái lặp lại một tuyến đã dạy** (teach & repeat): khi dạy, người lái tay đi hết tuyến và
+hệ thống chụp chuỗi ảnh-mốc; khi chạy lại, model so ảnh hiện tại với ảnh-mốc kế tiếp và chọn lái/ga để
+tới đó. Báo cáo trình bày kết quả theo **ba tầng trung thực**, mỗi tầng có thước đo và kết luận riêng:
+
+- **Tầng 1 — Dynamics offline (✅):** AC predictor **~39M tham số** (đếm trực tiếp từ checkpoint, §8.2)
+  đặt trên latent đóng băng **vượt baseline "đứng yên" (identity)** ở mọi horizon (rollout@1 = **0.744**),
+  có **độ nhạy hành động đo được ở cả hai trục** — lái (argmin-năng-lượng đúng hướng cua **96%**, contrast
+  **0.413**) và ga (contrast **0.298**, model "muốn" ga **+0.094** ≈ trung vị data) — và cho thấy
+  **transfer chéo-domain-servo có lợi** (train trộn 2 servo → eval servo mới **0.65** so với **1.073** khi
+  chỉ-train-servo-đó).
+- **Tầng 2 — Planner open-loop, chọn JOINT cả lái lẫn ga (✅):** trên video VAL held-out, với mỗi frame
+  thật ta đặt goal là mốc ~0.9s phía trước rồi cho planner quét **lưới 2-D (lái × ga)** và chọn cả hai trục
+  ở đáy năng lượng — **lái khớp dấu người ~94%** ở khúc quẹo và **model tự chọn ga "muốn tiến" 92%** ở mức
+  median +0.075 ≈ người +0.090. Đây là bằng chứng **planner chọn hành động (cả lái lẫn ga) giống chuyên gia
+  khi chưa chịu vật-lý-đóng-vòng** — bắc cầu giữa metric offline và "lái thật".
+- **Tầng 3 — Closed-loop ngoài trời (❌ negative finding):** khi đóng vòng thật, hệ thống **bám tuyến tốt
+  ở nửa đầu route rồi "bung" ra lề**. Phân tích định lượng tách được **ba nguyên nhân cộng hưởng**:
+  (A) **descriptor V-JEPA không bất-biến-sáng** → khâu so-ảnh-định-vị sập khi ảnh lúc dạy ≠ ảnh lúc chạy;
+  (B) **vùng-chết đứng-yên** — ga thấp khiến xe dừng → `yaw = k·steer·speed ≈ 0` → landscape năng lượng
+  phẳng (đã đính chính kết luận "OOD" sai trước đó); (C) **thiếu dữ liệu lateral-recovery** — dạy một-lượt-
+  giữa-line không dạy "lệch rồi bẻ về". Giới hạn nằm ở **độ-bền-định-vị + chế-độ-điều-khiển + dữ liệu**,
+  **không ở chất lượng biểu diễn** — một negative finding trung thực, có cơ chế.
 
 **Đóng góp.**
-1. **Đánh giá đầu tiên họ V-JEPA 2 trên một robot di động (xe RC)** — Meta chỉ thử trên cánh tay
-   robot (Franka, cảnh bàn cố định). Đây là chế độ khó hơn về robustness (heading/ánh sáng/lệch ngang).
-2. **Một pipeline offline rigorous**: rollout-vs-identity, độ nhạy hành động (energy-probe), và
-   **bằng chứng transfer chéo-domain-servo** — KDS (giàu steering) giúp ích cho TowerPro.
-3. **Một phân tích thất bại closed-loop có cơ chế** (cos-dropout → mất gradient → no-recovery → bung),
-   kèm bằng chứng loại trừ giả thuyết "cảnh tự-giống / teach xấu".
-4. **Một khắc phục đã validate offline cho chính negative finding đó**: *recovery augmentation* ở mức
-   latent ("DAVE-2 cho V-JEPA", không cần GPU) khuếch đại đáp ứng tự-sửa của policy **3.4–5.4×** baseline
-   (đúng trục vật-lý H-A, đúng dấu, không hại goal-reaching), kèm tiêu-chí phân định rõ "đã chứng minh
-   offline" vs "cần xác minh trên xe" — biến thiếu-dữ-liệu-recovery thành phương pháp (§12bis).
+1. **Đánh giá đầu tiên họ V-JEPA 2 trên một robot di động (xe RC)** — Meta chỉ thử trên cánh tay robot
+   (cảnh bàn cố định). Đây là chế độ khó hơn về robustness (heading/ánh sáng/lệch ngang).
+2. **Pipeline offline rigorous** đo độ nhạy hành động **cả lái lẫn ga**, rollout-vs-identity, và **bằng
+   chứng transfer chéo-domain-servo**, với **mọi số đều tái lập được bằng script** trong repo.
+3. **Kiểm chứng planner OPEN-LOOP**: tách "năng lực lập kế hoạch" khỏi "robustness đóng vòng" — cho thấy
+   CEM chọn hành động khớp chuyên gia ~94% khi không chịu vật-lý-đóng-vòng.
+4. **Phân tích thất bại closed-loop có cơ chế, phân rã 3 nguyên nhân**, kèm **đính chính minh bạch** các
+   kết luận trung gian từng sai vì thiếu căn cứ (notably nhãn "OOD").
 
 ---
 
 ## 2. Giới thiệu & Động lực
 
-**Vấn đề.** Điều hướng bằng thị giác (visual navigation) cho robot di động truyền thống dựa vào SLAM/
-bản đồ hình học. Một hướng thay thế gần đây là **học biểu diễn tự-giám-sát** rồi **lập kế hoạch trong
-không gian latent**: thay vì xây bản đồ 3D, ta học một *world model* dự đoán "hành động nào gây ra thay
-đổi hình ảnh nào" và tìm chuỗi hành động đưa quan sát hiện tại về quan sát-mục-tiêu.
+**Vấn đề.** Điều hướng bằng thị giác cho robot di động truyền thống dựa vào bản đồ hình học. Một hướng thay
+thế gần đây là **học biểu diễn tự-giám-sát** rồi **lập kế hoạch trong không gian latent**: thay vì xây bản
+đồ 3D, ta học một *world model* dự đoán "hành động nào gây ra thay đổi hình ảnh nào" và tìm chuỗi hành động
+đưa quan sát hiện tại về quan sát-mục-tiêu.
 
-**Vì sao V-JEPA 2.1.** V-JEPA (Joint-Embedding Predictive Architecture cho video) học đặc trưng bằng
-**dự đoán trong không gian biểu diễn** (feature prediction) thay vì tái tạo pixel — tránh lãng phí dung
-lượng mô hình vào chi tiết pixel không cần thiết. Bản **2.1** (ViT-L distilled từ ViT-G, 384px) bổ sung
-**Dense Predictive Loss** → đặc trưng patch chất lượng cao (tốt cho localization/geometry). Meta đã chứng
-minh **V-JEPA 2-AC** (action-conditioned) cho phép **planning** trên cánh tay robot. Câu hỏi tự nhiên:
-*biểu diễn này có dùng được cho một robot DI ĐỘNG, ngoài trời, với động lực học và domain-shift thật?*
+**Vì sao V-JEPA 2.1.** V-JEPA học đặc trưng bằng **dự đoán trong không gian biểu diễn** (feature prediction)
+thay vì tái tạo pixel — tránh lãng phí dung lượng mô hình vào chi tiết pixel không cần thiết. Bản **2.1**
+(ViT-L distilled từ ViT-G, 384px) bổ sung **Dense Predictive Loss** → đặc trưng patch chất lượng cao. Meta
+đã chứng minh **V-JEPA 2-AC** (action-conditioned) cho phép **planning** trên cánh tay robot. Câu hỏi tự
+nhiên: *biểu diễn này có dùng được cho một robot DI ĐỘNG, ngoài trời, với động lực học và domain-shift thật?*
 
-**Đóng khung cho môn CV.** Bài toán này bản chất là Computer Vision: (a) **biểu diễn thị giác** từ một
-foundation model đóng băng; (b) **nhận dạng địa điểm bằng thị giác (visual place recognition)** để định
-vị và pop subgoal; (c) **độ bền của biểu diễn dưới domain-shift thật** (ánh sáng/giờ/góc nhìn) — chính
-là tâm điểm của phần phân tích thất bại; (d) **so khớp latent** để lập kế hoạch điều khiển.
+**Đóng khung cho môn CV.** Bài toán bản chất là Computer Vision: (a) **biểu diễn thị giác** từ một
+foundation model đóng băng; (b) **so khớp ảnh để định vị và lập kế hoạch điều khiển** trong latent; (c)
+**độ bền của biểu diễn dưới domain-shift thật** (ánh sáng/giờ/góc nhìn) — chính là tâm điểm của phần phân
+tích thất bại.
 
-**Hạn chế tài nguyên & quyết định dừng.** Đề tài có deadline cứng; encoder ViT-L chạy trên GPU (RTX
-5070 Ti) chứ không chạy trên điện thoại → inference phải qua PC. Sau ~4–5 ngày tinh chỉnh closed-loop
-ngoài thực địa (nắng, pin, công sức) mà chẩn đoán cho thấy thất bại là **giới hạn model/data, không phải
-tham số**, nhóm **dừng thử nghiệm thực địa** và chuyển sang **viết báo cáo** — chốt lại phần offline
-(đã vững) và trình bày closed-loop như một *negative finding* được phân tích kỹ.
+**Hạn chế tài nguyên & quyết định dừng thực địa.** Encoder ViT-L chạy trên GPU (RTX 5070 Ti), không chạy
+trên điện thoại → inference phải qua PC. Sau vài ngày tinh chỉnh closed-loop ngoài thực địa mà chẩn đoán cho
+thấy thất bại là **giới hạn ở chế-độ-điều-khiển + dữ liệu + descriptor, không phải ở tham số**, nhóm **dừng
+thử nghiệm thực địa** và chuyển sang **chốt phần offline + kiểm chứng planner open-loop + viết báo cáo**,
+trình bày closed-loop như một negative finding phân tích kỹ.
 
 ---
 
 ## 3. Phát biểu bài toán & Phạm vi
 
-**Bài toán "tự lái" đã chốt** (kiểu **ViNG/ViKiNG**): **visual goal-reaching cục bộ + topological graph
-ảnh subgoal**. Khi đích khuất tầm nhìn → **xâu chuỗi các goal-nhìn-thấy-được**, mỗi cái CEM lái tới.
+**Bài toán chính = TEACH & REPEAT (dạy-rồi-lặp).** Người lái tay đi hết một tuyến một lần (*teach*); hệ
+thống lưu chuỗi ảnh-mốc dọc tuyến. Khi *repeat*, tại mỗi bước model so ảnh hiện tại với ảnh-mốc kế tiếp và
+CEM chọn `[lái, ga]` để đưa cảnh hiện tại về cảnh-mốc đó; tới nơi thì chuyển sang mốc kế. Đây là **trọng
+tâm của báo cáo**.
 
-**Trong phạm vi:** điều hướng bám tuyến đã-được-dạy (teach & repeat); pop subgoal theo GPS + xác nhận
-ảnh; điều khiển servo bằng CEM trên latent.
+**Trong phạm vi:** lái bám tuyến đã dạy; chọn ảnh-mốc kế bằng so-ảnh + cổng GPS; điều khiển servo bằng CEM
+trên latent.
 
-**NGOÀI phạm vi (cố ý, để vừa deadline):** KHÔNG né vật cản, KHÔNG SLAM, KHÔNG bản đồ hình học toàn cục.
+**NGOÀI phạm vi (cố ý, để vừa deadline):** KHÔNG né vật cản, KHÔNG dựng bản đồ hình học toàn cục.
 
-**Kiến trúc 2 tầng (tách bạch — quan trọng cho việc quy trách nhiệm khi phân tích lỗi):**
-- **Navigation (action-agnostic = chỉ thị giác + GPS):** `TopoGraph` — node là frame (latent V-JEPA
-  single-frame + GPS mét + heading). Trả lời "đang ở đâu" và "đi qua những subgoal nào".
-- **Control (servo-specific):** AC predictor (V-JEPA frozen + predictor) + CEM. Trả lời "đạp ga/đánh lái
-  bao nhiêu để tới subgoal kế".
+**Kiến trúc 2 tầng (tách bạch — quan trọng để quy trách nhiệm khi phân tích lỗi):**
+- **Định vị (chỉ dùng thị giác + GPS):** trả lời "đang ở đâu trên tuyến" và "ảnh-mốc kế là cái nào".
+- **Điều khiển (servo-specific):** AC predictor (V-JEPA frozen + predictor) + CEM. Trả lời "đạp ga/đánh lái
+  bao nhiêu để tới mốc kế".
 
-> Việc tách 2 tầng cho phép kết luận cuối cùng: **tầng representation/navigation hoạt động (offline);
-> gap nằm ở tầng control + nav-robustness khi đóng vòng.**
+> Việc tách 2 tầng cho phép kết luận cuối cùng: **tầng biểu diễn + điều khiển hoạt động (Tầng 1+2); gap
+> nằm ở tầng định-vị (descriptor nhạy ánh sáng) + chế-độ-điều-khiển + dữ liệu recovery khi đóng vòng (Tầng 3).**
 
 ---
 
 ## 4. Nền tảng & Công trình liên quan
 
 - **JEPA / V-JEPA / V-JEPA 2 / 2.1.** Học self-supervised bằng *feature prediction* trong không gian
-  embedding (không reconstruct pixel). V-JEPA 2 mở rộng lên video quy mô lớn và chứng minh
-  *understanding / prediction / planning*. 2.1 thêm Dense Predictive Loss (đặc trưng patch dày). (Các
-  PDF gốc đã lưu trong `docs/`: *V-JEPA 2*, *V-JEPA 2.1*, *V-JEPA Revisiting Feature Prediction*.)
+  embedding (không reconstruct pixel). V-JEPA 2 mở rộng lên video quy mô lớn; 2.1 thêm Dense Predictive Loss
+  (đặc trưng patch dày). (PDF gốc trong `docs/`.)
 - **V-JEPA 2-AC.** Bản action-conditioned của Meta: interleave `[action, state, patch]` mỗi frame, một
-  predictor block-causal, CEM planning với energy `‖P − z_goal‖₁`. **Chỉ thử trên cánh tay robot.**
-- **ViNG / ViKiNG.** Điều hướng bằng goal ảnh + đồ thị topo (không bản đồ hình học); policy học từ dữ
-  liệu có hành vi đa dạng (kể cả lệch rồi về). Nền tảng cho tầng nav của chúng tôi. (PDF trong `docs/`.)
-- **PiJEPA (Policy-Guided World Model Planning).** Warm-start MPC bằng một policy prior trên JEPA world
-  model. Chúng tôi áp dụng đúng tinh thần này (CEM thay MPPI, BC-MLP thay Octo). (PDF trong `docs/`.)
-- **LeJEPA / LeWorldModel.** Một world model pixel-JEPA end-to-end (SIGReg anti-collapse) — chúng tôi
-  port làm **baseline độc lập mạnh** (KHÔNG dùng V-JEPA).
+  predictor block-causal, CEM planning với năng lượng `‖P − z_goal‖₁`. **Chỉ thử trên cánh tay robot** —
+  cảnh bàn cố định. Đây là **kiến trúc tham khảo** mà AC Predictor của chúng tôi dựa vào (so sánh chi tiết
+  giống/khác/vì-sao ở §8.3).
+- **ViNG (điều hướng bằng goal ảnh).** Ý tưởng "đi tới ảnh-mục-tiêu, học policy từ dữ liệu có hành vi đa
+  dạng (kể cả lệch rồi về)". Chúng tôi **lấy ý tưởng goal-image** cho teach & repeat; phần đồ-thị-ảnh
+  (topological graph) chỉ là **thử nghiệm phụ** (§13.2), không phải đóng góp chính.
+
+> *Phạm vi liên quan được giữ gọn có chủ ý*: báo cáo tập trung vào **world model + teach & repeat**. Các
+> nhánh thử-nhanh khác (world model pixel-JEPA end-to-end, warm-start policy cho MPC, place-recognition theo
+> chuỗi) **không** dùng trong hệ chính và được đề cập như hướng tương lai ở §16, không bàn sâu ở đây.
 
 ---
 
-## 5. Hệ thống phần cứng & Thu thập dữ liệu
+## 5. Hệ thống phần cứng & cách thu thập dữ liệu
 
-### 5.1. Bước ngoặt kiến trúc: từ link video không dây sang điện thoại onboard
-- **Rig ban đầu (đã bỏ cho thu data):** camera RunCam WiFiLink 2 (OpenIPC, cảm biến IMX415) truyền
-  H.265 qua **WFB-NG (5.8GHz, RTL8812AU)** về PC. **Thất bại ở tầm xa:** ~50m thì vỡ ảnh, ~3% frame
-  giật kèm rớt nhiều giây, độ trễ phình **92→310ms** khi mất gói. → quyết định **ngừng đánh nhau với
-  link video không dây**.
-- **Rig hiện tại (pivot 2026-06-04):** **đặt điện thoại Android lên xe** (Samsung A42 5G, Android 13)
-  làm **camera + máy ghi + relay**. Camera **ultrawide** chụp frame cục bộ; đọc telemetry ESP32 qua
-  **USB (không cần root, `usb-serial-for-android`)**; lưu `frames/*.jpg + actions.csv + telemetry.csv`
-  **cùng schema** với rig cũ → tái dùng pipeline sync/encode. Vì **frame và telemetry chung một đồng hồ
-  điện thoại** → các vấn đề trễ-WFB / LED / đồng-bộ-clock **biến mất**.
-- **Độ trễ chụp camera δ_cam ≈ 100ms** (đo trên A42, `TIMESTAMP_SOURCE=REALTIME`, ổn định 98–103ms cả
-  trong nhà lẫn ngoài trời) — KHÔNG bằng 0; app ghi `dcam_ms` mỗi frame và `sync.py` hiệu chỉnh.
+> Mô tả phần cứng + cách thu thập **trước** kiến trúc model, để người đọc hiểu dữ liệu đến từ đâu.
 
-### 5.2. Điều khiển & lái tay
-- **ESP32-S3** trên xe điều khiển **servo lái** (TowerPro MG946R, GPIO5) và **ESC ga** (Hobbywing
-  QuicRun 8BL150, GPIO6). Điện thoại cấp nguồn + giao tiếp ESP32 qua **cổng USB native (VID 303A)**.
-- **Lái tay khi RECORD** bằng bộ điều khiển **FlySky FS-i6 / iA10B i-BUS** (CH1=lái, CH2=ga, CH9=mode,
-  CH10=record). `recorder.py` là **logger thụ động**: ghép mỗi frame với hành động tại `t_read − δ_cam`.
-- **Hai "domain" servo** (quan trọng cho phần transfer): **KDS** (servo cũ) và **TowerPro MG946R**
-  (servo hiện tại, recalib 2026-06-07). Hai servo có **ánh xạ action→góc lái khác nhau** → là 2 domain
-  điều khiển khác nhau → ta gắn `domain_id` (0=KDS, 1=TowerPro) vào input predictor.
+### 5.1. Xe & bộ điều khiển
+- **Khung xe:** xe RC địa hình; **ESP32-S3 WROOM (N16R8)** gắn trên xe điều khiển 2 cơ cấu:
+  - **Servo lái** TowerPro MG946R (analog, GPIO5), dải PWM **1000–2000µs**, tâm 1560µs (hiệu chỉnh
+    2026-06-07, pivot quanh tâm để góc lái cơ khí đối xứng).
+  - **ESC ga** Hobbywing QuicRun 8BL150 (150A brushless, GPIO6), dải 1000–2000µs, chạy Running-Mode-3
+    (đảo chiều trực tiếp), map tuyến tính `esc_us = 1000 + (ga+1)/2·1000`.
+- **Nguồn:** pin → ESC; BEC 6V cấp servo (giữ ≤6V vì MG946R không phải loại HV).
+- **Hai "domain" servo (quan trọng cho phần transfer):** dữ liệu cũ thu bằng servo **KDS**, dữ liệu mới
+  bằng **TowerPro MG946R**. Hai servo có **ánh xạ lệnh→góc-lái khác nhau** → coi là 2 domain điều khiển,
+  gắn `domain_id` (0=KDS, 1=TowerPro) vào input predictor để model học chung mà vẫn phân biệt được.
 
-### 5.3. Đồng bộ & state
-- `sync.py` re-pair mỗi frame bằng **nội suy tuyến tính `telemetry.csv` 50Hz** tại thời điểm cảnh thật,
+### 5.2. Bước ngoặt: từ link video không dây sang điện thoại onboard
+- **Rig ban đầu (đã bỏ cho thu data):** camera RunCam WiFiLink (OpenIPC, IMX415) truyền H.265 qua
+  **WFB-NG (5.8GHz)** về PC. **Thất bại ở tầm xa** (~50m: vỡ ảnh, ~3% frame giật, trễ phình 92→310ms khi
+  mất gói) → ngừng đánh nhau với link video không dây.
+- **Rig hiện tại (pivot 2026-06-04):** **đặt điện thoại Android lên xe** (Samsung A42 5G, Android 13) làm
+  camera + máy ghi. Camera **ultrawide** chụp frame cục bộ; điện thoại đọc telemetry ESP32 qua **USB**
+  (cổng native VID 303A, cấp nguồn + giao tiếp); lưu `frames/*.jpg + actions.csv + telemetry.csv + gps.csv +
+  imu (accel/gyro/rotvec)`. **Frame và telemetry chung MỘT đồng hồ điện thoại** → các vấn đề trễ-WFB /
+  đồng-bộ-clock biến mất.
+- **Độ trễ chụp camera δ_cam ≈ 100ms** (đo trên A42, `TIMESTAMP_SOURCE=REALTIME`, ổn định 98–103ms) — KHÔNG
+  bằng 0; app ghi `dcam_ms` mỗi frame và bước sync hiệu chỉnh.
+
+### 5.3. Lái tay khi RECORD & đồng bộ
+- **Lái tay** bằng **FlySky FS-i6 / iA10B i-BUS** (CH1=lái, CH2=ga, CH9=mode, CH10=record). `recorder.py`
+  là **logger thụ động**: ghép mỗi frame với hành động tại `t_read − δ_cam`.
+- **`sync.py`** re-pair mỗi frame bằng **nội suy tuyến tính `telemetry.csv` 50Hz** tại thời điểm cảnh thật,
   hiệu chỉnh δ_cam, loại frame rơi-vào-lỗ-telemetry → xuất `actions_synced.csv` + `imu_synced.csv`.
-- **State vector 10-D:** `[speed, gx,gy,gz, ax,ay,az, rx,ry,rz]` = GPS speed + gyro + accel + rotvec
-  (orientation tuyệt đối). (Loại lat/lon/bearing tuyệt đối để tránh overfit địa điểm.)
-- **GPS:** điện thoại A42 thực tế trả **~1.04Hz** (dù app xin 5Hz); nhiễu vị trí **trung vị 0.44m /
-  p90 1.0m / max 3.2m** (đo bằng `measure_gps_noise.py` trên 57 đoạn đứng-yên).
-
-### 5.4. Thống kê dữ liệu
-| Tập | #session | Đặc điểm |
-|---|---|---|
-| **KDS** (servo cũ) | ~28–30 | Steering đủ dải −1..1; **throttle ~hằng ~7.5%** (≈ steering-only) |
-| **TowerPro** (servo mới) | **181** (64 + 117 recovery) | **Throttle biến thiên** (std~0.07, reverse 9–14%, dải −0.16..0.15) |
-| **Tổng** | **209 session ≈ 228k frame** | Đứng yên 13.4% frame; **1049 sự kiện đề-pa** |
-
-- **Split tái lập được:** train ghi `split.json` (seed 0, session-level 80/20 = 145/36); mọi eval đọc
-  lại y nguyên → val set cố định.
+- **State vector của model = 12-D**: `[speed, gx,gy,gz, ax,ay,az, rx,ry,rz, prev_steer, prev_throttle]` =
+  GPS speed + gyro + accel + rotation-vector **+ hành-động-bước-trước**. (Loại lat/lon/bearing tuyệt đối để
+  tránh overfit địa điểm — đánh giá chi tiết IMU ở §13.)
+- **GPS:** điện thoại A42 trả **~1.04Hz** (dù app xin 5Hz); nhiễu vị trí **trung vị 0.44m / p90 1.0m**
+  (đo `measure_gps_noise.py`). → GPS chỉ đủ làm **cổng pop ảnh-mốc**, KHÔNG đủ để giữ làn theo mét.
 
 ---
 
-## 6. Encoder V-JEPA 2.1 (đóng băng) & phát hiện về tốc độ
+## 6. Dữ liệu & Thống kê
+
+> Toàn bộ số trong mục này **quét lại trực tiếp từ `data/raw_kds` + `data/raw_towerpro`** bằng
+> `scripts/dataset_stats.py` (xuất `docs/report/figures/dataset_stats.json` + 5 biểu đồ PNG).
+
+### 6.1. Tổng quan (tái lập được)
+| Tập | #session | #frame | Thời lượng | FPS lưu (tb) |
+|---|---:|---:|---:|---:|
+| **KDS** (servo cũ) | 28 | 53,076 | **103.6 phút (1.73 h)** | 8.53 |
+| **TowerPro** (servo mới) | 181 | 175,435 | **342.4 phút (5.71 h)** | 8.51 |
+| **TỔNG** | **209** | **228,511** | **446.0 phút ≈ 7.43 giờ** | 8.51 |
+
+- **FPS thực ~8.5** (đặt `save_hz=10`, hụt nhẹ do tải ghi ảnh) — nhất quán giữa 2 domain.
+- **Split tái lập được:** `split.json` (seed 0, session-level 80/20) → **train 167 / val 42 session**. Mọi
+  eval đọc lại y nguyên → val set cố định.
+
+### 6.2. Phân bố hành động & chuyển động (đo trên 228,511 frame)
+| Đại lượng | Giá trị | Ý nghĩa |
+|---|---|---|
+| Trung vị throttle | **0.084** | ga thật, KHÔNG ~0 (xe chạy chậm, ga nhỏ nhưng có) |
+| Tỉ lệ "đi gần-thẳng" (\|steer\|<0.15) | **63%** | phần lớn thời gian đi thẳng |
+| Tổng số sự kiện quẹo (\|steer\|>0.15 nối tiếp) | **13,871** | đủ mẫu cua để học/đánh giá độ nhạy lái |
+| Trung vị tốc độ GPS | **1.05 m/s** (p90 2.91) | xe đi bộ-tốc-độ |
+| Tỉ lệ frame đứng-yên (speed<0.06 m/s) | **11.3%** | regime đứng-yên đáng kể → liên quan §12.B |
+
+### 6.3. Khác biệt 2 domain (vì sao phải thu mẻ TowerPro)
+- **KDS:** steering đủ dải −1..1 nhưng **throttle gần như hằng (~7.5%)** → gần như "steering-only", model
+  khó học chiều ga. → đây là lý do **thu thêm mẻ TowerPro** với **throttle biến thiên** (có cả lùi nhẹ),
+  cho model tín hiệu để học trục ga (xác nhận ở §9.4: contrast ga 0.298).
+
+### 6.4. Biểu đồ
+- **Hình D1** — phân bố steering (2 domain). `figures/fig_data_steer_hist.png`
+- **Hình D2** — phân bố throttle: **KDS nhọn quanh ~0.075** vs **TowerPro trải rộng**. `figures/fig_data_throttle_hist.png`
+- **Hình D3** — phân bố tốc độ GPS. `figures/fig_data_speed_hist.png`
+- **Hình D4** — độ dài 209 session (đỏ=KDS, xanh=TowerPro). `figures/fig_data_sessions.png`
+- **Hình D5** — phủ thời gian thu theo giờ trong ngày. `figures/fig_data_timeofday.png`
+
+![Phân bố throttle 2 domain](figures/fig_data_throttle_hist.png)
+*Hình D2 — Phân bố throttle: KDS ~hằng (đỉnh nhọn) vs TowerPro biến thiên (trải rộng, có lùi nhẹ).*
+
+---
+
+## 7. Encoder V-JEPA 2.1 (đóng băng) & đo khả năng mã hoá tốc độ
 
 - **Encoder:** V-JEPA 2.1 **ViT-L 384** (distilled từ ViT-G), **đóng băng tuyệt đối** (không bao giờ
-  backprop). Tải qua `torch.hub` (`vjepa2_1_vit_large_384`) — **2.1 chỉ có trên torch.hub, không trên
-  HuggingFace** (HF id cũ trong tài liệu là 2.0).
-- **Encode TỪNG frame** (image-path) → **patch tokens**: 256px → 16×16 = **256 token**; 384px → **576
-  token**; mỗi token **1024-D**. KHÔNG pool, KHÔNG nhồi nhiều frame.
-- **Tối ưu then chốt:** **pre-encode toàn bộ dataset offline một lần** → lưu latent (`.npy` memmap fp16)
-  → train đọc latent trực tiếp, **không forward V-JEPA khi train** (~50–100× nhanh hơn).
-- **⚠️ Phát hiện quan trọng (đo được) — encoder KHÔNG mang thông tin tốc độ:** latent single-frame
-  pooled có **R²(speed) = −1.1** (≈ 0 thông tin tốc độ); nhồi clip nhiều frame vào encoder cũng **≈ 0**.
-  Lý do: model 2.1 ViT-L 384 chạy **image-path tubelet_size=1** (Conv3d kernel thời gian = 1 → không
-  tích chập thời gian). → **tốc độ phải vào qua STATE token** (GPS speed), KHÔNG phải qua multi-frame.
-  Đây là một bài học CV cụ thể: *một video encoder vẫn có thể "mù vận tốc" nếu chạy ở image-path.*
-- **Vì sao vẫn dùng được cho control:** camera xe **thấy bánh lái phía trước** → **góc lái đã nằm trong
-  patch map** (state quan sát-được-bằng-ảnh); state token chỉ cần lo phần **tốc độ** mà ảnh không cho.
+  backprop). Tải qua `torch.hub` (`vjepa2_1_vit_large_384`) — bản 2.1 chỉ có trên torch.hub.
+- **Encode TỪNG frame** (image-path) → **patch tokens**: 384px → **576 token**, mỗi token **1024-D**. KHÔNG
+  pool khi train predictor (giữ 576 token), KHÔNG nhồi nhiều frame.
+- **Tối ưu then chốt:** **pre-encode toàn bộ dataset offline một lần** → lưu latent (`.npy` fp16) → train
+  đọc latent trực tiếp, **không forward V-JEPA khi train** (~50–100× nhanh hơn).
 
-### 5↔6 — Đính chính resolution (ghi rõ để tránh sai như bản nháp đầu)
-- **384 là cố ý cho CHẤT LƯỢNG** (V-JEPA 2.1 cooldown ở 384; checkpoint ViT-L distilled là 384-native).
-- **256 của V-JEPA 2-AC = lựa chọn COMPUTE** ("for simplicity", clip 16-frame cho MPC), **KHÔNG** phải
-  "256 đẹp hơn". → **đừng gọi 256 là "faithful".** Chiến lược: iterate ở 256 (rẻ, ablate nhanh), **chốt
-  model cuối ở 384**.
+### 7.1. Encoder có mã hoá tốc độ không? (đo lại đàng hoàng)
+Một câu hỏi thiết kế: **latent single-frame có chứa thông tin tốc độ không?** Nếu có thì không cần đưa
+speed vào state token. Chúng tôi **đo lại bằng `scripts/measure_speed_r2.py`** (KHÔNG dựa vào ghi chú cũ):
+mean-pool patch map mỗi frame (576×1024 → 1024), hồi quy **ridge** để dự đoán speed GPS, **fit trên session
+train, báo R² trên session VAL held-out** (40 train / 20 val session, ~40k/31k frame).
 
----
-
-## 7. Kiến trúc AC Predictor (đóng góp chính)
-
-### 7.1. Sơ đồ
-```
-mỗi frame x_k ──[V-JEPA 2.1 ViT-L 384, FROZEN, per-frame]──► z_k  (N_tok × 1024 patch tokens)
-state  s_k = [speed, gx,gy,gz, ax,ay,az, rx,ry,rz]  (GPS+IMU)  ──┐
-action a_k = [steer, throttle, domain]                          ──┤ interleave (a_k, s_k, z_k) mỗi frame
-                                                                  ▼
-                       Predictor block-causal transformer ───────► ẑ_{k+1}  (patch tokens)
-```
-![Kiến trúc: frame → V-JEPA frozen → patch tokens → AC predictor (+state+action) → ẑ → CEM → ESP32.](figures/fig_architecture.png)
-
-*Hình 1 — Kiến trúc hệ thống (PNG dùng ngay, render từ graphviz). Nguồn diagram để chỉnh ở
-`figures/src/fig_architecture.dot`; bản mermaid tương đương dưới đây.*
-
-```mermaid
-flowchart LR
-  X[frame x_k] -->|V-JEPA 2.1 ViT-L<br/>FROZEN, per-frame| Z[z_k: 576×1024 patch tokens]
-  S[state s_k<br/>speed+IMU+rotvec] --> P
-  A[action a_k<br/>steer,throttle,domain] --> P
-  Z --> P[Predictor<br/>block-causal transformer]
-  P --> ZH["ẑ_(k+1) (patch tokens)"]
-  ZH -->|energy ‖P − z_goal‖₁| CEM[CEM planner]
-  CEM -->|action 2-byte| ESP[ESP32 → servo/ESC]
-```
-
-### 7.2. Thành phần (đã verify vs code Meta gốc)
-| Thành phần | Giá trị | Khớp Meta? |
+| Ridge (λ) | R² train | R² VAL (held-out) |
 |---|---|---|
-| Encoder | V-JEPA 2.1 ViT-L 384, frozen, per-frame | ✓ image-encoder |
-| Interleave | `[action, state, patch]` mỗi frame | ✓ |
-| Predictor | block-causal transformer, **depth 12, hidden 1024** | ⚠️ Meta 24/300M (ta nhỏ hơn để tránh overfit ~228k frame) |
-| Pos-embedding | **học được** (temporal + token-type) | ⚠️ Meta dùng 3D-RoPE (lệch có chủ ý) |
-| Dự đoán | **tuyệt đối** `ẑ = P(...)` (predict_residual=false) | ✓ |
-| Chuẩn hóa | **per-token LayerNorm** + re-LN sau mỗi bước rollout | ✓ |
-| Loss | **L1 teacher-forcing + rollout 2-step** (auto_steps=2) | ✓ (paper eq.2–4) |
-| Số tham số | ~26M (patch) / 7.4M (pooled) | — |
+| 1 | 0.758 | 0.268 |
+| 100 | 0.753 | 0.296 |
+| **1000** | 0.716 | **0.304** |
+| 10000 | 0.631 | 0.258 |
 
-### 7.3. Lệch CÓ CHỦ Ý so với Meta (ghi minh bạch)
-- **State = IMU 10-D** thay pose 7-D cánh tay (xe không có proprioception sub-mm; loại vị trí tuyệt đối
-  để tránh overfit địa điểm).
-- **Pos-emb học được** thay 3D-RoPE (với clip nhỏ cố định là đủ).
-- **Depth 12/512** thay 24/1024 (data ~228k frame, predictor quá to dễ overfit).
-- **Bicycle-model dynamics** thay `compute_new_pose` của cánh tay (xem §10).
+- **Kết quả:** R²(speed) held-out tốt nhất = **+0.30** (λ=1000). Tức là latent single-frame **CÓ mang một
+  phần tín hiệu tốc độ nhưng YẾU** — chỉ giải thích **~30% phương sai** tốc độ trên held-out (train R²=0.72
+  → có overfit). **Đây là đính chính quan trọng:** ghi chú cũ ghi "R²=−1.1 / mù vận tốc hoàn toàn" là **SAI
+  và không tái lập được** (xem §14 #3).
+- **Vì sao chỉ YẾU:** V-JEPA 2.1 ViT-L 384 chạy **image-path** (tubelet thời gian = 1 → không tích chập
+  thời gian) nên không có "vận tốc thật"; phần R²≈0.30 nhiều khả năng đến từ **manh mối gián tiếp** (motion-
+  blur khi đi nhanh, bối cảnh nơi xe hay chạy nhanh), KHÔNG phải đo vận tốc trực tiếp.
+- **Hệ quả thiết kế (không đổi):** vì tín hiệu tốc độ trong ảnh **yếu và không đáng tin**, ta vẫn **đưa tốc
+  độ vào model qua STATE token** (GPS speed) cho chắc chắn. Điều này cũng nhất quán với cơ chế "đứng-yên làm
+  phẳng landscape" ở §12.3 (speed vào qua state → speed=0 ⇒ predictor đúng khi cho "đứng thì lái không quay").
+
+> *Bài học CV:* một video encoder chạy **image-path** từng-frame chỉ mang tín hiệu vận tốc **gián tiếp,
+> yếu** → muốn điều khiển tin cậy phải bơm tốc độ qua state, đừng kỳ vọng ảnh tĩnh "biết" vận tốc.
+
+### 7.2. Vì sao 384px (không phải 256)
+- **384 là cố ý cho CHẤT LƯỢNG** (V-JEPA 2.1 cooldown ở 384; checkpoint ViT-L distilled là 384-native).
+- **256 của V-JEPA 2-AC = lựa chọn COMPUTE** ("for simplicity", clip 16-frame cho MPC), **không** vì "256
+  đẹp hơn". Chiến lược của chúng tôi: iterate ở 256 (rẻ) rồi **chốt model cuối ở 384**.
 
 ---
 
-## 8. Huấn luyện & Kết quả Offline
+## 8. AC Predictor — kiến trúc (đóng góp chính)
 
-### 8.1. Hai world model được so sánh trên cùng dataset latent
-- **`vjepa_ac` / `VJEPA2ACCar`** — AC predictor đặt trên V-JEPA latent đóng băng (**đóng góp chính**).
-- **`LeWM` (LeWorldModel)** — pixel-JEPA end-to-end (**baseline độc lập**).
+### 8.1. Sơ đồ
+```
+mỗi frame x_k ──[V-JEPA 2.1 ViT-L 384, FROZEN, per-frame]──► z_k  (576 × 1024 patch tokens)
+state  s_k = [speed, gx,gy,gz, ax,ay,az, rx,ry,rz, prev_steer, prev_throttle]  (12-D) ──┐
+action a_k = [steer, throttle, domain_id]                              (3-D)            ──┤ interleave
+                                                                                          ▼
+                       Predictor block-causal transformer ───────► ẑ_{k+1}  (576 patch tokens)
+```
+![Kiến trúc hệ thống](figures/fig_architecture.png)
+*Hình 1 — Kiến trúc: frame → V-JEPA frozen → patch tokens → AC predictor (+state+action) → ẑ → CEM → ESP32.*
 
-### 8.2. Metric (giải thích — vì sao không tin val_pred đơn lẻ)
-- **`rollout@k / identity` = MSE(model, z_{t+k}) / MSE(identity, z_{t+k})**, với identity = "đoán frame
-  sau y hệt frame trước (đứng yên)". **<1 = thắng baseline; thấp hơn = tốt hơn.** Đây là **chỉ số quyết
-  định**, vì val_pred đơn lẻ có thể bị lừa (latent collapse + bỏ qua action vẫn cho val thấp).
-- **Action-sensitivity (energy-probe):** quét energy E(steer) trên `[-1,1]` ở các cửa-sổ-cua, xem
-  **argmin-E có đúng hướng quẹo không** và **contrast (Emax−Emin)/Emin** sâu cỡ nào. Đây là thước đo
-  "CEM thực sự đọc được hành động ở cua", sát với cái CEM dùng hơn cả ratio.
+Mỗi frame là một nhóm token `[action_t, state_t, patch_t(1..576)]` (578 token). Một **mask block-causal**
+cho token ở frame t nhìn được mọi token ở frame ≤ t. Đầu ra ở vị-trí-patch của frame t dự đoán patch map
+của frame t+1.
 
-### 8.3. Kết quả (Bảng A) — world model thắng baseline
+### 8.2. Phép tính tham số — **39.2M** (đếm trực tiếp từ checkpoint `cd4`)
+Cấu hình triển khai: `latent_dim D=1024`, `pred_dim P=512`, `depth L=12`, `n_heads=8`, `num_tokens N=576`,
+`action_dim=3`, `state_dim=12`, `dim_feedforward = 4P = 2048`. **Tổng đếm được từ `best.pt` = 39,192,576 ≈
+39.2M tham số huấn luyện** (chỉ predictor — encoder V-JEPA đóng băng, KHÔNG tính). Phân rã:
+
+| Thành phần | Công thức | Tham số |
+|---|---|---:|
+| `patch_embed` (1024→512) | `1024·512 + 512` | 524,800 |
+| `action_embed` (3→512) | `3·512 + 512` | 2,048 |
+| `state_embed` (12→512) | `12·512 + 512` | 6,656 |
+| `temporal_pos` (16 frame) | `16·512` | 8,192 |
+| `token_pos` (578 token) | `578·512` | 295,936 |
+| **12 lớp Transformer** | `12 × 3,152,384` | **37,828,608** |
+| `norm` cuối (LayerNorm 512) | `2·512` | 1,024 |
+| `head` (512→1024) | `512·1024 + 1024` | 525,312 |
+| **TỔNG** | | **39,192,576** |
+
+**Một lớp Transformer = 3,152,384** (TransformerEncoderLayer, `d_model=512`, `ff=2048`, pre-LN):
+- self-attn in-proj `3·512·512 + 3·512` = 787,968
+- self-attn out-proj `512·512 + 512` = 262,656
+- FFN linear1 `512·2048 + 2048` = 1,050,624
+- FFN linear2 `2048·512 + 512` = 1,049,088
+- 2× LayerNorm `2·(2·512)` = 2,048
+→ cộng = **3,152,384**; ×12 = **37,828,608** (96.5% tổng).
+
+> **Đính chính rõ ràng:** các bản nháp trước ghi "~26M" — **SAI**. Đếm thực tế là **39.2M** (≈40M). Encoder
+> 12 lớp ×512-rộng chiếm gần hết. Con số này tái lập bằng:
+> `python -c "import torch;sd=torch.load('checkpoints/vjepa_ac_car_cd4/vjepa_ac_car/best.pt',weights_only=False)['model'];print(sum(v.numel() for v in sd.values()))"`
+
+### 8.3. Đây là **kiến trúc tham khảo** từ V-JEPA 2-AC — giống / khác / vì sao
+Chúng tôi **dựa trên** kiến trúc V-JEPA 2-AC của Meta nhưng điều chỉnh cho xe. Bảng dưới nêu **điểm giống,
+điểm khác và LÝ DO** (không gọi là "port trung thực" — chỉ là tham khảo có điều chỉnh).
+
+| Khía cạnh | Meta V-JEPA 2-AC | Của chúng tôi | Giống/Khác — **vì sao** |
+|---|---|---|---|
+| Encoder | V-JEPA frozen | V-JEPA 2.1 ViT-L 384 frozen | **GIỐNG** — cùng triết lý "đóng băng encoder nền-tảng" |
+| Token mỗi frame | patch tokens | 576 patch × 1024 | **GIỐNG** — giữ patch map (không pool) cho không gian |
+| Interleave | `[action,state,patch]` | `[action,state,patch]` | **GIỐNG** — cấu trúc token cốt lõi |
+| Attention | block-causal | block-causal | **GIỐNG** — frame t nhìn ≤ t |
+| State | pose tay máy **7-D** | IMU **10-D + prev-action** = 12-D | **KHÁC** — xe không có proprioception sub-mm; dùng IMU+speed; prev-action cho model biết "đang giữ lệnh gì"; bỏ vị trí tuyệt đối để tránh overfit địa điểm |
+| Action | delta end-effector **7-D** | `[steer, throttle, domain_id]` 3-D | **KHÁC** — xe chỉ có 2 trục điều khiển; thêm `domain_id` để học chung 2 servo |
+| Pos-embedding | 3D-RoPE | học được (temporal + token-type) | **KHÁC** — clip nhỏ cố định thì pos-emb học được là đủ, đơn giản hơn |
+| Quy mô predictor | ~24 lớp / ~300M | **12 lớp / pred_dim 512 / 39.2M** | **KHÁC** — data ~228k frame, predictor quá to dễ overfit + 576 token rất nặng |
+| Động học cho CEM | `compute_new_pose` tay máy | **bicycle-model** fit từ data xe | **KHÁC** — hệ động học của xe khác hẳn tay máy (§11) |
+| Dự đoán | next-state latent | next-state latent (`predict_residual=false`) | **GIỐNG** — dự đoán latent frame kế |
+
+---
+
+## 9. TẦNG 1 — World-model dynamics offline (✅)
+
+> **Câu hỏi tầng này:** predictor có học được "action → đổi latent" thật không (cả lái lẫn ga), độc lập
+> hoàn toàn với chuyện đóng vòng/ánh sáng/GPS?
+
+### 9.1. Metric (vì sao không tin val loss đơn lẻ)
+- **`rollout@k / identity` = MSE(model) / MSE(identity)**, identity = "đoán frame sau y hệt frame trước
+  (đứng yên)". **<1 = thắng baseline.** Đây là **chỉ số quyết định** vì val loss đơn lẻ bị lừa (latent
+  collapse + bỏ qua action vẫn cho val thấp).
+- **Action-sensitivity (energy-probe):** quét năng lượng `E(a)` quanh 1 trục action, xem **argmin-E có đúng
+  hướng** và **contrast = (E_max − E_min)/E_min** sâu cỡ nào. Sát nhất với cái CEM dùng.
+
+### 9.2. World model thắng baseline (Bảng A)
 | Model | @1 | @2 | @3 | Ghi chú |
 |---|---|---|---|---|
 | **cd4 (ckpt deploy)** | **0.744** | **0.703** | **0.697** | frozen split, 2000 window |
-| vjepa_ac pooled (7.4M), 5-seed CV | 0.958 ± 0.024 | — | — | 4/5 seed <1, var thấp → **ổn định** |
-| vjepa_ac_pool (baseline pooled) | 0.867 | — | — | ablation |
-| **LeWM** (pixel JEPA, ~22M) | 0.97 ± 0.15 | — | ≥1 horizon dài | **không ổn (2/5 fold fail)** |
+| vjepa_ac pooled, 5-seed CV | 0.958 ± 0.024 | — | — | 4/5 seed <1 → ổn định |
+| cd4_as3 (auto_steps 3) — ablation âm | 0.745 | 0.699 | 0.686 | pred khá hơn nhưng action-sens KÉM → bỏ |
 
-→ **Headline:** model chính **thắng identity ổn định ở mọi horizon**; baseline LeWM chỉ thắng biên độ
-và **không ổn định**.
+→ **Headline:** model chính **thắng identity ổn định ở mọi horizon**.
 
-### 8.4. Cross-domain servo transfer (Bảng B) — kết quả nổi bật nhất
-| Train | Eval trên TowerPro held-out (@1) |
+### 9.3. Transfer chéo-domain-servo ⭐
+- Train **chỉ TowerPro** → eval TowerPro = **1.073** (THUA identity!). Train **trộn KDS+TowerPro** → eval
+  TowerPro = **0.65**. → dữ liệu servo-khác **giúp** học động học chung; `domain_id` cho phép trộn mà không
+  lẫn lộn ánh xạ lệnh→góc.
+
+### 9.4. Action-sensitivity — mỗi trục action đều có đáy năng lượng rõ (Bảng C)
+**Năng lượng** của một chuỗi action: roll qua AC predictor → `E = ‖ẑ_cuối − z_goal‖₁`; E thấp = action đưa
+cảnh tới gần goal. **Contrast** = độ sâu tương đối thung lũng (đã khử thang tuyệt đối).
+
+> **Cách probe (quan trọng — đây là chẩn đoán 1-D để CÔ LẬP từng trục).** Trong `probe_energy`, mỗi trục
+> được quét **riêng**, giữ trục kia = teacher: cột **Lái** = quét steer (ga=teacher); cột **Ga** = quét
+> throttle (lái=teacher). Mục đích: tách tín hiệu từng trục cho rõ. **Khác** với §10, ở đó planner quét
+> **lưới JOINT 2-D (lái × ga)** và tối ưu **cả 2 trục đồng thời** (sát closed-loop hơn) — kết quả joint:
+> lái đúng chiều ~94%, ga tự chọn muốn-tiến 92%.
+
+| Đo (`probe_energy`, d=4, cd4, 300 window VAL) | Lái (steer) — ga=teacher | Ga (throttle) — lái=teacher |
+|---|---|---|
+| argmin-E **đúng dấu** | **98/102 = 96%** (khi quẹo) | **81%** muốn TIẾN (>0) |
+| median \|argmin − teacher\| | 0.058 | — |
+| **contrast** | **0.413** | **0.298** |
+| model "muốn" | — | ga med **+0.094** (≈ data median 0.084) |
+| contrast theo cự-ly target | d2 0.443 / d4 0.355 / d8 0.270 | — |
+
+→ Model **KHÔNG "đánh lái yếu" offline** — đáy energy rõ và đúng phía, ở **cả hai trục**. Contrast **tụt
+theo cự-ly target** → cơ chế "mất tín hiệu khi mốc xa/quanh-góc" → trị bằng **mốc gần + dạy dày**.
+
+![Energy landscape lái](figures/fig_energy_landscape.png)
+*Hình 2 — Energy landscape lái: trái = các đường E(steer) chuẩn hoá, đáy đúng phía cua; phải = argmin-E vs
+steer người lái, đúng dấu.*
+
+### 9.5. Ablation âm cd4_as3 (thể hiện rigor)
+`auto_steps 3` (train rollout sâu hơn) làm **dự đoán multi-step tốt lên** nhưng **action-sensitivity KÉM
+đi** (contrast 0.274 < cd4): rollout sâu làm dự đoán mượt/trung-bình-hoá → landscape phẳng quanh cua. →
+**giữ cd4 (auto_steps 2)**.
+
+---
+
+## 10. TẦNG 2 — Planner OPEN-LOOP chọn JOINT (lái + ga) khớp người lái (✅)
+
+> **Câu hỏi tầng này (bắc cầu giữa metric offline và lái thật):** khi *thật sự cho planner lập kế hoạch*
+> trên video thật (chưa đóng vòng), nó có chọn hành động **giống chuyên gia** không — và **chọn được CẢ ga
+> chứ không chỉ lái**?
+
+### 10.1. Thiết kế (OPEN-LOOP, JOINT 2 trục, trung thực)
+Lấy session VAL held-out. Với **mỗi frame thật** t: goal = patch map d=4 bước (~0.9s) phía trước **cùng
+session**; **quét lưới JOINT (lái × ga)** = 15 điểm steer [−1,1] × 9 điểm throttle [−0.1, 0.25] = 135 tổ
+hợp → năng lượng `E(steer, throttle)`; hành động model = **argmin trên cả lưới 2-D** → chọn **lái VÀ ga
+cùng lúc**. So với (lái, ga) người lái thật ở chính frame đó.
+
+**Vì sao gọi là OPEN-LOOP:** video **chạy theo người lái thật** — model **chỉ ĐỀ XUẤT**, không để action
+lái (frame kế đã đóng đinh bởi người). **⚠ KHÔNG chứng minh "xe tự lái".** (Khác §9.4: §9.4 là probe 1-D cô
+lập từng trục; ở đây planner tối ưu **đồng thời** cả 2 trục — sát closed-loop hơn.)
+
+### 10.2. Kết quả (3 session VAL best, gộp 893 frame quẹo)
+| Đo | Giá trị |
 |---|---|
-| **Mixed (KDS + TowerPro)** | **0.65** |
-| TowerPro-only | **1.073** (tệ hơn đứng yên!) |
+| **Sign-turn** lái (đúng dấu người khi \|steer\|>0.15) | **841/893 = 94.2%** (per-session 92.6 / 94.5 / 95.2%) |
+| \|Δsteer\| (model − người), median (toàn frame) | **0.06–0.10** |
+| **Ga: model muốn TIẾN (>0)** | **91.9%** |
+| **Ga model median / người median** | **+0.075 / +0.090** (model tự chọn ga ≈ mức người) |
+| Contrast joint (lưới 2-D) median | **0.43–0.58** |
 
-→ Train **chỉ** trên TowerPro lại **thua identity**; train **trộn** KDS (servo khác, giàu steering) →
-**0.65**. **KDS transfer sang TowerPro** dù khác servo. Đây là bằng chứng "đa dạng hành động/domain quan
-trọng hơn so-khớp-domain", một finding gọn và dễ trình bày.
+→ **Hai kết luận:** (a) khi tối ưu **joint cả 2 trục**, lái vẫn **đúng chiều người 94.2%** (≈ probe 1-D 96%
+ở §9.4 và ≈ bản steer-only — tức thêm trục ga KHÔNG làm hỏng lái); (b) **model TỰ chọn ga hợp lý** — 92% muốn
+tiến, mức ga median +0.075 sát người +0.090 — tức **không cần giữ ga=teacher**, planner đọc được trục ga.
+**Diễn giải:** năng lực lập kế hoạch (cả lái lẫn ga) là **LÀNH** khi chưa chịu vật-lý-đóng-vòng; cái gãy ở
+Tầng 3 KHÔNG phải "planner dốt".
 
-### 8.5. Action-sensitivity (Bảng C) — CEM đọc được hướng cua
-| Đo (probe_energy --turn-only, d=4, cd4) | Giá trị |
-|---|---|
-| argmin-E đúng hướng cua | **58/60** |
-| median \|argmin−teacher\| | 0.12 |
-| contrast (Emax−Emin)/Emin | **0.37** |
-| Δsteer recovery / Δthrot | 0.16 / 0.04 |
-| contrast theo khoảng cách target | d2 **0.443** / d4 0.355 / d8 **0.270** |
-
-→ (a) **Model KHÔNG "đánh lái yếu" offline** — đáy energy rõ và đúng phía. (b) **Contrast tụt theo
-khoảng cách target** = cơ chế "mất tín hiệu khi subgoal xa/quanh-góc" → trị bằng **target gần + teach
-dày**, không phải train thêm.
-
-![Trái: các đường E(steer) chuẩn hoá, đáy nằm đúng phía cua. Phải: argmin-E vs teacher, 58/60 đúng dấu.](figures/fig_energy_landscape.png)
-
-*Hình 2 — Energy landscape (probe_energy, 60 turn-window val, cd4). **Trái:** các đường E(steer) chuẩn
-hoá — đáy ● đúng phía cua (đỏ = cua trái → đáy bên trái; xanh = cua phải → đáy bên phải); đường chấm =
-hành động teacher. **Phải:** argmin-E (model) vs steer teacher — **58/60 đúng dấu**, median contrast
-**0.355** (tái lập số headline). → Offline CEM **có** tín hiệu lái rõ; closed-loop hỏng là vì cos-dropout
-**làm phẳng chính landscape này** (Hình 5), KHÔNG phải model dốt cua. Sinh:
-`scripts/probe_energy.py --turn-only -d 4 --n-windows 60 --plot …`.*
-
-### 8.6. Ablation âm cd4_as3 (thể hiện rigor)
-- **cd4_as3** = cd4 nhưng **auto_steps 3** (train rollout sâu hơn). Kết quả: **dự đoán multi-step tốt
-  lên** (ratio@2 0.699, @3 0.686 vs cd4 0.703/0.697) **NHƯNG action-sensitivity KÉM đi**
-  (probe turn 54/60, contrast **0.274** < cd4 58/60, 0.37).
-- **Diễn giải:** train rollout sâu hơn làm dự đoán **mượt/trung-bình-hoá** → landscape energy theo
-  action **phẳng đi quanh cua**. → **giữ cd4** để deploy. **Bài học:** auto_steps cao hơn không miễn
-  phí — phải soi cả action-sensitivity, không chỉ val/ratio.
-
-### 8.7. Các bài học train/data
-- **frame_skip=1 (10fps) làm HỎNG LeWM:** frame liên tiếp gần giống hệt → model học identity (ratio
-  1.25). Phải frame_skip=5 (~0.5s/bước). (vjepa_ac dùng frame liên tiếp OK vì latent V-JEPA đổi rõ hơn.)
-- **eff_rank latent của LeWM chỉ ~7–9/256** → **dữ liệu đơn điệu (ga gần cố định) là bottleneck chính.**
-- **Throttle normalization:** thêm `action_scale [1.0, 6.67]` (đưa throttle ~[-0.15,0.15] → ~[-1,1]) →
-  Δthrot từ **0.12 → 0.04** (predictor không còn coi nhẹ ga).
+> **Công cụ:** `scripts/demo_precompute.py` (quét lưới JOINT 2-D → `demo.json` mang landscape `E2`) +
+> `scripts/demo_web.py` (player :8070, **landscape 2-D lái×ga**: ● người vs ✕ model) + `scripts/eval_demo_joint.py`
+> (tổng hợp số trên). Export MP4 cho slide. (Joint nặng: ~50–60 phút/session GPU → chốt 3 session best.)
 
 ---
 
-## 9. Điều hướng: Topological Graph
+## 11. Lập kế hoạch: CEM + động học xe + policy prior
 
-- **Node** = frame (latent V-JEPA single-frame + GPS mét + heading). **Cạnh** = **temporal** (người đã
-  lái qua = chắc đi được) + **loop-closure** (kNN cosine latent cross-session, **GPS-gate <8m** chống
-  aliasing thị giác).
-- **API:** `localize()` (có GPS-prior), `plan_route()` (Dijkstra), `extract_subgoals()` (chuỗi ảnh).
-- **Kết quả (Bảng E):** graph 92-session (28 KDS + 64 TowerPro) = **29,699 node, 1 component 100%**;
-  localize LOSO **median 2.1m (<8m 88%)**; routing **100%**; route bám tuyến người **median 2.3m**.
-  (Rebuild 209-session sau khi **lọc 23% node** đâm/lùi/kẹt → 33,590 node, localize 2.0m <8m 86%.)
-- **Phân biệt vị trí bằng centered-cos:** tại-chỗ ~1.0, subgoal kế ~0.58, cách-2 ~0.37 (raw-cos vô dụng
-  0.95–0.99 ở mọi nơi). → **đây là phần "place recognition" của bài, hoạt động tốt offline.**
-
-![Đồ thị topo 209-session (~33.6k node, xám) + một route Dijkstra (xanh) nối start→goal và chuỗi ảnh subgoal mà CEM lái tới lần lượt.](figures/fig_route_graph.png)
-
-*Hình 4 — Đồ thị topological 209-session: nền xám = mọi quỹ đạo người lái (cấu trúc vòng của bãi);
-đường xanh = route Dijkstra; dải ảnh dưới = chuỗi subgoal ảnh (visual place) CEM bám theo. Sinh bằng
-`scripts/viz_route.py --graph data/graph/topograph.pt`.*
+- **CEMPlannerAC:** context 2 frame, **horizon 4**, năng lượng `‖P − z_goal‖₁`, receding-horizon, chỉ áp
+  **action đầu**. Mỗi iteration chèn 5 seed candidate steer `[-1,-0.5,0,+0.5,+1]` để elite bắt được đáy
+  toàn cục.
+- **CarDynamics (bicycle-model)** tích phân `[x,y,heading,speed]` từ `[steer,throttle]`; hệ số fit từ data
+  thật: `k_thr=1.588, k_drag=0.078, k_yaw=0.088`. **Lưu ý vật-lý:** `yaw = k_yaw·steer·speed` → **speed=0
+  ⇒ lái không sinh yaw** (gốc của §12.B).
+- **Trễ CEM (bench GPU thật, cd4):** 32/1 ≈ **0.50s** · 64/2 ≈ 1.57s · 128/2 ≈ 2.89s · 256/2 ≈ 5.51s. →
+  search dày làm xe đi "mù" lâu; **32/1 ≈ 64/2 về chất lượng** → chốt 32/1.
 
 ---
 
-## 10. Lập kế hoạch: CEM + Car Dynamics + Policy Prior
+## 12. TẦNG 3 — Closed-loop ngoài trời (❌ negative finding) — 3 nguyên nhân
 
-- **CEMPlannerAC:** context 2 frame, **horizon 4**, energy `‖P − z_goal‖₁`, receding-horizon, chỉ áp
-  **action đầu**. Mỗi iteration **chèn 5 seed candidate steer** `[-1,-0.5,0,+0.5,+1]` để elite bắt được
-  đáy toàn cục (trước đó policy warm-start che mất vùng search).
-- **CarDynamics (bicycle-model)** tích phân `[x,y,heading,speed]` từ `[steer,throttle]`; hệ số **fit từ
-  data thật**: `k_thr=1.588, k_drag=0.078, k_yaw=0.088`. *(Đây là phần kỹ thuật tự dựng, rủi ro nhất.)*
-- **Policy prior (PiJEPA-style BC):** `π(pooled z_t, pooled z_goal, state, domain) → [steer,throttle]`,
-  dùng để **warm-start mu của CEM** → hội tụ nhanh → giảm samples/iters → giảm trễ. (BC offline:
-  med|Δsteer| 0.023–0.027 phẳng theo d=1..8.)
-- **Trễ CEM (bench GPU thật, model cd4):** tick (CEM + enc ~0.03 + overhead):
-  **32/1 ≈ 0.50s · 64/2 ≈ 1.57s · 128/2 ≈ 2.89s · 256/2 ≈ 5.51s**. → cấu hình search dày (256/2) khiến
-  xe đi "mù" ~5.5s/quyết định; **32/1 cho chất lượng action NGANG 64/2** (đã đo) nên chốt 32/1 + policy.
+> Thất bại closed-loop **KHÔNG phải một nguyên nhân** mà là **ba nguyên nhân cộng hưởng**, mỗi cái có chẩn
+> đoán riêng.
 
----
+### 12.1. Triển khai & kết quả thô (Bảng D — không run nào về đích)
+**Luồng.** *Teach:* lái tay, chụp chuỗi ảnh-mốc + GPS dọc tuyến (~15m, vào cua chụp dày). *Repeat:* phone
+stream (frame + GPS + rotvec) qua TCP → **PC: V-JEPA 2.1 ViT-L → AC predictor cd4 → CEM** → 2-byte action →
+ESP32. Pop ảnh-mốc theo GPS (± xác nhận ảnh).
 
-## 11. Triển khai Closed-loop (Teach & Repeat)
+| Run | tick | bám tốt tới | bung tại | kết cục |
+|---|---|---|---|---|
+| 163607 | 1.13s | mốc 18 (lệch <0.5m) | mốc 21 (cos 0.07) | bung trái +3.2m |
+| 171912 | 1.78s | mốc 6 | mốc 7 (cos 0.02) | veer trái → bụi cỏ |
 
-### 11.1. Luồng
-- **Teach:** lái xe tay, **chụp chuỗi subgoal ảnh + GPS** dọc tuyến (`teach_record.py` /
-  `route_web.py` panel "Route tay"; vào cua chụp DÀY).
-- **Repeat:** điện thoại stream (frame + GPS + rotvec) qua TCP → **PC** chạy **V-JEPA 2.1 ViT-L (frozen)
-  → AC predictor cd4 → CEM** lái tới subgoal hiện tại (patch tokens) → gửi **2-byte action** về điện
-  thoại → ESP32 → servo/ESC. **Pop subgoal** theo GPS (± xác nhận ảnh).
-- **Vận hành:** web `route_web.py` (Flask :8060) hiển thị vị trí xe + camera + trạng thái; nút ⛔ STOP
-  khẩn. `run_infer.sh` tự ghi `logs/infer_<thời_gian>.log` để mổ offline.
+→ **Pattern bất biến:** bám nửa đầu tốt → tới ảnh-mốc "yếu" → bung. Chỉnh tham số chỉ **dời điểm bung,
+không xoá** → giới hạn ở model/data/descriptor, không phải tham số. (~10 run, 1 môi trường, 0 về đích.)
 
-### 11.2. Cấu hình chạy thật (chốt tại trận)
-`--samples 32 --iters 1` (hoặc 256/2 khi cần search dày) · `--throttle-cap/cruise 0.08` ·
-`--kick-throttle 0.10` (đề-pa) · `--steer-smooth 0.1` · `--pop-confirm-cos` (GPS + xác nhận ảnh) ·
-`--ctrl-lookahead-m 0.5` · checkpoint `vjepa_ac_car_cd4/best.pt` + policy prior. Route: bãi cỏ công
-viên, tuyến ~thẳng ~15m (parkfix3/park4/park6).
+### 12.2. Nguyên nhân A — descriptor V-JEPA KHÔNG bất-biến-sáng
+**Triệu chứng.** Tới ảnh-mốc mà ảnh live (heading/ánh-sáng/vị-trí lúc chạy khác lúc dạy) không khớp ảnh dạy
+→ **độ tương đồng cosine giữa latent live và latent mốc tụt <0.1 rồi âm** → goal **không phân-biệt-được**
+trong latent → energy CEM **phẳng theo steering** → CEM lái loạn.
 
-### 11.3. Kết quả (Bảng D) — KHÔNG run nào về đích
-| Run | tick | config | bám tốt tới | bung tại (cos) | kết cục |
-|---|---|---|---|---|---|
-| 163607 | 1.13s | 59sg, fast | **sg18 (xt<0.5m)** | sg21 (cos 0.07) | bung trái +3.2m |
-| 163831 | 2.82s | 59sg, slow | sg8 | sg10 (cos 0.27) | trôi −2.4m |
-| 164827 | 2.90s | 59sg, slow | sg12 | sg27 | trôi trái +2.8m |
-| 171022 | 2.82s | geosteer ON | sg20 | sg23 | 🛑 DIVERGE (rotvec hỏng) |
-| **171912** | 1.78s | **pure-visual sạch** | sg6 | **sg7 (cos 0.02)** | veer trái → bụi cỏ |
+**Đào tới gốc (`probe_seqslam_lighting.py`, thuần CPU trên latent, cặp session cross-lighting Δt≈53h):** đo
+*thứ hạng theo cosine của ảnh-dạy đúng-hình-học* (gần nhất theo GPS <1.5m):
+- Sáng **gần** (Δbright ~11/255): ảnh-dạy đúng ở **hạng 0**, top-1 **79%** → descriptor TỐT.
+- Sáng **xa** (Δbright ~18/255): ảnh-dạy đúng rơi **hạng trung vị 41–62**, top-1 **0–3%** → **tín hiệu
+  per-frame SAI**, ảnh đúng bị chôn sâu.
 
-→ **Pattern bất biến qua mọi config:** bám tuyến tốt ở **nửa đầu** (lệch ngang xt < 0.5m) → tới một
-subgoal "yếu" → **cos sập** → bung ra lề. **Knob chỉ DỜI điểm bung, không xoá** (tick nhanh giúp bám tới
-sg18 thay vì sg8 nhưng vẫn bung).
+**Control KHÔNG dính:** CEM lái chấm bằng **patch-L1** (lighting-robust, sun→cloud <5%). Vấn đề CHỈ ở khâu
+**định-vị / pop = cosine trên latent pooled**.
 
----
+> **➡️ Kết luận A:** đây là **giới hạn DESCRIPTOR** (đặc trưng pooled đóng băng V-JEPA), không sửa được ở
+> tầng đo-lường. **Fix nguyên-lý = học một descriptor bất-biến-sáng** (head nhỏ trên frozen V-JEPA, train
+> cross-session — §16). **Fix kịp deadline = dạy lại CÙNG BUỔI** (descriptor rất tốt khi sáng-gần).
 
-## 12. Phân tích Thất bại Closed-loop (lõi phân tích)
+### 12.3. Nguyên nhân B — Vùng-chết đứng-yên (KHÔNG phải OOD — đã đính chính)
+**Quan sát ban đầu:** probe ở bãi cho `E(steer)` contrast ~0.02–0.11 mọi nhịp (in-domain ~0.41) →
+landscape phẳng → CEM ra full-lock. **Kết luận trung gian = "OOD"** (sai).
 
-### 12.1. Cơ chế "vòng xoáy cos-dropout" (đo, không đoán)
-```
-bám tuyến (cos>0.15)  →  tới subgoal "yếu" (live ≠ teach)  →  cos < 0.1
-   ↑                                                              ↓
-đâm lề  ←  no-recovery (văng >2m mất luôn)  ←  CEM lái loạn full-lock ±1  ←  mất gradient
-                                                    ↓ (cộng hưởng)
-                                          kick steer-aware nâng ga → tăng tốc khi quẹo bậy
-```
-![Vòng xoáy cos-dropout: bám tuyến → subgoal yếu → cos<0.1 → mất gradient → full-lock → văng → no-recovery → đâm lề.](figures/fig_cos_dropout_mechanism.png)
+**ĐÍNH CHÍNH — OOD BỊ BÁC.** Landscape phẳng là do **regime ĐỨNG YÊN / ga thấp**, không phải scene-OOD:
+- **(a) Offline ablation:** trên VAL, **ép `speed=0`** → contrast tụt **0.413 → 0.107** mà **KHÔNG đổi
+  cảnh** (`probe_speed_confound.py`). → phẳng do speed, không do scene.
+- **(b) Live tại chính park:** ga≥0.07 → contrast **0.2–0.57**; ga<0.06 → phẳng 0.01–0.02.
+- **Cơ chế:** `yaw = k_yaw·steer·speed` → speed=0 ⇒ lái = 0 yaw ⇒ predictor học đúng "xe đứng không quay"
+  ⇒ landscape phẳng. **Park KHÔNG OOD; model lái tốt khi ĐỦ GA.**
 
-*Hình 3 — Cơ chế thất bại cos-dropout (PNG dùng ngay, render từ graphviz; nguồn
-`figures/src/fig_cos_dropout_mechanism.dot`). Bản mermaid tương đương dưới đây.*
+**Gốc = DEADLOCK đứng-yên:** hộp ga CEM `[0,0.10]` chứa vùng chết `[0,0.06)` → xe đứng → speed=0 → phẳng →
+ra rác → lại đứng. **Fix = SÀN GA `TMIN=0.07`** → xe chạy, lái khoẻ trở lại (đã xác nhận thật).
 
-```mermaid
-flowchart TD
-  A[Bám tuyến cos > 0.15] --> B[Tới subgoal yếu: live ≠ teach]
-  B --> C[centered-cos < 0.1]
-  C --> D[Energy phẳng theo steering<br/>CEM mất gradient]
-  D --> E[Lái loạn full-lock ±1, đảo chiều]
-  E --> F[Văng > 2m khỏi tuyến]
-  F --> G[KHÔNG có ảnh teach dạy 'lệch 2m bẻ về đâu'<br/>no-recovery]
-  G --> H[Đâm lề]
-  E -.cộng hưởng.-> K[kick steer-aware nâng ga<br/>→ tăng tốc khi quẹo bậy]
-  K --> F
-```
-- **Vì sao cos-dropout:** vài subgoal có ảnh live (heading/ánh-sáng/vị-trí repeat khác teach) **không
-  khớp** ảnh teach → centered-cos tụt <0.1.
-- **Vì sao panic:** energy CEM = `‖predicted_patch − goal_patch‖`; cos thấp = goal **không phân-biệt-được**
-  trong latent → energy **phẳng** theo steering → CEM chọn lái ~ngẫu nhiên, hay full-lock + đảo chiều.
-- **Vì sao không cứu được:** teach chụp toàn bộ **khi xe ở GIỮA tuyến** → **không có ảnh teach nào dạy
-  "lệch 2m thì bẻ về hướng nào"** → một khi văng ra, thị giác mù hướng-về (cos chỉ tụt, không chỉ đường).
+### 12.4. Nguyên nhân C — Thiếu dữ liệu lateral-recovery
+**Vì sao không cứu được khi đã văng:** dạy chụp toàn bộ **khi xe ở GIỮA tuyến** → **không ảnh dạy nào dạy
+"lệch 2m thì bẻ về hướng nào"**. Một khi văng ra, thị giác chỉ báo cos thấp (đang sai chỗ) chứ **không chỉ
+đường về** → no-recovery → đâm lề.
 
-![cos giữ ~0.25 (sg4–7) rồi rơi <0.1 (sg8) và âm (sg9); đồng thời |raw steer| bão hòa 1.0.](figures/fig_cos_dropout_20260613_171912.png)
+**Khắc phục đã validate offline — "DAVE-2 cho latent V-JEPA" (không cần GPU):** dịch ngang lưới patch token
+(border-replicate) ≈ camera lệch ngang, mean-pool → latent lệch, ghép nhãn "bẻ-về" `α·s/W`, trộn vào BC của
+policy. Đo trên VAL held-out: recovery **khuếch đại bẻ-về 3.4–5.4×** baseline, đúng dấu mọi mức dịch, không
+hại goal-reaching. **Hạn chế trung thực:** dịch token là proxy, **không có renderer** → **không chứng minh
+được transfer closed-loop offline** → mặc định tắt, chỉ bật sau khi probe trên xe.
 
-*Hình 5 — Chữ ký thất bại (run thật 171912, parse từ log). Trên: centered-cos giữ ~0.25 ở sg4–7 rồi
-**rơi qua ngưỡng 0.1** (vùng đỏ) ở sg8 và xuống âm ở sg9. Dưới: ngay khi vào vùng cos-dropout,
-**|raw steer| của CEM bão hòa 1.0** (lái full-lock) — minh chứng "mất gradient → lái loạn".*
-
-![Quỹ đạo GPS tô màu theo cos: xanh (cos tốt) ở nửa đầu, chuyển đỏ (cos âm) khi bung tới điểm STOP.](figures/fig_trajectory_20260613_171912.png)
-
-*Hình 6 — Quỹ đạo cùng run: màu điểm = centered-cos. Nửa đầu (xanh, cos tốt) xe **bám tuyến**; khi cos
-collapse (vàng→đỏ) xe **bung ra** và dừng tại ❌. Sinh bằng `scripts/plot_closed_loop.py logs/infer_20260613_171912.log`.*
-
-### 12.2. Bằng chứng: KHÔNG phải "cảnh tự-giống / teach xấu"
-- **Embedding teach tốt đều:** encode lại qua V-JEPA, đo độ phân-biệt: parkfix3 **self-gap 0.070**;
-  parkfix_5 **self-gap 0.094** (≈/hơn). raw-cos giữa-subgoal ~0.98, centered-norm ~5. → **không** do
-  scene/teach degenerate.
-- **Cos-quality khi CHẠY phụ thuộc alignment teach-vs-repeat:** parkfix3 (teach sáng, chạy ngay sau)
-  **66% tick có cos>0.3** → bám tới sg18-57; parkfix_5 (teach 14:11, chạy 14:50, nắng gắt) **0%>0.3**.
-  → **khớp-live nhạy với giờ/nắng/heading**, KHÔNG do biểu diễn V-JEPA. *(Đây là kết luận CV cốt lõi:
-  domain-shift ánh sáng/góc nhìn giữa teach và repeat là thủ phạm, không phải encoder.)*
-
-### 12.3. So với Meta & ViNG/ViKiNG
-- **Meta (robot-arm):** cảnh bàn cố định, action gây đổi-cảnh **lớn + tức thì**, **không** có heading/
-  ánh-sáng/lệch-ngang. "Chính xác cm" của họ = encoder khớp **proprioception tay máy** (sub-mm,
-  quasi-static, in-domain) — **khác hệ đo**, không phải "world model chính xác hơn".
-- **Xe ngoài trời:** action → đổi-cảnh **nhỏ** + **cos-dropout** + **no-recovery** → chế độ **khó hơn**
-  về robustness.
-- **ViNG/ViKiNG chạy được** vì policy **train TRÊN data có recovery** (lệch→về). Data teach-1-lượt-giữa-
-  line của ta **THIẾU** đúng tín hiệu đó.
-
-### 12.4. Đóng khung negative finding (cho phần kết)
-> *"Open-loop teach&repeat trên một frozen video-encoder + CEM, thiếu lateral-recovery, sẽ bung ở điểm
-> visual-mismatch trên cảnh ngoài trời."* Bảng D (§11.3) + cơ chế (§12.1) + bằng chứng loại trừ
-> (§12.2) là toàn bộ chứng cứ. **Giới hạn ở tầng nav-robustness + control, KHÔNG ở representation.**
+### 12.5. So với Meta & ViNG
+- **Meta (robot-arm):** cảnh bàn cố định, action đổi-cảnh lớn + tức thì, không heading/ánh-sáng/lệch-ngang.
+  "Chính xác cm" = khớp proprioception tay máy — **khác hệ đo**, không phải "world model chính xác hơn".
+- **Xe ngoài trời:** action → đổi-cảnh nhỏ + cos-dropout(ánh sáng) + đứng-yên + no-recovery → **khó hơn**.
+- **ViNG chạy được** vì policy **train trên data CÓ recovery** (lệch→về). Data dạy-1-lượt-giữa-line của ta
+  THIẾU đúng tín hiệu đó.
 
 ---
 
-## 12bis. (Bổ sung 06-14) Khắc phục đề xuất — Recovery-augmented policy + đo lại "tốc-độ-quyết-định"
+## 13. Đánh giá dữ liệu IMU & vì sao không dự đoán toàn bộ next-state
 
-> Phần này biến *negative finding* (§12) thành một **phương pháp khắc phục cụ thể, đã validate offline**.
-> Hai nguyên nhân cộng hưởng của thất bại closed-loop được tách bạch và xử lý riêng.
+### 13.1. Đánh giá chất lượng dữ liệu IMU
+State token dùng 10 kênh IMU (gyro gx/gy/gz, accel ax/ay/az, rotation-vector rx/ry/rz) + speed GPS. Quan
+sát thực tế về **chất lượng các kênh này**:
+- **Rất nhiễu & phụ thuộc lắp đặt.** Điện thoại gắn trên xe → accel/gyro lẫn **rung động khung + xóc mặt
+  đường + rung mount**; az luôn lệch hằng số do trọng lực; ax/ay nhỏ và chìm trong nhiễu rung khi xe chạy.
+- **GPS speed 1Hz** trong khi frame ~8.5Hz → speed phải **nội suy**, trễ và mượt-hoá, không bắt được gia/
+  giảm tốc nhanh.
+- **rotation-vector (orientation)** từ sensor-fusion của điện thoại tương đối ổn cho **pitch/roll** (thái độ
+  xe trên dốc/xóc) nhưng **yaw≈heading drift** và hiệu chỉnh la-bàn kém ngoài trời (đã thấy lệch ±50–180°
+  ở thử geosteer — §14 #4).
+- **Hệ quả:** trong 12-D state, **các chiều thật sự đáng tin cho điều khiển là `speed` và `gz` (yaw-rate)**;
+  phần accel/rotvec mang ít tín hiệu sạch, chủ yếu để model "ngửi" được đang xóc/đang nghiêng.
 
-### 12bis.1. Nguyên nhân #2 = TỐC-ĐỘ-QUYẾT-ĐỊNH (không chỉ thiếu recovery)
-Ngoài "thiếu lateral-recovery" (§12.1), một nguyên nhân thứ hai là **độ trễ quyết định của CEM**: mỗi
-tick CEM mất 0.5–5.5 s (theo số sample), trong đó xe chạy "mù" giữ nguyên action cũ → tích luỹ lệch.
-Giả thuyết trước đây: "nhiều sample thắng vì cắt được đuôi action full-lock". **Đo lại (`meas_tail.py`,
-300 window VAL, d=4)** bác bỏ: tăng sample 16→256 **KHÔNG** giảm phương sai argmin (≈0.18–0.23, phẳng)
-cũng **KHÔNG** giảm tỉ lệ full-lock trên đoạn thẳng (≈14–16%, phẳng). Đuôi full-lock là **nội tại của
-world-model**, không sửa được bằng search rộng hơn. ⇒ Hệ quả: **64 sample (1.6 s) ≈ 256 sample (5.5 s)
-về chất lượng** nhưng ít "lái mù" 3.4×; đòn bẩy đúng là **tick nhanh + ga thấp**, không phải search rộng.
-Điều này thúc đẩy một **policy học sẵn** (1 forward MLP, <1 ms) thay cho CEM trong vòng điều khiển.
+### 13.2. Vì sao **không** dự đoán toàn bộ next-state 12-D
+Predictor hiện tại là **visual-latent predictor** — nó dự đoán **patch map frame kế** (z_{t+1}), KHÔNG có
+head riêng để dự đoán lại 12-D state. Đây là lựa chọn có chủ ý:
+1. **Predictor được thiết kế là visual-latent predictor** — không có head cho next-state 12-D.
+2. **Dự đoán full IMU state rất khó:** ax,ay,az,rx,ry,rz **rất nhiễu**, phụ thuộc mặt đất/rung/bump/mount
+   (§13.1); với dữ liệu ít, rất dễ học sai hoặc overfit.
+3. **Planning chỉ cần phần state có tác động lớn tới chuyển động** — **speed** và **yaw/turning** — phần
+   này đã được dynamics (bicycle-model, §11) lo, không cần predictor đoán lại.
+4. **Nếu cố dự đoán full state rồi feed lại, sai số state có thể nổ nhanh hơn** cả sai số latent khi rollout
+   nhiều bước.
 
-### 12bis.2. Recovery augmentation — "DAVE-2 cho latent V-JEPA" (không cần GPU)
-Dữ liệu teach-giữa-làn thiếu cảnh "xe lệch rồi bẻ về" (ViNG/Meta có). Ta **tổng hợp** nó ở mức latent:
-patch cache là lưới token **24×24**; **dịch ngang lưới** (border-replicate) ≈ góc nhìn của xe **lệch
-ngang/chệch hướng**, rồi mean-pool → latent lệch (giữ đủ 576 token = khớp pool tính online lúc inference,
-**không** cần encode lại qua V-JEPA). Mỗi mức dịch `s` ghép một **nhãn bẻ-về**: dịch phải (+s) → steer
-TRÁI một lượng `α·s/W`. Trộn `p_aug=0.35` mẫu recovery vào behavior-cloning của GoalPolicyPrior
-(`scripts/pool_recovery_latents.py`, `train_policy_recovery.py`).
+→ Triết lý: **"dự đoán ít nhưng phần nào còn tin được"** — latent thị giác (predictor) + speed/yaw (dynamics
+fit từ data), thay vì ép predictor đoán 12 chiều IMU nhiễu.
 
-### 12bis.3. Validate offline (3 thí nghiệm, VAL held-out)
-- **(H-A) Trục synthetic có cơ-sở vật-lý** (`probe_aug_alignment.py`, 76k frame-pair): dịch token
-  synthetic dịch pooled latent **đúng trục** chuyển-động-ngang thật khi camera yaw — cos(real, synth+12)
-  = **+0.10** lúc yaw phải / −0.09 lúc yaw trái (đối xứng), còn chuyển-động THẲNG (control) ≈ **0**
-  (−0.01/−0.03). ⇒ augment không train một trục lạ.
-- **(REC-3) Recovery KHUẾCH ĐẠI đáp ứng bẻ-về** (`eval_recovery_response.py`, 8000 anchor): so baseline,
-  policy recovery có slope Δsteer/shift dốc **3.4–5.4×**, monotone, **đúng dấu mọi mức dịch**:
-
-  | policy | slope | \|Δsteer\| @ dịch +12 | val w-L1 (normal) |
-  |---|---|---|---|
-  | baseline (BC thường) | −0.0070 | 0.097 | 0.0699 |
-  | recovery α=0.6 | **−0.0239** | **0.286** | **0.0648** |
-  | recovery α=1.0 | −0.0377 | 0.447 | 0.0682 |
-
-  Baseline **đã có** recovery yếu-nhưng-đúng-dấu (goal-conditioning mang sẵn tín hiệu lệch) → augment chỉ
-  khuếch đại. val-loss recovery **≈/tốt hơn** baseline ⇒ **không hại** goal-reaching thường. Đáp ứng
-  **bất biến theo cự-ly goal** (d=1 ≈ d=2 = tầm lookahead deploy).
-- **(H3) Tính bền cross-session của action** (`eval_policy_xsession.py`, 4000 cặp khớp GPS cùng-chỗ +
-  heading, 181 session towerpro): đổi goal sang view của **session khác** cùng vị-trí → action gần như
-  không đổi (med|Δsteer| **0.012**, corr **1.00**). Một *control goal-ngẫu-nhiên* cũng chỉ đổi 0.017 ⇒
-  **policy nhạy-goal YẾU, chủ yếu phản-xạ theo current-view + state** (một phần do cảnh park tự-giống).
-  Hệ quả kép: (a) **tốt** — recovery là current-view-driven nên bền + độc lập domain-shift của goal
-  (brittleness cross-buổi 06-12 nằm ở tầng *localize/cosine*, không ở action-given-goal); (b) **hạn
-  chế** — policy không "ngắm" subgoal nên hợp **bám hành-lang** giống train, yếu ở điểm-rẽ phụ-thuộc-goal,
-  nơi CEM (chấm patchL1 vs goal tokens) có hướng-goal hơn ⇒ hai bộ điều khiển **bổ sung** nhau.
-
-### 12bis.4. Hạn chế trung thực + kế hoạch triển khai có cổng
-Dịch token synthetic là **proxy** cho lệch thật (mild: cos tới ảnh gốc ≈0.94 ở mức dịch lớn nhất, còn
-lệch ~1 m thật ≈0.8) và **không có renderer** → **không thể chứng minh transfer closed-loop offline**.
-Do đó policy recovery được triển khai **có cổng**: chạy CEM-floor đã-chứng-minh làm mặc định, và chỉ
-bật policy sau một **probe trên xe** (nhấc xe lệch trái → steer phải? phải → trái?). Đây là một **đóng
-góp phương pháp**: biến thiếu-sót-dữ-liệu thành augmentation latent rẻ + bộ tiêu chí validate offline,
-với ranh giới rõ giữa "đã chứng minh offline" và "cần xác minh trên xe".
+> **Hướng tương lai (xem §16):** thay IMU điện thoại bằng **cảm biến chuyên dụng BNO055** (IMU 9-trục có
+> sensor-fusion phần cứng, output orientation/gyro ổn định hơn nhiều) → state token sạch hơn → lúc đó mới
+> đáng cân nhắc cho predictor dự đoán thêm thành phần động học.
 
 ---
 
-## 13. Tổng hợp các vấn đề kỹ thuật đã gặp & cách xử lý (catalog "mỗi vấn đề")
+## 14. Đính chính & Bài học phương pháp (các kết luận từng SAI vì thiếu căn cứ)
 
-> Phần này để bổ sung chiều sâu engineering vào Word; mỗi mục = 1 vấn đề thật + cách xử lý.
+| # | Kết luận TỪNG đưa | Vì sao SAI | Đo lại / kết luận đúng |
+|---|---|---|---|
+| 1 | **"~26M tham số"** | Chép số cũ, không đếm | **Đếm từ checkpoint = 39.2M** (§8.2) |
+| 2 | **"Model OOD ở park"** | So xe-chạy (train) với xe-đứng (warm-start ga<0.06) — sai hệ đo | Ép speed=0 offline → contrast 0.41→0.11 mà KHÔNG đổi cảnh; live ga≥0.07 → 0.2–0.57. **Phẳng = ĐỨNG YÊN, không OOD** (§12.3) |
+| 3 | **"R²(speed) = −1.1 / encoder mù vận tốc hoàn toàn"** (ghi chú cũ, không có script) | Không tái lập được; số sai dấu | **Đo lại** (`measure_speed_r2.py`, fit train / R² val): R²=**+0.30** held-out — latent CÓ tín hiệu tốc độ nhưng **yếu** (§7.1), không phải mù hoàn toàn |
+| 4 | **"geosteer (rotvec) sửa được trôi ngang"** | Dấu `steer→yaw` thật chưa kiểm; rotvec yaw drift | Chạy bãi → DIVERGE (calib rotvec hỏng ±50–180°). Còn nợ xác minh dấu trên xe |
 
-**A. Phần cứng / dữ liệu**
-1. **Link video WFB vỡ ở tầm xa** (50m: vỡ ảnh, trễ 92→310ms) → **pivot điện thoại onboard**.
-2. **δ_cam ≈ 100ms** (trễ chụp camera) → ghi `dcam_ms`/frame + hiệu chỉnh trong `sync.py`.
-3. **Cổng USB-C C↔C không cấp nguồn** (CH343 thiếu CC resistor) → cắm phone vào **cổng native 303A**.
-4. **`availableForWrite()` guard gây NO TELEM** trên phone (HWCDC) → **revert, đừng thêm lại**.
-5. **GPS chỉ 1Hz + nhiễu 0.44m** → KHÔNG dùng GPS để giữ làn (lái 100% vision); GPS chỉ làm cổng pop.
-6. **Throttle ~hằng trong data cũ** (eff_rank ~8) → thu mẻ **TowerPro ga biến thiên** (181 ss).
-
-**B. Biểu diễn / huấn luyện**
-7. **Encoder mù vận tốc (R²≈0)** → đưa speed qua **state token**, không qua multi-frame.
-8. **val_pred lừa người** (collapse + bỏ action vẫn val thấp) → quyết bằng **rollout-vs-identity +
-   action-sensitivity**.
-9. **frame_skip=1 → LeWM học identity** → frame_skip=5.
-10. **Throttle bị coi nhẹ** (raw nhỏ hơn steering 6.67×) → `action_scale [1.0, 6.67]` → Δthrot 0.12→0.04.
-11. **torch.compile prefix `_orig_mod.`** khi load thủ công → strip prefix.
-12. **TowerPro-only train thua identity (1.073)** → train **mixed** (cross-domain) → 0.65.
-13. **auto_steps 3 làm phẳng energy cua** (cd4_as3) → giữ cd4 (auto_steps 2).
-
-**C. Lập kế hoạch / điều khiển closed-loop**
-14. **CEM bang-bang** (σ=0.5 trên box ga nhỏ → 94% sample dính biên) → **σ per-dim + warm-start σ nhỏ**.
-15. **Policy che search** (E(-1) thấp nhất mà CEM ra +0.27) → **chèn 5 seed candidate** mỗi iter.
-16. **Standstill attractor** (đứng yên → policy đề ga ~0 < ma sát tĩnh → kẹt) → **kickstart** mu ga ≥0.75·cap.
-17. **Ma sát tĩnh > cap** (0.07 không lăn) → kick/cruise theo sàn (đo 1 lần); **turn-slow=0** để có lực
-    scrub qua cua.
-18. **steer-smooth 0.6 → đi thẳng** (bóp nửa lực quẹo) → dùng 0.1.
-19. **fit_dynamics fallback unit-coeffs k=1** (sai ~10×) do đọc nhầm path → fix multi-root + frozen split.
-20. **CarDynamics off-by-one yaw** (regress yaw[i] thay yaw[i+stride]) → k_yaw 0.142→0.088.
-
-**D. Định-vị / pop subgoal**
-21. **GPS nuốt subgoal** (route dày << reach-m → nhảy 4 subgoal/tick) → pop chỉ khi **đã đi qua**.
-22. **Pop lệch pha (latch)** — 3 điều kiện AND đúng ở 2 thời điểm khác nhau → **`man_seen` latch** "ảnh
-    đã khớp" ở bất kỳ tick nào.
-23. **Veto ảnh ở cua** (ccos đỉnh chỉ 0.48 <0.5 dù xe đè lên mốc) → **geo-confirm** GPS <min(1.5m,reach).
-24. **Trôi ngang tích luỹ** đẩy xe qua subgoal ngoài cửa-sổ 1.5m → kẹt wp_idx → **pop thuần GPS (POP=0)**.
-25. **Teach CỘNG DỒN** (`api_manual_snap` append không xoá) → route 59→112 subgoal với seam 29m → vá
-    `api_routes_delete` (rmtree meta) + cắt route.
-
-**E. Recovery / robustness (đã thử, chưa giải quyết được gốc)**
-26. **Recovery v1 xoay vòng** (heading từ GPS-track 1Hz → 60% tick fallback + steer bão hoà ±1 → pivot
-    tại chỗ) → **revert OFF**.
-27. **geosteer (rotvec heading + Stanley, cap 0.5):** Phase 0–3 PASS offline (13/13) nhưng **calib
-    rotvec↔graph hỏng he±50–180°** (nghi handedness) → DIVERGE khi chạy thật → vẫn nợ "dấu steer→yaw".
-28. **Domain-shift chạng vạng** (encoder match "đường tối chung chung" → localize ≈ random) → **chỉ test
-    ban ngày**.
-29. **Replay-offline chỉ kiểm DẤU tĩnh** → không bắt được spin động học → **bài học: phải SIM động học**
-    (bicycle sim) để validate recovery; là tiền đề cho hướng 3DGS.
+**Bài học xuyên suốt:** (i) **đếm/đo trực tiếp**, đừng chép số cũ; (ii) luôn so **cùng hệ đo** (xe-chạy vs
+xe-chạy); (iii) **tách confound** (đứng-yên vs cos-dropout vs ánh sáng) thay vì gộp một nhãn ("OOD").
 
 ---
 
-## 14. Hạn chế
+## 15. Hạn chế
 
-1. **Closed-loop:** ~10 run, **1 môi trường** (một bãi cỏ), **0 run về đích**, **không có success-rate
-   metric** chuẩn. → kết quả closed-loop là **định tính + cơ chế**, không phải thống kê quy mô.
-2. **Thiếu recovery data:** teach 1-lượt-giữa-line → model chưa từng thấy "lệch rồi về" → no-recovery.
-3. **Domain-shift ánh sáng:** teach và repeat khác giờ/nắng → cos-quality dao động (66%→0%); confound
-   chưa kiểm soát.
+1. **Closed-loop:** ~10 run, **1 môi trường**, **0 run về đích**, không có success-rate metric chuẩn → kết
+   quả closed-loop **định tính + cơ chế**, không phải thống kê quy mô.
+2. **Thiếu recovery data:** dạy 1-lượt-giữa-line → no-recovery.
+3. **Descriptor nhạy ánh sáng:** dạy≠chạy về giờ/nắng → chất-lượng-cosine sập; **fix nguyên-lý cần learned
+   descriptor**, chưa làm kịp deadline.
 4. **GPS 1Hz, nhiễu 0.44m** → cổng pop thô, không định vị mét.
-5. **Encoder không chạy trên thiết bị** (ViT-L cần GPU) → phải qua PC; trễ CEM cao (0.5–5.5s/tick).
-6. **Margin offline khiêm tốn** ở bản pooled (0.958 ≈ hơn identity 4%); headline dựa vào cd4 (0.744) +
+5. **IMU điện thoại nhiễu** (§13) → state chỉ tin được speed + yaw-rate.
+6. **Encoder không chạy trên thiết bị** (ViT-L cần GPU) → qua PC; trễ CEM cao (0.5–5.5s/tick).
+7. **Margin offline khiêm tốn** ở bản pooled (0.958 ≈ hơn identity 4%); headline dựa cd4 (0.744) +
    cross-domain — trung thực là **mức report/workshop**, không phải SOTA.
 
 ---
 
-## 15. Hướng phát triển
+## 16. Hướng phát triển
 
-1. **Retrain có RECOVERY DATA (fix gốc):** thu/augment cảnh xe **lệch khỏi tuyến rồi action kéo về**
-   (đúng cái ViNG/Meta có) → predictor/policy học hướng-về → hết panic ở cos-dropout.
-2. **3DGS sim** (kế hoạch: `docs/SIM_3DGS_PLAN.md`): dựng lại bãi từ data → test closed-loop **trong
-   nhà**, kiểm soát heading/lighting, lặp control ban đêm không phụ thuộc nắng/pin.
-3. **Đo tốt hơn dưới domain-shift:** **seq-matching kiểu SeqSLAM** (khớp chuỗi 5–20 frame, bền với đổi
-   sáng) hoặc **reachability / temporal-distance head kiểu ViNG** (học "còn mấy bước tới goal" — nguyên
-   tắc đúng hơn cosine tức thời).
-4. **RTK GPS** (Quectel LC29H / ZED-F9P) → 1–2cm: pop chính-xác-mét + ground-truth lateral-offset cho
-   báo cáo + mở cửa pure-pursuit fallback.
-5. **Bỏ cộng hưởng:** tắt kick steer-aware khi |steer| lớn lúc cos thấp (đừng tăng tốc khi panic).
+1. **Thay IMU bằng cảm biến BNO055** (IMU 9-trục, sensor-fusion phần cứng) → orientation/gyro ổn định hơn
+   điện thoại nhiều → state token sạch → định vị/điều khiển bền hơn (fix gốc §13).
+2. **Retrain có RECOVERY DATA (fix gốc nguyên nhân C):** thu/augment cảnh xe lệch-rồi-kéo-về → hết panic ở
+   cos-dropout.
+3. **LEARNED lighting-invariant descriptor (fix gốc nguyên nhân A):** head nhỏ trên frozen V-JEPA, train
+   cross-session (181 session ĐÃ có positive cross-lighting: cùng chỗ khác buổi).
+4. **3DGS sim:** dựng lại bãi từ data → test closed-loop trong nhà, kiểm soát heading/lighting.
+5. **RTK GPS** (1–2cm): pop chính-xác-mét + ground-truth lateral-offset.
+6. **Thử nghiệm (chưa dùng trong hệ chính):** world model pixel-JEPA end-to-end và đồ-thị-ảnh topological
+   là các nhánh **đã thử nhanh** (xem ghi chú dưới) — có thể quay lại như baseline/định-vị thay thế.
 
----
-
-## 16. Kết luận
-
-Frozen V-JEPA 2.1 cung cấp một **biểu diễn latent đủ tốt** để (a) một AC predictor nhỏ **vượt baseline
-identity ổn định** ở mọi horizon, (b) **transfer chéo-domain-servo** có lợi, và (c) **định vị bằng thị
-giác** trung vị ~2m trên đồ thị topo. Tuy nhiên, **triển khai closed-loop** ngoài trời **bung ở điểm
-cos-dropout** do **thiếu tín hiệu lateral-recovery** trong dữ liệu teach một-lượt-giữa-line. Đây là
-**đánh giá đầu tiên họ V-JEPA 2 trên robot di động** và một **negative finding trung thực**: với cùng
-một biểu diễn mạnh, khoảng cách giữa "dự đoán latent tốt offline" và "lái được closed-loop ngoài trời"
-nằm ở **nav-robustness + control + dữ liệu recovery**, KHÔNG ở chất lượng representation.
+> **Ghi chú về đồ-thị-ảnh (topological graph) — thử nghiệm phụ, KHÔNG dùng chính.** Chúng tôi lấy ý tưởng
+> goal-image từ ViNG và **thử dựng một đồ-thị ảnh-mốc** để định vị toàn tuyến. Offline nó hoạt động (định vị
+> trung vị ~2m), **nhưng không dùng làm hệ chính** vì **khó kiểm soát khi chạy thật**: đường nối các mốc bị
+> **zigzag**, **ảnh trong data khác ảnh đang chạy** (ánh sáng/heading), mỗi mốc lại **ở xa nhau**, và vị trí
+> mốc **lấy từ GPS nên không chính xác** → **rất khó debug**. Vì vậy hệ chính chốt ở **teach & repeat tuyến
+> tính** (chuỗi ảnh-mốc theo thứ tự), đồ-thị chỉ là thử nghiệm.
 
 ---
 
-## 17. Phụ lục
+## 17. Kết luận
 
-### 17.1. Tái lập artifact (data/ và checkpoints/ đều gitignored)
+Frozen V-JEPA 2.1 cung cấp một **biểu diễn latent đủ tốt** để: (Tầng 1) một AC predictor **~39M tham số**
+vượt baseline identity ổn định ở mọi horizon với độ nhạy hành động **cả lái lẫn ga** và **transfer chéo-
+domain-servo**; (Tầng 2) **planner chọn JOINT cả lái lẫn ga khớp người lái** (~94% lái đúng chiều, ga tự
+chọn muốn-tiến 92%) trên video held-out (open-loop). Tuy
+nhiên, (Tầng 3) **triển khai closed-loop ngoài trời bung** do **ba nguyên nhân cộng hưởng**: descriptor
+**không bất-biến-sáng**, chế-độ-**đứng-yên** làm phẳng landscape (đã đính chính nhãn "OOD" sai), và **thiếu
+dữ liệu lateral-recovery**. Đây là **đánh giá đầu tiên họ V-JEPA 2 trên robot di động** và một **negative
+finding trung thực, có cơ chế + đã đính chính các kết luận trung gian sai**: với cùng một biểu diễn mạnh,
+khoảng cách giữa "dự đoán latent tốt + lập kế hoạch khớp chuyên gia offline" và "lái được closed-loop ngoài
+trời" nằm ở **độ-bền-định-vị (descriptor) + chế-độ-điều-khiển + dữ liệu recovery**, KHÔNG ở chất lượng
+representation.
+
+---
+
+## 18. Phụ lục
+
+### 18.1. Tái lập số liệu (data/ và checkpoints/ đều gitignored)
 ```bash
 pip install -e .
-# Encode V-JEPA latent (chậm, GPU): patch + pooled
-PYTHONPATH=src python scripts/encode_dataset.py --raw-dir data/raw_towerpro --out-dir data/latents_towerpro
-# Build graph 92-session
-PYTHONPATH=src python scripts/build_graph.py --root data/latents:data/raw:kds \
-  --root data/latents_towerpro:data/raw_towerpro:towerpro --out data/graph/topograph.pt
-PYTHONPATH=src python scripts/eval_navigation.py --graph data/graph/topograph.pt
-# Eval world model (rollout-vs-identity)
-PYTHONPATH=src python scripts/eval_ratio_ac.py \
-  --checkpoint checkpoints/vjepa_ac_car_cd4/vjepa_ac_car/best.pt
-# Action-sensitivity (energy probe)
-PYTHONPATH=src python scripts/probe_energy.py --turn-only -d 4 --n-windows 60
-# Closed-loop (cần xe + phone)
-bash run_web.sh ; bash run_infer.sh   # logs/infer_<time>.log
+# Thống kê dữ liệu + biểu đồ (§6)
+PYTHONPATH=src python scripts/dataset_stats.py
+# Đo R²(speed) của latent (§7.1)
+PYTHONPATH=src python scripts/measure_speed_r2.py
+# Đếm tham số (§8.2)
+python -c "import torch;sd=torch.load('checkpoints/vjepa_ac_car_cd4/vjepa_ac_car/best.pt',weights_only=False)['model'];print(sum(v.numel() for v in sd.values()))"
+# TẦNG 1: rollout-vs-identity + action-sensitivity (lái + ga)
+PYTHONPATH=src python scripts/eval_ratio_ac.py --checkpoint checkpoints/vjepa_ac_car_cd4/vjepa_ac_car/best.pt
+PYTHONPATH=src python scripts/probe_energy.py --turn-only -d 4 --n-windows 300 --with-throttle
+# TẦNG 2: planner open-loop demo
+PYTHONPATH=src python scripts/demo_precompute.py <session> -d 4 ;  bash run_demo.sh   # :8070
 ```
 
-### 17.2. Checkpoint deploy
-`checkpoints/vjepa_ac_car_cd4/vjepa_ac_car/best.pt` — V-JEPA 2.1 ViT-L 384, patch+state, depth12,
-auto_steps 2, ep2 best (val 0.5693). + `checkpoints/policy_prior/best.pt`.
+### 18.2. Checkpoint deploy
+`checkpoints/vjepa_ac_car_cd4/vjepa_ac_car/best.pt` — V-JEPA 2.1 ViT-L 384, state **12-D**, predictor
+**depth12 / pred_dim512 / 8 heads / 39.2M**, action 3-D (steer/throttle/domain), `auto_steps 2`,
+`predict_residual false`. Split: 209 ss → **train 167 / val 42** (seed 0).
 
-### 17.3. Bản đồ file (đối chiếu khi viết / vấn đáp)
+### 18.3. Bản đồ file
 | Khâu | File |
 |---|---|
 | Encoder | `src/jepa_wm/models/encoders/vjepa.py`, `scripts/encode_dataset.py`, `scripts/encode_patch.py` |
-| AC predictor | `src/jepa_wm/models/` (`vjepa2_ac_car`), `src/jepa_wm/engine/train_ac_car.py` |
-| Baseline LeWM | `src/jepa_wm/models/leworldmodel.py`, `scripts/train_lewm.py` |
-| Eval offline | `scripts/eval_ratio_ac.py`, `scripts/eval_goal_reaching_ac.py`, `scripts/probe_energy.py` |
-| Navigation | `src/jepa_wm/nav/graph.py`, `scripts/build_graph.py`, `scripts/eval_navigation.py`, `scripts/viz_route.py` |
+| AC predictor | `src/jepa_wm/models/vjepa2_ac_car.py`, `src/jepa_wm/engine/train_ac_car.py` |
+| Thống kê data | `scripts/dataset_stats.py` |
+| Đo speed R² | `scripts/measure_speed_r2.py` |
+| Eval offline (Tầng 1) | `scripts/eval_ratio_ac.py`, `scripts/probe_energy.py` |
+| Demo open-loop (Tầng 2) | `scripts/demo_precompute.py`, `scripts/demo_web.py`, `web/demo.html` |
 | Planning | `src/jepa_wm/planning/cem.py`, `dynamics`, `scripts/train_policy_prior.py` |
-| Closed-loop | `scripts/inference_loop.py`, `scripts/route_web.py`, `scripts/teach_record.py`, `run_infer.sh` |
-| Phân tích lỗi | `docs/CLOSED_LOOP_FAILURE.md`, `logs/infer_20260613_*.log` |
+| Closed-loop (Tầng 3) | `scripts/inference_loop.py`, `scripts/route_web.py`, `run_infer.sh` |
+| Phân tích lỗi | `docs/CLOSED_LOOP_FAILURE.md`, `scripts/probe_seqslam_lighting.py` |
 
-### 17.4. Số liệu đối chứng (tổng hợp — đã verify)
-- World model: cd4 ratio@1/2/3 = **0.744/0.703/0.697**; pooled 5-seed CV **0.958±0.024**; LeWM
-  **0.97±0.15** (2/5 fold fail).
-- Cross-domain: mixed→TowerPro **0.65** vs TowerPro-only **1.073**.
-- Action-sens: argmin-E đúng cua **58/60**, contrast **0.37**; Δsteer 0.16/Δthrot 0.04; contrast d2/4/8 =
-  0.443/0.355/0.270.
-- Nav: graph 29,699 node, localize **2.1m** (<8m 88%), routing 100%, place-cos tại/kế/cách-2 = 1.0/0.58/0.37.
-- CEM tick: 32/1 0.50s · 64/2 1.57s · 128/2 2.89s · 256/2 5.51s. Dynamics k_thr 1.588/k_drag 0.078/k_yaw 0.088.
-- Data: **209 session ≈ 228k frame**; KDS ~28 (steering-only) + TowerPro 181 (ga biến thiên); đứng yên
-  13.4%; GPS ~1Hz, nhiễu 0.44m; δ_cam ≈ 100ms.
-- Closed-loop: **0/~10 run về đích**; bám sg1–6/18 (xt<0.5m) → bung tại cos-dropout (cos<0.1).
+### 18.4. Số liệu đối chứng (đã verify)
+- **Data:** 209 session, **228,511 frame**, **7.43 giờ** (KDS 1.73h / TowerPro 5.71h); throttle median
+  0.084; đứng yên 11.3%; 13,871 sự kiện quẹo; speed median 1.05 m/s. Split 167/42.
+- **Tham số:** AC predictor **39,192,576 ≈ 39.2M** (encoder 96.5%).
+- **Tầng 1:** cd4 ratio@1/2/3 = 0.744/0.703/0.697; cross-domain mixed→TowerPro 0.65 vs TowerPro-only 1.073;
+  action-sens lái 96% / contrast 0.413; ga contrast 0.298.
+- **Tầng 2 (JOINT lái×ga, 3 ss VAL best):** sign-turn lái 841/893 = 94.2%; |Δsteer|med ~0.07; ga muốn-tiến 91.9%, ga med +0.075 (người +0.090); contrast joint 0.524.
+- **Tầng 3:** 0/~10 run về đích; lighting probe hạng-0 (top1 79%) sáng-gần vs hạng-41 (top1 0–3%) sáng-xa;
+  speed=0 ablation contrast 0.41→0.11; CEM tick 32/1 0.50s.
+- **R²(speed) latent:** **+0.30 held-out** (ridge, 40 train/20 val ss) — yếu, KHÔNG phải −1.1 (đính chính §7.1).

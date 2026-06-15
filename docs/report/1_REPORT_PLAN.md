@@ -1,135 +1,111 @@
 # BLUEPRINT BÁO CÁO CUỐI KỲ — môn Computer Vision
 
-> File này = **kế hoạch viết** (section-by-section), không phải nội dung. Nội dung chi tiết nằm ở
-> `2_REPORT_FULL.md`. Slide ở `3_SLIDES.md`. Mọi số trong đây đã verify từ repo (HANDOFF.md /
-> CLOSED_LOOP_FAILURE.md / VJEPA2_AC_CAR.md). Convert sang LaTeX: `pandoc 2_REPORT_FULL.md -o report.tex`.
+> File này = **kế hoạch viết** (section-by-section), không phải nội dung. Nội dung chi tiết ở
+> `2_REPORT_FULL.md` (master) + `4_REPORT_PROSE_FULL.md` (prose). Slide ở `3_SLIDES.md`.
+> **Mọi số trong bộ report đều tái lập được bằng script** (xem `2_REPORT_FULL.md` §18.1).
+> Convert: `pandoc 2_REPORT_FULL.md -o report.tex`.
+>
+> **Cấu trúc mới (2026-06-15):** mô tả **PHẦN CỨNG + DỮ LIỆU TRƯỚC**, rồi mới tới kiến trúc; trọng tâm là
+> **TEACH & REPEAT** (đồ-thị-ảnh chỉ là thử nghiệm phụ). Đã loại bỏ khỏi hệ chính: PiJEPA, SeqSLAM, SLAM,
+> LeJEPA/LeWorldModel (chỉ còn ở "hướng tương lai/thử nghiệm"). Số đã đếm/đo lại: **tham số 39.2M** (không
+> phải 26M), **R²(speed)=+0.30** (không phải −1.1), data **209 ss / 228,511 frame / 7.43 h**.
 
 ---
 
 ## 0. Khung chốt (đọc trước khi viết 1 dòng)
 
 - **Loại bài:** báo cáo môn CV, kiểu paper có cấu trúc. Negative finding là ĐIỂM CỘNG (chiều sâu phân tích).
-- **Câu chuyện 1 dòng:** *"Frozen V-JEPA 2.1 làm world model latent cho xe RC — biểu diễn ĐỦ TỐT offline
-  (thắng baseline, transfer chéo-servo), nhưng triển khai closed-loop bung ở điểm visual-mismatch vì
-  thiếu lateral-recovery. Gap ở tầng nav-robustness+control, KHÔNG ở representation."*
-- **3 thông điệp phải đọng lại ở người chấm:**
+- **Câu chuyện 1 dòng (3 tầng):** *"Frozen V-JEPA 2.1 làm world model latent cho xe RC theo lối TEACH &
+  REPEAT — (1) dynamics offline ĐỦ TỐT (thắng baseline, transfer chéo-servo, nhạy cả lái lẫn ga); (2)
+  planner chọn JOINT lái+ga khớp người lái (~94% lái, ga tự chọn) open-loop; nhưng (3) closed-loop bung vì 3 nguyên nhân (descriptor không
+  bất-biến-sáng / đứng-yên / no-recovery). Gap ở định-vị + điều khiển, KHÔNG ở representation."*
+- **4 thông điệp phải đọng lại:**
   1. **Novelty:** đánh giá ĐẦU TIÊN họ V-JEPA 2 trên robot DI ĐỘNG (Meta chỉ làm robot-arm).
-  2. **Offline rigorous:** thắng identity baseline (cd4 ratio 0.744), **cross-domain servo transfer có lợi
-     (0.65 vs 1.073)**, action-sensitivity đo được (58/60, contrast 0.37).
-  3. **Negative finding có cơ chế:** cos-dropout → mất gradient → no-recovery → bung. Đo trên ~10 run.
-- **3 điều CẤM:** (a) đừng headline `0.958` (hơn identity 4% — mỏng); (b) đừng claim "xe tự lái được";
-  (c) đừng giấu confound ánh sáng — nêu thẳng, nó CỦNG CỐ luận điểm "gap ở control, không ở representation".
+  2. **Tầng 1 — Offline rigorous:** thắng identity (cd4 0.744), **cross-domain transfer (0.65 vs 1.073)**,
+     action-sensitivity đo được **cả lái (96%, contrast 0.413) lẫn ga (0.298, 81% muốn tiến)**.
+  3. **Tầng 2 — Planner open-loop JOINT (lái×ga):** lái khớp **~94% sign-turn** (841/893) + ga tự chọn muốn-tiến 92% → "lập kế hoạch" LÀNH.
+  4. **Tầng 3 — Negative finding có cơ chế, phân rã 3 nguyên nhân + đính chính** kết luận sai.
+- **4 điều CẤM:** (a) đừng headline `0.958` (hơn identity 4% — mỏng); (b) đừng claim "xe tự lái được"; (c)
+  **đừng claim open-loop 94% = tự lái** (nó là probe trực quan, KHÔNG đóng vòng); (d) đừng giấu confound
+  ánh sáng — nêu thẳng, nó CỦNG CỐ luận điểm "gap ở descriptor/control, không ở dynamics".
+- **Điều BẮT BUỘC (yêu cầu mới):** đếm/đo **trực tiếp** mọi con số (tham số, R², thống kê data); KHÔNG chép
+  số từ ghi chú cũ.
 
 ---
 
-## 1. Cấu trúc section + nội dung + số liệu + nguồn
+## 1. Cấu trúc section (mô tả phần cứng/data TRƯỚC kiến trúc)
 
-| § | Tên section | Phải có gì | Số/Hình chủ lực | Nguồn trong repo | Độ dài |
-|---|---|---|---|---|---|
-| — | **Abstract** | Vấn đề + cách làm + offline win + negative deploy + 1 câu đóng góp | cd4 0.744; cross-domain 0.65/1.073; closed-loop 0/~10 | FULL §1, §7, §11 | ~200 từ |
-| 1 | **Giới thiệu** | Visual navigation; world model; V-JEPA 2; **novelty**; phạm vi bài (goal-reaching, KHÔNG SLAM) | — | FULL §1–2 | 1 trang |
-| 2 | **Related work** | V-JEPA 2(-AC), JEPA; ViNG/ViKiNG (teach&repeat/topo-nav); CEM/MPC latent; PiJEPA | — | docs PDF; FULL §3 | 0.75 trang |
-| 3 | **Phương pháp** | Frozen encoder→patch token; AC predictor block-causal; CEM+CarDynamics; TopoGraph; teach&repeat | sơ đồ kiến trúc (Hình 1) | FULL §5–9 | 2–3 trang |
-| 4 | **Thiết lập thực nghiệm** | Rig (phone onboard), data (209 ss/228k frame, 2 servo domain), δ_cam, GPS, split frozen | bảng data; δ_cam 100ms; GPS 0.44m | FULL §4 | 1 trang |
-| 5 | **Kết quả OFFLINE** (lõi mạnh) | rollout-vs-identity; baseline; **cross-domain transfer**; action-sensitivity; cd4_as3 ablation negative; localize | Bảng A, B, C + Hình 2 (energy) | FULL §7–8 | 2 trang |
-| 6 | **Triển khai closed-loop** | Inference loop; teach&repeat; bảng 6 run; định lượng "bám nửa đầu rồi bung" | Bảng D (6 run) | FULL §10 | 1 trang |
-| 7 | **Phân tích thất bại** (lõi CV) | Cơ chế cos-dropout (Hình 3 vòng xoáy); bằng chứng KHÔNG-phải-teach-xấu; so Meta/ViNG | self-gap 0.070/0.094; 66% vs 0% >0.3 | FULL §11 | 1.5 trang |
-| 8 | **Thảo luận & Hạn chế** | 1 env, no-recovery-data, GPS 1Hz, confound sáng; ý nghĩa cho deploy world-model | — | FULL §13 | 0.75 trang |
-| 9 | **Hướng phát triển** | Recovery-data retrain; 3DGS sim; seq-matching/reachability head; RTK | — | FULL §14 | 0.5 trang |
-| 10 | **Kết luận** | Representation đủ tốt; gap ở nav-robustness; negative finding trung thực | — | FULL §15 | 0.25 trang |
-| — | **Phụ lục** | Lệnh tái lập; config cd4; bản đồ file; bảng bug | — | FULL §12, §16 | tuỳ |
-
-**Tổng ước lượng:** 10–12 trang (2 cột) hoặc 14–18 trang (1 cột). Quá đủ cho báo cáo môn.
-
----
-
-## 2. Bảng số liệu (copy thẳng vào báo cáo — đã verify)
-
-**Bảng A — World model offline (rollout@k / identity; <1 = thắng baseline "đứng yên", thấp hơn = tốt hơn)**
-
-| Model | @1 | @2 | @3 | Ghi chú |
+| § | Tên section | Phải có gì | Số/Hình chủ lực | Nguồn (FULL) |
 |---|---|---|---|---|
-| **cd4 (deploy)** — V-JEPA 2.1 ViT-L 384, patch+state, depth12, ~26M | **0.744** | **0.703** | **0.697** | frozen split, 2000 window |
-| vjepa_ac (pooled, 7.4M), 5-seed CV | 0.958 ± 0.024 | — | — | 4/5 seed <1, var thấp (bằng chứng ỔN ĐỊNH) |
-| vjepa_ac_pool (baseline pooled) | 0.867 | — | — | ablation: patch+state có đáng? |
-| **LeWM** (pixel JEPA e2e, ~22M) — baseline | 0.97 ± 0.15 | — | ≥1 (horizon dài) | 2/5 fold FAIL → KHÔNG ổn |
-| cd4_as3 (auto_steps 3) — ablation | 0.745 | 0.699 | 0.686 | pred tốt hơn NHƯNG action-sens kém → bỏ |
+| — | **Abstract** | 3 tầng + 1 câu đóng góp | cd4 0.744; cross-domain 0.65/1.073; open-loop 94%; closed-loop 0/~10 | §1 |
+| 1 | **Giới thiệu** | Visual nav; world model; V-JEPA 2; novelty; teach&repeat (KHÔNG bản đồ hình học) | — | §2 |
+| 2 | **Related work** (gọn) | V-JEPA 2(-AC) = kiến trúc tham khảo; ViNG = ý tưởng goal-image | — | §4 |
+| 3 | **Phần cứng & thu data** | Xe+ESP32+servo/ESC; 2 domain servo; pivot phone onboard; sync; δ_cam; GPS | — | §5 |
+| 4 | **Dữ liệu & thống kê** | 209 ss / 228,511 frame / 7.43h; phân bố steer/throttle/speed; split 167/42 | bảng + 5 biểu đồ | §6 |
+| 5 | **Encoder + đo tốc độ** | frozen 576 token; pre-encode; **R²(speed)=+0.30 (đo lại, yếu)** | bảng ridge | §7 |
+| 6 | **AC Predictor** | interleave; block-causal; **phép tính tham số 39.2M**; giống/khác Meta + vì sao; vì sao không đoán full state | Hình 1 + bảng tham số | §8 |
+| 7 | **TẦNG 1 — Offline** ✅ | rollout-vs-identity; cross-domain; action-sens lái + GA; cd4_as3 âm | Bảng A,C + Hình 2 | §9 |
+| 8 | **TẦNG 2 — Open-loop JOINT** ✅ | demo lưới 2-D lái×ga; lái 93% + ga tự chọn; trung thực OPEN-LOOP | bảng + demo 2-D | §10 |
+| 9 | **TẦNG 3 — Closed-loop** ❌ | bảng run; **3 nguyên nhân** (A descriptor / B đứng-yên / C no-recovery) | Bảng D | §12 |
+| 10 | **Đánh giá IMU + vì sao không đoán full state** | chất lượng kênh IMU; 4 lý do; → BNO055 | — | §13 |
+| 11 | **Đính chính & bài học** | 26M→39.2M; OOD bị bác; R²=−1.1 sai; geosteer | bảng đính chính | §14 |
+| 12 | **Hạn chế** | 1 env, no-recovery, confound sáng, IMU nhiễu | — | §15 |
+| 13 | **Hướng phát triển** | **BNO055**; recovery-data; learned descriptor; 3DGS; RTK | — | §16 |
+| 14 | **Kết luận** | 3 tầng; gap ở định-vị/control; negative finding trung thực | — | §17 |
+| — | **Phụ lục** | Lệnh tái lập; config cd4; bản đồ file | — | §18 |
 
-**Bảng B — Cross-domain servo transfer (đóng góp nổi bật)**
-
-| Train | Eval trên TowerPro held-out (@1) | Diễn giải |
-|---|---|---|
-| **Mixed (KDS+TowerPro)** | **0.65** | thắng identity rõ |
-| TowerPro-only | 1.073 | TỆ HƠN đứng yên |
-→ KDS (giàu steering, servo khác) **transfer sang** TowerPro → train chéo-domain-servo GIÚP ÍCH.
-
-**Bảng C — Action-sensitivity (CEM thực sự "đọc" được hành động?)**
-
-| Đo | cd4 | cd4_as3 |
-|---|---|---|
-| argmin-E đúng hướng cua (probe_energy --turn-only, d4) | **58/60** | 54/60 |
-| contrast (Emax−Emin)/Emin | **0.37** | 0.274 |
-| Δsteer recovery / Δthrot | 0.16 / 0.04 | — |
-| contrast theo khoảng cách target | d2 0.443 / d4 0.355 / d8 0.270 | — |
-
-**Bảng D — Closed-loop teach&repeat (route ~15m; KHÔNG run nào về đích)**
-
-| Run | tick | config | bám tốt tới | bung tại (cos) | kết cục |
-|---|---|---|---|---|---|
-| 163607 | 1.13s | 59sg, fast | **sg18 (xt<0.5m)** | sg21 (cos 0.07) | bung trái +3.2m |
-| 163831 | 2.82s | 59sg, slow | sg8 | sg10 (cos 0.27) | trôi −2.4m |
-| 164827 | 2.90s | 59sg, slow | sg12 | sg27 | trôi trái +2.8m |
-| 171022 | 2.82s | geosteer ON | sg20 | sg23 | DIVERGE (rotvec hỏng) |
-| **171912** | 1.78s | **pure-visual sạch** | sg6 | **sg7 (cos 0.02)** | veer trái → bụi cỏ |
-
-**Bảng E — Nav (TopoGraph)**
-
-| Đo | Giá trị |
-|---|---|
-| Graph 92-session (28 KDS + 64 TowerPro) | 29,699 node, 1 component 100% |
-| Localize LOSO | median **2.1m** (<8m: 88%) |
-| Routing thành công | 100% |
-| Route bám tuyến người | median 2.3m |
-| centered-cos phân biệt vị trí | tại-chỗ ~1.0 / kế ~0.58 / cách-2 ~0.37 (raw-cos vô dụng 0.95–0.99) |
+**Tổng ước lượng:** 11–13 trang (2 cột) hoặc 15–19 trang (1 cột).
 
 ---
 
-## 3. Hình cần có — TRẠNG THÁI (đã generate phần lớn → `docs/report/figures/`)
+## 2. Bảng số liệu (copy thẳng — ĐÃ đếm/đo lại trực tiếp)
 
-| # | Hình | Trạng thái | File / nguồn |
-|---|---|---|---|
-| 1 | **Kiến trúc hệ thống** (frame→V-JEPA frozen→patch→AC predictor→CEM) | ✅ **CÓ (PNG)** + mermaid | `figures/fig_architecture.png` |
-| 3 | **Vòng xoáy cos-dropout** (sơ đồ nhân-quả) | ✅ **CÓ (PNG)** + mermaid | `figures/fig_cos_dropout_mechanism.png` |
-| 4 | **Route map đồ thị topo + route + ảnh subgoal** | ✅ **CÓ (ảnh thật)** | `figures/fig_route_graph.png` |
-| 5a | **cos-dropout (run thật)**: cos rơi <0.1 + raw-steer bão hòa 1.0 | ✅ **CÓ (ảnh thật)** | `figures/fig_cos_dropout_20260613_171912.png` |
-| 5b | **Quỹ đạo bám-rồi-bung** (xy tô màu theo cos) | ✅ **CÓ (ảnh thật)** | `figures/fig_trajectory_20260613_171912.png` |
-| 2 | **Energy landscape theo steering** (E(steer) basins + argmin-vs-teacher 58/60) | ✅ **CÓ (ảnh thật)** | `figures/fig_energy_landscape.png` |
-| 6 | **Ảnh rig phần cứng** (phone trên xe + ESP32) | ⏳ user tự chụp | — |
+**Dữ liệu (`scripts/dataset_stats.py`):**
+- 209 session · **228,511 frame** · **7.43 giờ** (KDS 28/1.73h · TowerPro 181/5.71h) · ~8.5 fps.
+- throttle median 0.084 · đứng-yên 11.3% · 13,871 sự kiện quẹo · speed median 1.05 m/s · split 167/42.
 
-**Tự sinh lại / sinh cho run/checkpoint khác:**
-- Closed-loop (cos-dropout + quỹ đạo, KHÔNG cần GPU): `python scripts/plot_closed_loop.py logs/infer_<...>.log --out docs/report/figures`
-- Route map: `PYTHONPATH=src python scripts/viz_route.py --graph data/graph/topograph.pt --out docs/report/figures/fig_route_graph.png`
-- Energy landscape (cần GPU + `data/latents_*_patch_384`): `PYTHONPATH=src python scripts/probe_energy.py --checkpoint checkpoints/vjepa_ac_car_cd4/vjepa_ac_car/best.pt --turn-only -d 4 --n-windows 60 --plot docs/report/figures/fig_energy_landscape.png`
+**Tham số (đếm từ checkpoint cd4):** AC predictor **39,192,576 ≈ 39.2M** (12 lớp ×3.15M = 37.8M = 96.5%).
 
-> **Bộ hình giờ ĐỦ — 6 file PNG dùng ngay** trong `figures/`: 2 sơ đồ (kiến trúc + cơ chế lỗi, render
-> graphviz) + 4 biểu đồ/map thật (route map, energy landscape, cos-dropout, quỹ đạo). Chỉ còn **ảnh rig
-> phần cứng** là tuỳ bạn chụp (chèn vào §4 — `4_REPORT_PROSE_FULL.md` đã chừa chỗ "*Vị trí chèn ảnh rig*").
+**Encoder (`scripts/measure_speed_r2.py`):** R²(speed) held-out **+0.30** (λ=1000; train 0.72) → tín hiệu
+tốc độ trong latent YẾU, không phải "mù hoàn toàn / −1.1".
+
+**Tầng 1:** cd4 ratio@1/2/3 = 0.744/0.703/0.697 · cross-domain mixed→TowerPro 0.65 vs TowerPro-only 1.073 ·
+action-sens lái 96% / contrast 0.413 · ga contrast 0.298 (81% muốn tiến, med +0.094) · cd4_as3 contrast 0.274 (âm).
+
+**Tầng 2 (JOINT lái×ga, 3 ss VAL best):** sign-turn lái 841/893 = **94.2%** · |Δsteer| med ~0.07 · ga muốn-tiến **91.9%**, ga med **+0.075** (người +0.090) · contrast joint 0.524.
+
+**Tầng 3:** 0/~10 run về đích · lighting probe: hạng-0 top1 79% (sáng-gần) vs hạng-41 top1 0–3% (sáng-xa) ·
+speed=0 ablation contrast 0.41→0.11 · CEM tick 32/1 0.50s … 256/2 5.51s · dynamics k_thr 1.588 / k_yaw 0.088.
 
 ---
 
-## 4. Thứ tự viết trong 1 ngày (ưu tiên ROI)
+## 3. Hình cần có (`docs/report/figures/`)
 
-1. **Dán Bảng A–E + Hình 3, 4 trước** (đã có sẵn — 30').
-2. **Viết §5 (offline) + §7 (failure)** — 2 section lõi, số đã xong → viết nhanh, điểm cao nhất.
-3. **§3 phương pháp + §6 closed-loop** — mô tả hệ thống.
-4. **§1 intro + §2 related** — đóng khung novelty.
-5. **§8–10 + abstract** — viết cuối khi đã thấy toàn cảnh.
-6. Phụ lục = copy từ FULL §12/§16.
-> Nếu cạn giờ: §5 + §7 + §6 + abstract là bộ KHUNG TỐI THIỂU vẫn ra một báo cáo mạnh.
+| Hình | Mô tả | Trạng thái |
+|---|---|---|
+| 1 | Kiến trúc hệ thống | `fig_architecture.png` (graphviz) |
+| 2 | Energy landscape lái | `fig_energy_landscape.png` |
+| D1–D5 | Phân bố steer/throttle/speed + độ-dài-session + giờ | ✅ `fig_data_*.png` (sinh bởi `dataset_stats.py`) |
+| 7 | Ảnh chụp/heatmap demo open-loop | từ `demo_web.py` (export) |
+
+---
+
+## 4. Thứ tự viết (ưu tiên ROI)
+
+1. §6 AC Predictor (phép tính tham số) + §7 Tầng 1 (số mạnh nhất) → viết trước.
+2. §3–4 phần cứng + dữ liệu (mô tả nền) + §8 Tầng 2.
+3. §9 Tầng 3 (3 nguyên nhân) + §10 IMU + §11 đính chính.
+4. Abstract + Kết luận viết SAU CÙNG.
+
+---
 
 ## 5. Checklist trung thực (để không bị bắt lỗi khi vấn đáp)
-- [ ] Mọi số có nguồn (split frozen, n window). Closed-loop ghi rõ **n≈10 run, 1 env, 0 về đích**.
-- [ ] Phân biệt rõ **representation (tốt)** vs **control/nav-robustness (gap)** — đây là luận điểm trung tâm.
-- [ ] Nêu confound ánh sáng ở Limitations, đừng giấu.
-- [ ] cd4_as3 trình bày như **ablation âm** (deeper rollout → energy phẳng) — thể hiện rigor.
-- [ ] Không gọi 256px là "faithful" (đó là lựa chọn compute của Meta) — xem FULL §5.
+
+- [ ] Mọi số đã **đếm/đo lại bằng script**, không chép ghi chú cũ.
+- [ ] Tham số ghi **39.2M** (kèm phép tính), KHÔNG ghi 26M.
+- [ ] R²(speed) ghi **+0.30 (yếu)**, KHÔNG ghi −1.1.
+- [ ] Gọi V-JEPA 2-AC là **kiến trúc tham khảo** (giống/khác/vì-sao), KHÔNG gọi "port trung thực".
+- [ ] Teach & repeat là **hệ chính**; đồ-thị-ảnh + các nhánh khác là **thử nghiệm phụ / tương lai**.
+- [ ] Open-loop 94% nói rõ **KHÔNG phải "xe tự lái"**.
+- [ ] Closed-loop nói rõ **định tính** (1 env, 0 về đích).
+- [ ] Không nhắc SLAM / PiJEPA / SeqSLAM như thành phần của hệ.

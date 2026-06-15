@@ -49,10 +49,11 @@ def main():
     ap.add_argument("session")
     ap.add_argument("--checkpoint", default="checkpoints/vjepa_ac_car_cd4/vjepa_ac_car/best.pt")
     ap.add_argument("-d", "--distance", type=int, default=4, help="goal = d bước phía trước (~0.9s)")
-    ap.add_argument("--grid", type=int, default=21, help="số điểm quét steer trong [-1,1]")
-    ap.add_argument("--grid-thr", type=int, default=19, help="số điểm quét throttle (landscape ga)")
+    ap.add_argument("--grid", type=int, default=15, help="số điểm quét STEER (trục X landscape joint)")
+    ap.add_argument("--grid-thr", type=int, default=9, help="số điểm quét THROTTLE (trục Y landscape joint)")
     ap.add_argument("--thr-min", type=float, default=-0.1, help="ga thấp nhất khi quét (lùi nhẹ)")
     ap.add_argument("--thr-max", type=float, default=0.25, help="ga cao nhất khi quét (tiến)")
+    ap.add_argument("--win-stride", type=int, default=1, help="bỏ bớt window (2 = mỗi 2 mới 1 cột) cho nhanh")
     ap.add_argument("--dt", type=float, default=0.22)
     ap.add_argument("--history", type=int, default=2)
     ap.add_argument("--out", default=None, help="mặc định data/demo/<session>/demo.json")
@@ -96,7 +97,7 @@ def main():
     d = args.distance
     planner = CEMPlannerAC(model, dyn, state_mean, state_std, action_scale=ascale,
                            horizon=d, history=args.history, prev_action_idx=prev_idx,
-                           device=args.device)
+                           score_chunk=48, device=args.device)   # chunk joint grid → tránh OOM
 
     # ---- one session, contiguous windows --------------------------------------------------
     ds = ACClipDataset(roots=[{"patch_dir": root["patch_dir"], "raw_dir": root["raw_dir"],
@@ -111,10 +112,17 @@ def main():
     grid_thr = torch.linspace(args.thr_min, args.thr_max, args.grid_thr)
     grid_thr_np = grid_thr.numpy()
 
+    # JOINT 2-D action grid: every (steer, throttle) combo scored TOGETHER (model picks
+    # both axes jointly, not steer-with-ga=teacher). ns*nt candidates per window, one rollout.
+    ns, nt = args.grid, args.grid_thr
+    SS, TT = torch.meshgrid(grid.to(args.device), grid_thr.to(args.device), indexing="ij")  # (ns,nt)
+    flat = torch.stack([SS.reshape(-1), TT.reshape(-1)], dim=-1)            # (ns*nt, 2)
+    seqs_joint = flat[:, None, :].expand(ns * nt, d, 2).contiguous()        # (ns*nt, d, 2)
+
     frames_out = []
     derr, contrasts, contrasts_turn, contrasts_thr = [], [], [], []
     sign_ok_n = sign_tot_n = 0
-    for k in range(len(ds)):
+    for k in range(0, len(ds), max(1, args.win_stride)):
         _, i = ds.index[k]
         item = ds[k]
         z = item["tokens"].to(args.device).float()
@@ -123,20 +131,15 @@ def main():
         dom = float(a_raw[0, -1]) if use_domain else None
         tea = float(a_raw[:d, 0].mean())
         thr = float(a_raw[:d, 1].mean())
-        seqs = torch.zeros(args.grid, d, 2, device=args.device)
-        seqs[:, :, 0] = grid[:, None].to(args.device)
-        seqs[:, :, 1] = thr
-        # throttle landscape: hold steer = teacher, sweep throttle (so we can show ga too)
-        seqs_t = torch.zeros(args.grid_thr, d, 2, device=args.device)
-        seqs_t[:, :, 0] = tea
-        seqs_t[:, :, 1] = grid_thr[:, None].to(args.device)
         with torch.no_grad():
-            E = planner.score(z[:1], s0, z[d], seqs, domain=dom).cpu().numpy()
-            E_thr = planner.score(z[:1], s0, z[d], seqs_t, domain=dom).cpu().numpy()
-        kbest = int(np.argmin(E))
-        best = float(grid_np[kbest])
-        best_thr = float(grid_thr_np[int(np.argmin(E_thr))])
-        contrast = float((E.max() - E.min()) / (E.min() + 1e-9))
+            E2 = planner.score(z[:1], s0, z[d], seqs_joint, domain=dom).cpu().numpy().reshape(ns, nt)
+        # joint argmin -> model picks steer AND throttle together
+        ai, aj = np.unravel_index(int(np.argmin(E2)), E2.shape)
+        best = float(grid_np[ai]); best_thr = float(grid_thr_np[aj])
+        contrast = float((E2.max() - E2.min()) / (E2.min() + 1e-9))     # over full 2-D grid
+        # marginals for the full-session time×action heatmaps (min over the other axis)
+        E_steer = E2.min(axis=1)        # (ns,) best-achievable E at each steer
+        E_thr = E2.min(axis=0)          # (nt,) best-achievable E at each throttle
         contrast_t = float((E_thr.max() - E_thr.min()) / (E_thr.min() + 1e-9))
         contrasts_thr.append(contrast_t)
         is_turn = abs(tea) > TURN
@@ -159,8 +162,9 @@ def main():
             "contrast_thr": round(contrast_t, 4),
             "is_turn": is_turn,
             "sign_ok": sign_ok,
-            "E": [round(float(x), 5) for x in E],
-            "E_thr": [round(float(x), 5) for x in E_thr],
+            "E2": [[round(float(x), 5) for x in row] for row in E2],   # (ns,nt) joint landscape
+            "E": [round(float(x), 5) for x in E_steer],                # steer marginal
+            "E_thr": [round(float(x), 5) for x in E_thr],              # throttle marginal
         })
 
     summary = {

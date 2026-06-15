@@ -33,13 +33,11 @@
   .panel h2{font-size:12px;margin:0 0 6px;color:var(--dim);font-weight:600;letter-spacing:.3px}
   img.frame,img.goal{width:100%;border-radius:5px;background:#000;display:block}
   canvas{display:block;width:100%}
-  #gauge{height:46px}
-  #throt{height:24px}
-  #land{height:230px}
+  #land{height:300px;border-radius:5px;background:var(--sparkbg)}
   #spark{height:34px;border-radius:5px;background:var(--sparkbg)}
   #heat{height:200px;border-radius:5px;background:var(--sparkbg)}
   #heatThr{height:120px;border-radius:5px;background:var(--sparkbg)}
-  #scatter{height:200px;border-radius:5px;background:var(--sparkbg)}
+  #scatter{height:260px;border-radius:5px;background:var(--sparkbg)}
   .scrub{display:flex;align-items:center;gap:10px;margin-top:10px}
   input[type=range]{flex:1;accent-color:var(--blue)}
   .hud{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:14px}
@@ -71,7 +69,7 @@
   <div id="infobox" class="infobox" style="display:none">
     Model chỉ <b>ĐỀ XUẤT</b> góc lái (đáy thung lũng energy) — video chạy theo <b>NGƯỜI lái thật</b>,
     <b>không</b> phải xe tự chạy. Mỗi frame hỏi: <i>"để tới mốc <span id="lead">~0.9s</span> phía trước, giờ nên lái thế nào?"</i>
-    rồi so góc model với góc người. Goal lấy từ chính lộ trình này (lộ thiên bên phải). Demo chỉ quét <b>GÓC LÁI</b>; ga giữ = teacher.
+    rồi so hành động model với người. Goal lấy từ chính lộ trình này (lộ thiên bên phải). Model quét <b>JOINT cả lái lẫn ga</b> — chọn (lái, ga) cùng lúc ở đáy thung lũng năng lượng.
   </div>
 </header>
 
@@ -94,11 +92,9 @@
 
   <div class="grid">
     <div class="panel">
-      <h2>CẢNH HIỆN TẠI — kim lái: <span class="mod">● model</span> vs <span class="hum">▮ người</span></h2>
+      <h2>CẢNH HIỆN TẠI</h2>
       <img id="frame" class="frame" alt="frame"/>
-      <canvas id="gauge"></canvas>
-      <canvas id="throt"></canvas>
-      <div class="legend">Kim trên = <span class="hum">người</span>, kim dưới = <span class="mod">model</span>. Thanh ga (người lái) là <b>teacher</b> — model demo này KHÔNG quét ga.</div>
+      <div class="legend">Hành động: <span class="hum">● người lái</span> vs <span class="mod">✕ model</span> — xem trên landscape (lái × ga) bên phải.</div>
     </div>
     <div>
       <div class="panel" style="margin-bottom:14px">
@@ -106,10 +102,10 @@
         <img id="goal" class="goal" alt="goal"/>
       </div>
       <div class="panel">
-        <h2>ENERGY LANDSCAPE — model chấm MỌI góc lái (cái BC không làm được)</h2>
+        <h2>ENERGY LANDSCAPE (lái × ga) — model chọn (lái, ga) CÙNG LÚC</h2>
         <canvas id="land"></canvas>
-        <div class="legend">Đáy thung lũng <span class="mod">●</span> = góc model chọn · vạch <span class="hum">┊</span> = góc người lái thật.
-          Thung lũng càng sâu (contrast cao) = model càng "có chính kiến". Trục: ← TRÁI &nbsp; PHẢI →</div>
+        <div class="legend">Ngang = lái (← trái · phải →) · Dọc = ga (lùi ↓ · tiến ↑). Màu <b>sáng = năng lượng THẤP</b> = tổ hợp model ưu tiên.
+          <span class="hum">●</span> người lái · <span class="mod">✕</span> model (đáy thung lũng). Thung lũng càng gọn-sâu = model càng "có chính kiến".</div>
       </div>
     </div>
   </div>
@@ -120,7 +116,7 @@
       <canvas id="heat"></canvas>
       <div class="legend">Mỗi cột = 1 frame; sáng = năng lượng THẤP = góc model ưu tiên. <span class="hum">▬</span> đường người lái thật · <span class="mod">▬</span> (nét đứt) góc model chọn · <span style="color:var(--blue)">┊</span> frame đang xem (click để nhảy). Đứng: +1 phải / −1 trái. Chuẩn hoá năng-lượng theo từng cột.</div>
       <div id="thrwrap" style="display:none;margin-top:12px">
-        <h2>GA (THROTTLE) — quét ga, giữ lái = teacher · model "muốn" tiến tới mức nào để chạm goal</h2>
+        <h2>GA (THROTTLE) TOÀN SESSION — ga model muốn (tối ưu JOINT với lái) theo thời gian</h2>
         <canvas id="heatThr"></canvas>
         <div class="legend">Tương tự nhưng trục đứng = GA (tiến ↑ / lùi ↓, vạch "0" = đứng yên). <span class="hum">▬</span> ga người lái · <span class="mod">▬</span> ga model chọn. Ga gần như hằng số nên thung lũng thường nằm phía tiến.</div>
       </div>
@@ -141,7 +137,7 @@
 
   <div class="hud">
     <div class="panel">
-      <h2>SỐ TRÊN TOÀN SESSION (held-out VAL) — headline trung thực</h2>
+      <h2>SỐ TRÊN TOÀN SESSION (held-out VAL)</h2>
       <div class="stat"><span>Đúng chiều khi NGƯỜI quẹo (|steer|&gt;0.15)</span><b id="s_sign">–</b></div>
       <div class="stat"><span>Tương quan lái model↔người (Pearson r)</span><b id="s_corr">–</b></div>
       <div class="stat"><span>|góc model − góc người| — median / trung bình</span><b id="s_derr">–</b></div>
@@ -253,7 +249,7 @@ function render(){
   $('goal').src  = `/api/frame/${SESSION}/${f.goal_frame}`;
   // prefetch next
   if(idx+1<DEMO.frames.length) new Image().src=`/api/frame/${SESSION}/${DEMO.frames[idx+1].cur_frame}`;
-  drawLand(f); drawGauge(f); drawThrot(f); drawHeat(); drawScatter();
+  drawLand(f); drawHeat(); drawScatter();
   $('f_model').textContent = sgn(f.model_steer);
   $('f_human').textContent = sgn(f.human_steer);
   $('f_dabs').textContent  = Math.abs(f.model_steer-f.human_steer).toFixed(2);
@@ -274,57 +270,43 @@ function render(){
 const sgn = v => (v>=0?'+':'')+v.toFixed(2);
 function px(c, s){ const p=30; return p + (s+1)/2*(c.width-2*p); }   // steer -1..+1 → x px
 
+// per-frame JOINT energy landscape: x = steer, y = throttle, colour = energy (valley = bright)
 function drawLand(f){
   const c=$('land'), x=c.getContext('2d'); fit(c); const T=theme();
-  const W=c.width,H=c.height,p=30;
+  const W=c.width,H=c.height, pL=40,pR=14,pT=12,pB=26;
   x.clearRect(0,0,W,H);
-  const E=f.E, g=DEMO.grid, emin=Math.min(...E), emax=Math.max(...E);
-  const yB = e => (H-22) - (e-emin)/(emax-emin+1e-9)*(H-22-14);   // low E -> bottom
-  // halves tint
-  x.fillStyle=T.human+'14'; x.fillRect(p,12,px(c,0)-p,H-34);
-  x.fillStyle=T.blue+'14';  x.fillRect(px(c,0),12,W-p-px(c,0),H-34);
-  // center + axis
-  x.strokeStyle=T.line; x.lineWidth=1; x.beginPath(); x.moveTo(px(c,0),12); x.lineTo(px(c,0),H-22); x.stroke();
+  const E2=f.E2;
+  if(!E2){ x.fillStyle=T.dim; x.font='12px system-ui';
+    x.fillText('Session này precompute định dạng cũ — chạy lại demo_precompute.py để có landscape (lái×ga).',10,24); return; }
+  const gS=DEMO.grid, gT=DEMO.grid_thr, ns=gS.length, nt=gT.length;
+  const sMin=gS[0], sMax=gS[ns-1], tMin=gT[0], tMax=gT[nt-1];
+  const plotW=W-pL-pR, plotH=H-pT-pB, cw=plotW/ns, ch=plotH/nt;
+  let emin=1e9,emax=-1e9; for(const row of E2) for(const v of row){ if(v<emin)emin=v; if(v>emax)emax=v; }
+  const rng=emax-emin+1e-9;
+  // heatmap cells: E2[i=steer][j=throttle]; throttle increases upward
+  for(let i=0;i<ns;i++) for(let j=0;j<nt;j++){
+    x.fillStyle=magma(1-(E2[i][j]-emin)/rng);     // low E -> bright
+    x.fillRect(pL+i*cw, pT+(nt-1-j)*ch, cw+1, ch+1);
+  }
+  const xPix=s=>pL+(Math.max(sMin,Math.min(sMax,s))-sMin)/(sMax-sMin+1e-9)*plotW;
+  const yPix=t=>pT+(1-(Math.max(tMin,Math.min(tMax,t))-tMin)/(tMax-tMin+1e-9))*plotH;
+  // zero guides
+  x.strokeStyle='rgba(255,255,255,.30)'; x.setLineDash([3,3]); x.lineWidth=1;
+  x.beginPath(); x.moveTo(xPix(0),pT); x.lineTo(xPix(0),H-pB); x.stroke();
+  if(tMin<0&&tMax>0){ x.beginPath(); x.moveTo(pL,yPix(0)); x.lineTo(W-pR,yPix(0)); x.stroke(); }
+  x.setLineDash([]);
+  // axis labels
   x.fillStyle=T.dim; x.font='11px system-ui';
-  x.fillText('← TRÁI', p, H-7); x.fillText('PHẢI →', W-p-46, H-7); x.fillText('0', px(c,0)-3, H-7);
-  // human steer line
-  const hx=px(c,f.human_steer);
-  x.strokeStyle=T.human; x.setLineDash([4,3]); x.lineWidth=2;
-  x.beginPath(); x.moveTo(hx,12); x.lineTo(hx,H-22); x.stroke(); x.setLineDash([]);
-  x.fillStyle=T.human; x.beginPath(); x.moveTo(hx,12); x.lineTo(hx-5,4); x.lineTo(hx+5,4); x.fill();
-  // curve
-  x.strokeStyle=T.blue; x.lineWidth=2.4; x.beginPath();
-  g.forEach((s,i)=>{ const X=px(c,s),Y=yB(E[i]); i?x.lineTo(X,Y):x.moveTo(X,Y); }); x.stroke();
-  // model argmin dot (global min = valley bottom)
-  let k=0; for(let i=1;i<E.length;i++) if(E[i]<E[k]) k=i;
-  const mx=px(c,g[k]), my=yB(E[k]);
-  x.fillStyle=T.model; x.beginPath(); x.arc(mx,my,6,0,7); x.fill();
-  x.strokeStyle=T.bg; x.lineWidth=2; x.stroke();
-}
-
-function drawGauge(f){
-  const c=$('gauge'), x=c.getContext('2d'); fit(c); const T=theme();
-  const W=c.width,H=c.height, cy=H/2, p=30;
-  x.clearRect(0,0,W,H);
-  x.strokeStyle=T.line; x.lineWidth=2; x.beginPath(); x.moveTo(p,cy); x.lineTo(W-p,cy); x.stroke();
-  x.beginPath(); x.moveTo(px(c,0),cy-9); x.lineTo(px(c,0),cy+9); x.stroke();
-  x.fillStyle=T.dim; x.font='10px system-ui'; x.fillText('TRÁI',p-2,H-2); x.fillText('PHẢI',W-p-22,H-2);
-  // human bar above, model bar below
-  const bar=(s,col,y,h)=>{ const X=px(c,s); x.fillStyle=col; const x0=px(c,0);
-    x.fillRect(Math.min(x0,X), y, Math.abs(X-x0), h); };
-  bar(f.human_steer,T.human,cy-13,9);
-  bar(f.model_steer,T.model,cy+4,9);
-}
-
-function drawThrot(f){
-  const c=$('throt'), x=c.getContext('2d'); fit(c); const T=theme();
-  const W=c.width,H=c.height,p=30, cy=H/2, FS=0.15;   // throttle ~[0,0.12], show 0..0.15
-  x.clearRect(0,0,W,H);
-  x.strokeStyle=T.line; x.lineWidth=1; x.strokeRect(p,cy-6,W-2*p,12);
-  const v=Math.max(0,Math.min(f.human_throttle/FS,1));
-  x.fillStyle=T.dim; x.fillRect(p,cy-6,(W-2*p)*v,12);
-  x.fillStyle=T.dim; x.font='10px system-ui';
-  x.fillText('ga (teacher) '+sgn(f.human_throttle),p,cy-9);
+  x.fillText('← trái',pL,H-9); x.fillText('phải →',W-pR-40,H-9); x.fillText('lái',xPix(0)-8,H-9);
+  x.save(); x.translate(12,pT+34); x.rotate(-Math.PI/2);
+  x.fillText('lùi ↓   ga   tiến ↑',0,0); x.restore();
+  // human marker (●) + model marker (✕)
+  const hx=xPix(f.human_steer), hy=yPix(f.human_throttle);
+  x.fillStyle=T.human; x.strokeStyle='#000'; x.lineWidth=1.5;
+  x.beginPath(); x.arc(hx,hy,6,0,7); x.fill(); x.stroke();
+  const mx=xPix(f.model_steer), my=yPix(f.model_throttle), s=7;
+  x.strokeStyle=T.model; x.lineWidth=3;
+  x.beginPath(); x.moveTo(mx-s,my-s); x.lineTo(mx+s,my+s); x.moveTo(mx+s,my-s); x.lineTo(mx-s,my+s); x.stroke();
 }
 
 // --- full-session energy landscape heatmap (time × action), valley = where model wants to go ---
@@ -385,22 +367,29 @@ function drawHeat(){
 
 function drawScatter(){
   const c=$('scatter'), x=c.getContext('2d'); fit(c); const T=theme();
-  const W=c.width,H=c.height,p=24,F=DEMO.frames;
+  const W=c.width,H=c.height,p=34,F=DEMO.frames;
   const X=s=>p+(s+1)/2*(W-2*p), Y=s=>(H-p)-(s+1)/2*(H-2*p);
   x.clearRect(0,0,W,H);
   x.strokeStyle=T.line; x.lineWidth=1; x.strokeRect(p,p,W-2*p,H-2*p);
+  // ticks -1 / 0 / +1
+  x.fillStyle=T.dim; x.font='10px system-ui'; x.textAlign='center';
+  [-1,0,1].forEach(v=>{ x.fillText(v.toFixed(0),X(v),H-p+13); });
+  x.textAlign='right'; [-1,0,1].forEach(v=>{ x.fillText(v.toFixed(0),p-5,Y(v)+3); }); x.textAlign='left';
   // zero crosshair
-  x.beginPath(); x.moveTo(X(0),p); x.lineTo(X(0),H-p); x.moveTo(p,Y(0)); x.lineTo(W-p,Y(0)); x.stroke();
+  x.strokeStyle=T.line; x.beginPath(); x.moveTo(X(0),p); x.lineTo(X(0),H-p); x.moveTo(p,Y(0)); x.lineTo(W-p,Y(0)); x.stroke();
   // diagonal (perfect agreement)
-  x.strokeStyle=T.dim; x.setLineDash([4,3]); x.beginPath(); x.moveTo(X(-1),Y(-1)); x.lineTo(X(1),Y(1)); x.stroke(); x.setLineDash([]);
-  F.forEach((f,i)=>{ if(i===idx) return; x.globalAlpha=0.5; x.fillStyle = f.is_turn? T.blue : T.line;
-    x.beginPath(); x.arc(X(f.human_steer),Y(f.model_steer),2.2,0,7); x.fill(); });
+  x.strokeStyle=T.dim; x.setLineDash([5,4]); x.lineWidth=1.4; x.beginPath(); x.moveTo(X(-1),Y(-1)); x.lineTo(X(1),Y(1)); x.stroke(); x.setLineDash([]);
+  // straight frames first (faint), then turns (blue) on top
+  F.forEach((f,i)=>{ if(i===idx||f.is_turn) return; x.globalAlpha=0.35; x.fillStyle=T.dim;
+    x.beginPath(); x.arc(X(f.human_steer),Y(f.model_steer),2.4,0,7); x.fill(); });
+  F.forEach((f,i)=>{ if(i===idx||!f.is_turn) return; x.globalAlpha=0.75; x.fillStyle=T.blue;
+    x.beginPath(); x.arc(X(f.human_steer),Y(f.model_steer),3.0,0,7); x.fill(); });
   x.globalAlpha=1;
-  const f=F[idx]; x.fillStyle=T.human; x.beginPath(); x.arc(X(f.human_steer),Y(f.model_steer),3.5,0,7); x.fill();
-  x.strokeStyle=T.model; x.lineWidth=2; x.beginPath(); x.arc(X(f.human_steer),Y(f.model_steer),6.5,0,7); x.stroke();
-  x.fillStyle=T.dim; x.font='10px system-ui';
-  x.fillText('người →',W-p-44,H-8);
-  x.save(); x.translate(12,p+44); x.rotate(-Math.PI/2); x.fillText('model →',0,0); x.restore();
+  const f=F[idx]; x.fillStyle=T.human; x.beginPath(); x.arc(X(f.human_steer),Y(f.model_steer),4,0,7); x.fill();
+  x.strokeStyle=T.model; x.lineWidth=2.4; x.beginPath(); x.arc(X(f.human_steer),Y(f.model_steer),8,0,7); x.stroke();
+  x.fillStyle=T.dim; x.font='11px system-ui';
+  x.fillText('lái người →',W-p-66,H-9);
+  x.save(); x.translate(13,p+58); x.rotate(-Math.PI/2); x.fillText('lái model →',0,0); x.restore();
 }
 
 function drawSpark(){

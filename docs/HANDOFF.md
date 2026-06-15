@@ -1,5 +1,27 @@
 # HANDOFF — đọc cái này trước khi tiếp tục
 
+## 📝 2026-06-15 (tối) — VIẾT LẠI SẠCH BỘ REPORT + DEMO JOINT (lái×ga) + ĐO LẠI MỌI SỐ
+
+> **TL;DR:** Viết lại hoàn toàn 4 file `docs/report/*` (cấu trúc mới: **phần cứng + dữ liệu TRƯỚC** kiến
+> trúc; teach&repeat là HỆ CHÍNH; đồ-thị-ảnh chỉ là thử-nghiệm-phụ). **Loại bỏ** khỏi hệ chính: PiJEPA,
+> SeqSLAM, SLAM, LeJEPA/LeWM (chỉ còn ở future-work). **Mọi số đếm/đo lại trực tiếp bằng script** (không
+> chép ghi chú cũ):
+> - **Tham số AC predictor = 39,192,576 ≈ 39.2M** (đếm từ checkpoint cd4; bản cũ ghi "26M" = SAI). Script: 1 dòng torch.load.
+> - **R²(speed) = +0.30 held-out** (`scripts/measure_speed_r2.py`, ridge fit-train/eval-val) — latent CÓ
+>   tín hiệu tốc độ nhưng YẾU; ghi chú cũ "−1.1 / mù vận tốc hoàn toàn" = SAI, không tái lập được.
+> - **Thống kê data** (`scripts/dataset_stats.py`): 209 ss / **228,511 frame / 7.43 giờ** (KDS 28/1.73h,
+>   TowerPro 181/5.71h); throttle med 0.084; đứng-yên 11.3%; 13,871 quẹo. + 5 biểu đồ PNG → `docs/report/figures/fig_data_*.png`.
+> - **TẦNG 2 giờ là JOINT (lái×ga)**: `demo_precompute.py` quét lưới 2-D 15×9 (score_chunk=48 tránh OOM),
+>   model chọn cả 2 trục cùng lúc. 3 session VAL best (162959/173932/181006): **sign-turn lái 841/893 =
+>   94.2%**, ga model muốn-tiến **91.9%** (med +0.075 ≈ người +0.090), contrast joint ~0.5. Eval:
+>   `scripts/eval_demo_joint.py`. Joint nặng ~50–60 phút/session GPU.
+> - **Demo web** (`web/demo.html`): per-frame giờ là **heatmap 2-D lái×ga** (● người vs ✕ model), bỏ
+>   gauge/throt chồng nhau + bỏ chữ quảng cáo ("BC không làm được"/"headline trung thực").
+>
+> **Gotcha:** joint precompute OOM nếu batch cả 135 candidate cùng lúc trên GPU 15.5GB → phải `score_chunk`
+> (đang để 48) + `PYTORCH_ALLOC_CONF=expandable_segments:True`. demo.json CŨ (1-D, không có `E2`) sẽ hiện
+> báo "định dạng cũ" → chạy lại `demo_precompute.py <ss> -d 4` để có landscape joint.
+
 ## 🎬 2026-06-15 — DEMO OPEN-LOOP "model-vs-người lái" trên VIDEO (web 8070 + export MP4): visual-hoá `probe_energy`, KHÔNG phải closed-loop
 
 > **TL;DR:** Chạy thật ngoài bãi fail (tường ánh-sáng tầng localize + thiếu lateral-recovery) → dựng
