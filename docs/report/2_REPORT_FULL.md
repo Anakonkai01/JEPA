@@ -42,32 +42,33 @@ action is generated from the visual goal, so changing the goal changes the behav
 
 ## List of Figures
 - **Figure 1** — Results at a glance: three-tier scorecard (§1)
-- **Figure 2** — Representative onboard frames across time of day & both servo domains (§6.2)
-- **Figure 3** — Data pipeline: capture → sync → pair → split (§6.3)
-- **Figure 4** — Dataset overview by servo domain (§7.1)
-- **Figure 5** — Joint steering × throttle action density (§7.2)
-- **Figure 6** — Steering time series of a typical session (corrective driving) (§7.3)
-- **Figure 7** — Throttle distribution, two domains (§7.4)
-- **Figure 8** — Steering distribution (§7.4)
-- **Figure 9** — GPS speed distribution (§7.4)
-- **Figure 10** — Session lengths (209 sessions) (§7.4)
-- **Figure 11** — Time-of-day coverage (§7.4)
-- **Figure 12** — Encoder pipeline: offline pre-encode, training reads latents (§8)
-- **Figure 13** — Our architecture (overview) (§9.1)
-- **Figure 14** — AC Predictor internal detail (§9.1)
-- **Figure 15** — Reference architecture: Meta V-JEPA 2-AC (§9.3)
-- **Figure 16** — Validation L1 loss curve (§9.6)
-- **Figure 17** — Cross-servo-domain transfer (§11.3)
-- **Figure 18** — Energy landscape / action sensitivity on a VAL session (§11.4)
-- **Figure 19** — Planner steering vs human steering (§11.4)
-- **Figure 20** — Energy contrast vs goal horizon d, justifying d = 4 (§12.1)
-- **Figure 21** — Joint energy landscape E(steer, throttle) for one VAL frame (§12.2)
-- **Figure 22** — Closed-loop deployment block diagram (§13.1)
-- **Figure 23** — Taught route and visual subgoals (§13.1)
-- **Figure 24** — A real run trajectory: tracks then veers off (§13.1)
-- **Figure 25** — Localization descriptor under a lighting shift (66% vs 0%) (§13.2)
-- **Figure 26** — Cosine-collapse trace of a real run (§13.2)
-- **Figure 27** — The cos-dropout failure mechanism (§13.2)
+- **Figure 2** — The RC car rig: chassis + onboard ESP32 + wiring (§6.1)
+- **Figure 3** — Representative onboard frames across time of day & both servo domains (§6.2)
+- **Figure 4** — Data pipeline: capture → sync → pair → split (§6.3)
+- **Figure 5** — Dataset overview by servo domain (§7.1)
+- **Figure 6** — Joint steering × throttle action density (§7.2)
+- **Figure 7** — Steering time series of a typical session (corrective driving) (§7.3)
+- **Figure 8** — Throttle distribution, two domains (§7.4)
+- **Figure 9** — Steering distribution (§7.4)
+- **Figure 10** — GPS speed distribution (§7.4)
+- **Figure 11** — Session lengths (209 sessions) (§7.4)
+- **Figure 12** — Time-of-day coverage (§7.4)
+- **Figure 13** — Encoder pipeline: offline pre-encode, training reads latents (§8)
+- **Figure 14** — Our architecture (overview) (§9.1)
+- **Figure 15** — AC Predictor internal detail (§9.1)
+- **Figure 16** — Reference architecture: Meta V-JEPA 2-AC (§9.3)
+- **Figure 17** — Validation L1 loss curve (§9.6)
+- **Figure 18** — Cross-servo-domain transfer (§11.3)
+- **Figure 19** — Energy landscape / action sensitivity on a VAL session (§11.4)
+- **Figure 20** — Planner steering vs human steering (§11.4)
+- **Figure 21** — Energy contrast vs goal horizon d, justifying d = 4 (§12.1)
+- **Figure 22** — Joint energy landscape E(steer, throttle) for one VAL frame (§12.2)
+- **Figure 23** — Closed-loop deployment block diagram (§13.1)
+- **Figure 24** — Taught route and visual subgoals (§13.1)
+- **Figure 25** — A real run trajectory: tracks then veers off (§13.1)
+- **Figure 26** — Localization descriptor under a lighting shift (66% vs 0%) (§13.2)
+- **Figure 27** — Cosine-collapse trace of a real run (§13.2)
+- **Figure 28** — The cos-dropout failure mechanism (§13.2)
 
 ## List of Tables
 - **Table 1** — Action & motion distribution over 228,511 frames (§7.2)
@@ -296,8 +297,10 @@ our AC Predictor builds on, with adaptations for the RC car (same/different/why 
   predictor input so the model can learn jointly while still distinguishing the two mappings. This
   *unintended* servo swap later yielded a valuable transfer experiment (§11.3).
 
-> *Figure note: a photograph of the physical rig (car + onboard phone + ESP32) is to be added here
-> (deferred — pending a user-supplied photo).*
+![RC car rig](figures/fig_rig_photo.jpg)
+*Figure 2 — The RC car platform used for data collection: the off-road chassis with the onboard
+ESP32-S3 controller and the steering-servo / throttle-ESC wiring. The Android phone (camera + recorder,
+§6.2) mounts on the deck on top; a human drives the car manually during collection.*
 
 ### 6.2. The pivot: from a wireless video link to an onboard phone
 - **Original rig (dropped for data collection):** a RunCam camera (OpenIPC, IMX415) streaming H.265
@@ -310,21 +313,21 @@ our AC Predictor builds on, with adaptations for the RC car (same/different/why 
   δ_cam ≈ 100 ms** (measured on the A42, stable at 98–103 ms), recorded per-frame and corrected during
   synchronization.
 
-Figure 2 shows representative frames the onboard camera captures — the same frames the frozen encoder
+Figure 3 shows representative frames the onboard camera captures — the same frames the frozen encoder
 later sees. They span a wide range of lighting and time of day, which becomes central in §13.
 
 ![Representative onboard frames](figures/fig_frame_montage.png)
-*Figure 2 — Representative onboard frames sampled across time of day (11:18 → 22:53) and both servo
+*Figure 3 — Representative onboard frames sampled across time of day (11:18 → 22:53) and both servo
 domains. The variety of lighting, shadows and scenes is exactly the domain shift the system must
 handle; §13 shows it is the localization descriptor — not the encoder — that struggles with it.*
 
 ### 6.3. The pipeline that forms the train/val data
-Figure 3 describes the entire flow from capture to a train/val set (it describes the flow, not file
+Figure 4 describes the entire flow from capture to a train/val set (it describes the flow, not file
 names). The key point: because **frame, telemetry, GPS and IMU share one clock**, we can pair each
 frame precisely with the action *at the exact moment that scene occurred*.
 
 ![Data pipeline](figures/fig_data_pipeline.png)
-*Figure 3 — Data flow: capture (one shared clock) → sync (linearly interpolate 50 Hz telemetry at each
+*Figure 4 — Data flow: capture (one shared clock) → sync (linearly interpolate 50 Hz telemetry at each
 frame's scene time, correct δ_cam, drop packet-loss frames) → each frame becomes (image, action 3-D,
 state 12-D) → split by session 80/20 → 167 train / 42 val. (Diagram source in Appendix §18.5.)*
 
@@ -362,7 +365,7 @@ state 12-D) → split by session 80/20 → 167 train / 42 val. (Diagram source i
 
 ### 7.1. Overview
 ![Dataset overview](figures/fig_data_overview.png)
-*Figure 4 — Dataset overview by the two servo domains: **209 sessions · 228,511 frames · 7.43 hours**
+*Figure 5 — Dataset overview by the two servo domains: **209 sessions · 228,511 frames · 7.43 hours**
 of real driving (KDS 28 ss / 53,076 frames / 1.73 h; TowerPro 181 ss / 175,435 frames / 5.71 h). Saved
 FPS ~8.5 (target save_hz=10, slightly short due to image-write load) — consistent across the two
 domains. Session-level 80/20 split, seed 0 → **167 train / 42 val**.*
@@ -378,23 +381,23 @@ domains. Session-level 80/20 split, seed 0 → **167 train / 42 val**.*
 
 *Table 1 — Action & motion distribution over all 228,511 frames.*
 
-The joint steering × throttle distribution (Figure 5) shows the actual action space the planner must
+The joint steering × throttle distribution (Figure 6) shows the actual action space the planner must
 operate in: steering spans the full range while throttle clusters tightly forward.
 
 ![Joint steering × throttle density](figures/fig_data_steer_throttle_2d.png)
-*Figure 5 — Joint steering × throttle action density over the whole dataset. Throttle is concentrated
+*Figure 6 — Joint steering × throttle action density over the whole dataset. Throttle is concentrated
 in a narrow forward band (median 0.084) while steering uses the full [−1,1] range — this motivates the
 forward-biased throttle grid used by the planner in §12.1.*
 
 ### 7.3. The data DOES contain corrective driving
 The data is **free-form manual driving** in a park, not driving down a single straight line. With
-**13,871 turning events** and continuous two-sided steering oscillation (Figure 6), the human driver
+**13,871 turning events** and continuous two-sided steering oscillation (Figure 7), the human driver
 **continuously corrects** left/right. This matters for the closed-loop analysis (§13): **the training
 set does not lack corrective behaviour** — what is missing at *deploy* time is something else (see
 §13.4).
 
 ![Two-sided steering time series](figures/fig_data_steer_timeseries.png)
-*Figure 6 — A typical session: steering (purple) oscillates two-sided continuously, alongside throttle
+*Figure 7 — A typical session: steering (purple) oscillates two-sided continuously, alongside throttle
 (orange) — evidence that the data contains corrective/lane-keeping behaviour, not a single straight
 run.*
 
@@ -404,21 +407,21 @@ run.*
 - **TowerPro** (collected after the KDS servo failed — §6.1) has **variable throttle** (including
   light reverse), giving the model a learnable throttle-axis signal (confirmed in §11.4: the model
   reads the throttle axis). Figures 7, 8, 9 are the steering / throttle / speed distributions; Figure
-  10 shows the lengths of all 209 sessions; Figure 11 shows the time-of-day coverage.
+  10 shows the lengths of all 209 sessions; Figure 12 shows the time-of-day coverage.
 
 ![Throttle distribution, two domains](figures/fig_data_throttle_hist.png)
-*Figure 7 — Throttle: KDS ~constant (sharp peak ~0.075) vs TowerPro variable (spread out, with light
+*Figure 8 — Throttle: KDS ~constant (sharp peak ~0.075) vs TowerPro variable (spread out, with light
 reverse).*
 
 | | |
 |---|---|
 | ![steering](figures/fig_data_steer_hist.png) | ![speed](figures/fig_data_speed_hist.png) |
-| *Figure 8 — steering distribution* | *Figure 9 — GPS speed distribution* |
+| *Figure 9 — steering distribution* | *Figure 10 — GPS speed distribution* |
 
 | | |
 |---|---|
 | ![sessions](figures/fig_data_sessions.png) | ![time of day](figures/fig_data_timeofday.png) |
-| *Figure 10 — lengths of 209 sessions* | *Figure 11 — time-of-day coverage (hour)* |
+| *Figure 11 — lengths of 209 sessions* | *Figure 12 — time-of-day coverage (hour)* |
 
 ---
 
@@ -434,7 +437,7 @@ reverse).*
   feasible on a single GPU.
 
 ![Encoder pipeline](figures/fig_encoder_pipeline.png)
-*Figure 12 — Encoder pipeline: each frame → resize 384 + normalize → frozen V-JEPA ViT-L 384
+*Figure 13 — Encoder pipeline: each frame → resize 384 + normalize → frozen V-JEPA ViT-L 384
 (per-frame) → 576×1024 tokens saved fp16 → training reads latents directly (~50–100× faster).
 (Diagram source in Appendix §18.5.)*
 
@@ -451,20 +454,20 @@ reverse).*
 ### 9.1. Diagram & mechanism
 Each frame is arranged into a token group `[action_t (3-D), state_t (12-D), patch_t (576)]` (= 578
 tokens). A **block-causal mask** lets a token at frame t attend to every token at frame ≤ t. The
-output at the patch positions of frame t predicts the **patch map of frame t+1**. Figure 13 shows the
-overall diagram (frame → encoder → predictor → CEM); **Figure 14** opens up the **inside of the
+output at the patch positions of frame t predicts the **patch map of frame t+1**. Figure 14 shows the
+overall diagram (frame → encoder → predictor → CEM); **Figure 15** opens up the **inside of the
 predictor**: three linear projections bring action/state/patch to width `P=512`, plus positional
 embeddings (per-frame temporal + per-token-type), 12 Transformer layers (each = LayerNorm →
 block-causal self-attention with 8 heads → residual → LayerNorm → MLP 512→2048→512 → residual), then a
 `Linear 512→1024` head at the patch positions of frame t produces ẑ_{t+1}.
 
 ![Our architecture](figures/fig_arch_ours.png)
-*Figure 13 — Our architecture (overview): frame → frozen V-JEPA → 576×1024 → interleave [action, state,
+*Figure 14 — Our architecture (overview): frame → frozen V-JEPA → 576×1024 → interleave [action, state,
 patch] → block-causal AC predictor (12 layers) → ẑ_{t+1} → CEM → ESP32. (Diagram source in Appendix
 §18.5.)*
 
 ![AC predictor detail](figures/fig_arch_predictor_detail.png)
-*Figure 14 — Inside the AC Predictor: project action(3)/state(12)/patch(1024) to `P=512` + pos-emb;
+*Figure 15 — Inside the AC Predictor: project action(3)/state(12)/patch(1024) to `P=512` + pos-emb;
 × 12 block-causal Transformer layers (LN → 8-head MHSA → residual → LN → MLP 512→2048→512 → residual);
 final LayerNorm + `Linear 512→1024` head at the patch positions → ẑ_{t+1} (576×1024); loss = L1(ẑ_{t+1},
 z_{t+1}).*
@@ -482,11 +485,11 @@ the available memory/time.
 > The 39.2M figure is reproducible in one line (see Appendix).
 
 ### 9.3. Reference architecture from V-JEPA 2-AC — same / different / why
-We **build on** Meta's V-JEPA 2-AC architecture [2] but adapt it for the car. Figure 13 (ours) and
-Figure 15 (Meta) are placed side by side for comparison.
+We **build on** Meta's V-JEPA 2-AC architecture [2] but adapt it for the car. Figure 14 (ours) and
+Figure 16 (Meta) are placed side by side for comparison.
 
 ![Meta V-JEPA 2-AC architecture](figures/fig_arch_meta.png)
-*Figure 15 — Reference architecture, Meta V-JEPA 2-AC (robot arm): state = 7-D pose (sub-mm
+*Figure 16 — Reference architecture, Meta V-JEPA 2-AC (robot arm): state = 7-D pose (sub-mm
 proprioception), action = 7-D Δ end-effector, 3D-RoPE, ~300M predictor. (Diagram source in Appendix
 §18.5.)*
 
@@ -550,7 +553,7 @@ In practice it ran as two phases:
 
 ### 9.6. Loss curve
 ![Loss curve](figures/fig_loss_curve.png)
-*Figure 16 — Validation L1 loss (teacher-forcing + 2-step rollout) vs epoch: the base run cosine drops
+*Figure 17 — Validation L1 loss (teacher-forcing + 2-step rollout) vs epoch: the base run cosine drops
 0.79 → 0.60 (stable phase flattens), a power cut hits mid-epoch 12, then the cd4 cooldown LR→0 pulls
 val down to **0.569** (the deploy checkpoint, rollout@1/identity 0.744). Numbers are read from the
 training log (wandb) plus the `val` value stored in the checkpoint.*
@@ -629,7 +632,7 @@ read from `runs/lewm_overnight/20260608_015058`.
 > We use "baseline" in exactly this sense.
 
 ![Cross-servo-domain transfer](figures/fig_transfer.png)
-*Figure 17 — (A) The 3-step progression on the new servo: TowerPro-only LOSES (1.073) → pretrain-KDS-
+*Figure 18 — (A) The 3-step progression on the new servo: TowerPro-only LOSES (1.073) → pretrain-KDS-
 then-finetune nearly ties (0.975) → mixing both servos WINS (0.65). (B) The mixed model's val loss
 drops steadily 0.79 → 0.60 (learning shared dynamics, not overfitting one servo).*
 
@@ -656,18 +659,18 @@ higher because straight-driving frames also have a clear minimum at steer ≈ 0.
 
 → The model does **NOT "steer weakly" offline**: not only is it **95% correct in sign**, the chosen
 angle is also **close** to the human's — **median deviation only 0.146** on the [−1,1] scale (i.e.
-~7% of the full range). The energy minimum is clear and on the right side, on **both axes**. Figure 18
-visualizes the energy landscape on a VAL session, and Figure 19 shows the planner tracking the human's
+~7% of the full range). The energy minimum is clear and on the right side, on **both axes**. Figure 19
+visualizes the energy landscape on a VAL session, and Figure 20 shows the planner tracking the human's
 steering.
 
 ![Energy landscape / action sensitivity](figures/fig_energy_landscape.png)
-*Figure 18 — Energy landscape on a VAL session: (A) for one turning frame, the steering energy valley
+*Figure 19 — Energy landscape on a VAL session: (A) for one turning frame, the steering energy valley
 (argmin = ●) sits on the human's turn side; (B) over the session's turning frames the model's
 sign-correct rate is ~95%; (C) the whole-session "bright ridge" (model-preferred steering) tracks the
 human's steering through the turns.*
 
 ![Planner steering vs human](figures/fig_steer_tracking.png)
-*Figure 19 — The planner picks steering that matches the human (VAL session `162959`, goal ~0.9 s
+*Figure 20 — The planner picks steering that matches the human (VAL session `162959`, goal ~0.9 s
 ahead). (A) Scatter of human steering (x) vs model steering (y) on turning frames: hugs the diagonal,
 **95.2% correct sign**, median deviation **0.092** (this session). (B) Time series: the model's
 steering (blue) follows the human's (green) through the turns.*
@@ -685,7 +688,7 @@ Take a held-out VAL session. For **each real frame** t:
    `lead = d × stride × dt_frame = 4 × 2 × 0.11 ≈ 0.9 s`. We pick d=4 because: it is **far enough** for
    the steering action to make a measurable scene difference (d=1 is too close, the scene barely
    changes → flat landscape); and **near enough** that the current scene still overlaps the goal (a
-   large d collapses contrast, measured: d=2 0.44 → d=8 0.27, Figure 20).
+   large d collapses contrast, measured: d=2 0.44 → d=8 0.27, Figure 21).
 2. **Sweep the JOINT 2-D grid** = 15 steering points `∈[−1,1]` × 9 throttle points `∈[−0.1, 0.25]` =
    **135 combinations**. *Why a throttle range of `[−0.1, 0.25]`?* The **actual** throttle range in the
    data is ~`[−0.16, +0.15]` (median +0.084), but the car **almost always goes forward** (only ~13% of
@@ -718,7 +721,7 @@ proposes**, it does not actually drive (the next frame is already fixed by the h
 NOT prove "the car self-drives".**
 
 ![Contrast vs horizon](figures/fig_contrast_vs_horizon.png)
-*Figure 20 — Why goal horizon d = 4: steering energy contrast peaks then decays with horizon (measured
+*Figure 21 — Why goal horizon d = 4: steering energy contrast peaks then decays with horizon (measured
 on turning VAL frames: d=2 0.44, d=4 0.33, d=8 0.27). d=4 is far enough that the action changes the
 scene, near enough that overlap with the goal is retained.*
 
@@ -743,11 +746,11 @@ throttle) is HEALTHY** — matching the expert in both **sign** and **magnitude*
 closed-loop physics; what breaks in Tier 3 is NOT "a dumb planner". (Accuracy is read from
 `data/demo/*/demo.json`.)
 
-Figure 21 makes the joint planner tangible — the actual 15×9 grid scored for a single real frame, with
+Figure 22 makes the joint planner tangible — the actual 15×9 grid scored for a single real frame, with
 the human and model markers both in the low-energy basin.
 
 ![Joint energy heatmap](figures/fig_energy_heatmap.png)
-*Figure 21 — The joint planner's energy landscape E(steer, throttle) for one VAL frame (k=388): the
+*Figure 22 — The joint planner's energy landscape E(steer, throttle) for one VAL frame (k=388): the
 15×9 grid the planner actually scores. Both the human (○) and the model's argmin (✕) land in the
 low-energy valley on the correct (left) turn side, at a forward throttle — a clear, decisive minimum
 (contrast 0.96 for this frame).*
@@ -770,16 +773,16 @@ low-energy valley on the correct (left) turn side, at a forward throttle — a c
 ### 13.1. Deployment & raw results
 **Flow.** *Teach:* drive manually once, capturing a sequence of goal images + GPS along the route
 (~15 m). *Run:* the phone streams (frame + GPS + rotvec) over TCP → **PC: V-JEPA 2.1 ViT-L → AC
-predictor cd4 → CEM** → a 2-byte action → ESP32. Figure 22 is the deployment block diagram; Figure 23
+predictor cd4 → CEM** → a 2-byte action → ESP32. Figure 23 is the deployment block diagram; Figure 24
 is a taught route with its visual subgoals.
 
 ![Closed-loop deployment](figures/fig_deploy_loop.png)
-*Figure 22 — Closed-loop deployment: the onboard phone streams frame + GPS + rotvec over TCP to the PC,
+*Figure 23 — Closed-loop deployment: the onboard phone streams frame + GPS + rotvec over TCP to the PC,
 which runs the frozen V-JEPA encoder → AC predictor → CEM planner and returns a 2-byte [steer,
 throttle] to the ESP32; the car drives, producing the next view. (Diagram source: `figures/src/deploy_loop.dot`.)*
 
 ![Taught route and subgoals](figures/fig_route_graph.png)
-*Figure 23 — A taught route and its visual subgoals (the images the local CEM chases in order): the
+*Figure 24 — A taught route and its visual subgoals (the images the local CEM chases in order): the
 planned route threads 13 subgoals through the park; the thumbnails below are the subgoal goal images.*
 
 **CEM latency (real GPU bench).** Closed-loop needs to be real-time, so the search budget is limited:
@@ -794,11 +797,11 @@ the car reacts in time.
 
 *Table 7 — Closed-loop runs (raw outcomes). Both track the first half, then veer off at a cos-collapse.*
 
-Figure 24 shows run 171912's trajectory: tracking cleanly (blue, high cosine) then veering off (red,
+Figure 25 shows run 171912's trajectory: tracking cleanly (blue, high cosine) then veering off (red,
 collapsed cosine) at the breakaway point.
 
 ![Run trajectory: tracks then veers](figures/fig_trajectory_20260613_171912.png)
-*Figure 24 — Run 20260613_171912 trajectory, coloured by localization cosine: it tracks the taught
+*Figure 25 — Run 20260613_171912 trajectory, coloured by localization cosine: it tracks the taught
 corridor (cool colours = high cos) then the cosine collapses (warm colours) and it veers off, where the
 run was stopped.*
 
@@ -816,22 +819,22 @@ and the marker **drops < 0.1 then goes negative** → the goal becomes indisting
 energy goes flat in steering → erratic steering.
 
 **Quantitative evidence (from real-run logs).** Cosine quality depends on the **lighting/time gap
-between teach and run**, not on the scene (Figure 25):
+between teach and run**, not on the scene (Figure 26):
 - Route taught & run **in the same session, close in time** → **66% of ticks** have cos > 0.3
   (localization tracks well).
 - Route taught at 14:11, run at 14:50 (bright sun, lighting already shifted) → **0% of ticks** have
   cos > 0.3 (localization collapses).
 
 ![Localization under a lighting shift](figures/fig_cross_lighting.png)
-*Figure 25 — The localization descriptor is NOT lighting-invariant: 66% of ticks well-localized
+*Figure 26 — The localization descriptor is NOT lighting-invariant: 66% of ticks well-localized
 (cos > 0.3) when teach and run are close in time vs 0% under a lighting shift. The control stage stays
 robust (patch-L1 < 5% change); only the pooled-cosine locator collapses.*
 
-Figure 26 traces this collapse over one real run: the centered-cosine to the matching subgoal decays
+Figure 27 traces this collapse over one real run: the centered-cosine to the matching subgoal decays
 below the 0.1 threshold, and as it does, the CEM's raw steering swings to full-lock.
 
 ![Cosine-collapse trace](figures/fig_cos_dropout_20260613_171912.png)
-*Figure 26 — Closed-loop run 20260613_171912: the centered-cosine to the live-vs-teach subgoal (top)
+*Figure 27 — Closed-loop run 20260613_171912: the centered-cosine to the live-vs-teach subgoal (top)
 decays into the cos-dropout zone (cos < 0.1), and as it does the CEM's |raw steer| (bottom) jumps to
 full-lock — the lost-gradient → full-lock signature.*
 
@@ -842,10 +845,10 @@ full-lock — the lost-gradient → full-lock signature.*
   descriptor for the localization stage** (mean-pool + cosine) — global pooling + cosine is **sensitive
   to global lighting changes + heading/viewpoint changes**: when lighting/heading shifts, the live
   image's pooled vector rotates enough that the cosine to the correct marker drops below the
-  discrimination threshold. Figure 27 lays out the full failure spiral.
+  discrimination threshold. Figure 28 lays out the full failure spiral.
 
 ![cos-dropout failure mechanism](figures/fig_cos_dropout_mechanism.png)
-*Figure 27 — The cos-dropout failure spiral (observed over ~10 runs): a weak subgoal (live ≠ taught) →
+*Figure 28 — The cos-dropout failure spiral (observed over ~10 runs): a weak subgoal (live ≠ taught) →
 centered-cos < 0.1 → energy flat in steering → CEM loses gradient → full-lock erratic steering → drifts
 > 2 m off route → no taught image teaches "how to steer back" → hits the edge.*
 
@@ -1054,7 +1057,7 @@ python scripts/plot_closed_loop.py logs/infer_20260613_171912.log --out docs/rep
 The body shows the rendered PNGs (via graphviz). The equivalent **mermaid** source is kept here so the
 diagrams also render on GitHub/VS Code; the canonical sources live in `docs/report/figures/src/*.{dot,mmd}`.
 
-**Figure 3 — Data pipeline (`data_pipeline.mmd`):**
+**Figure 4 — Data pipeline (`data_pipeline.mmd`):**
 ```mermaid
 %%{init: {'theme':'base','themeVariables':{'fontSize':'14px','primaryColor':'#eef6ee','primaryBorderColor':'#2e7d32','lineColor':'#555'}}}%%
 flowchart TB
@@ -1074,7 +1077,7 @@ flowchart TB
   SPLIT --> VA["42 sessions · val (held-out)"]
 ```
 
-**Figure 12 — Encoder pipeline (`encoder_pipeline.mmd`):**
+**Figure 13 — Encoder pipeline (`encoder_pipeline.mmd`):**
 ```mermaid
 %%{init: {'theme':'base','themeVariables':{'fontSize':'15px','primaryColor':'#eaf2fb','primaryBorderColor':'#0275d8','lineColor':'#555'}}}%%
 flowchart LR
@@ -1089,7 +1092,7 @@ flowchart LR
   class C frozen;
 ```
 
-**Figure 13 — Our architecture (`arch_ours.mmd`):**
+**Figure 14 — Our architecture (`arch_ours.mmd`):**
 ```mermaid
 %%{init: {'theme':'base','themeVariables':{'fontSize':'15px','primaryColor':'#eaf2fb','primaryBorderColor':'#0275d8','lineColor':'#555'}}}%%
 flowchart LR
@@ -1108,7 +1111,7 @@ flowchart LR
   class PRED train;
 ```
 
-**Figure 15 — Meta V-JEPA 2-AC (`arch_meta.mmd`):**
+**Figure 16 — Meta V-JEPA 2-AC (`arch_meta.mmd`):**
 ```mermaid
 %%{init: {'theme':'base','themeVariables':{'fontSize':'15px','primaryColor':'#f3eafb','primaryBorderColor':'#6a3d9a','lineColor':'#555'}}}%%
 flowchart LR
