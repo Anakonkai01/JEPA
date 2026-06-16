@@ -1,0 +1,48 @@
+digraph arch_predictor_detail {
+  rankdir=TB; bgcolor="white"; fontname="DejaVu Sans"; labelloc="t"; fontsize=14;
+  label="AC Predictor — chi tiết bên trong (block-causal Transformer, 39.2M tham số)";
+  node [shape=box, style="rounded,filled", fontname="DejaVu Sans", fontsize=10.5,
+        fillcolor="#ffffff", color="#999999", margin="0.13,0.08"];
+  edge [color="#555555", penwidth=1.1];
+
+  // ---- inputs (per frame t) ----
+  subgraph cluster_in {
+    label="ĐẦU VÀO mỗi frame t"; style="rounded,dashed"; color="#bbbbbb"; fontsize=11;
+    A   [label="action a_t (3-D)\nsteer · throttle · domain_id", fillcolor="#fff8e1", color="#f0ad4e"];
+    S   [label="state s_t (12-D)\nspeed·gyro·accel·rotvec\nprev_steer·prev_throttle", fillcolor="#fff8e1", color="#f0ad4e"];
+    Z   [label="z_t : 576 patch token × 1024-D\n(V-JEPA frozen, per-token LayerNorm)", fillcolor="#fdecea", color="#d9534f"];
+  }
+
+  // ---- linear projections to width P=512 ----
+  PA  [label="Linear 3→512", fillcolor="#eef6ee", color="#2e7d32"];
+  PS  [label="Linear 12→512", fillcolor="#eef6ee", color="#2e7d32"];
+  PZ  [label="Linear 1024→512", fillcolor="#eef6ee", color="#2e7d32"];
+
+  // ---- assemble token sequence ----
+  SEQ [label="ghép token mỗi frame:\n[action, state, patch×576] = 578 token\n+ temporal pos-emb (theo frame)\n+ token-type pos-emb (theo vị-trí trong nhóm)",
+       shape=hexagon, fillcolor="#eef6ee", color="#2e7d32", fontsize=10];
+
+  // ---- transformer block (xN) ----
+  subgraph cluster_blk {
+    label="× 12 lớp Transformer (mask block-causal: frame t nhìn ≤ t)";
+    style="rounded,filled"; fillcolor="#f4f9ff"; color="#0275d8"; fontsize=11;
+    LN1 [label="LayerNorm"];
+    ATT [label="Block-causal Multi-Head\nSelf-Attention · 8 head", fillcolor="#eaf2fb", color="#0275d8", penwidth=1.8];
+    AD1 [label="+ residual", shape=ellipse, fillcolor="#ffffff"];
+    LN2 [label="LayerNorm"];
+    MLP [label="MLP 512 → 2048 → 512\n(GELU)", fillcolor="#eaf2fb", color="#0275d8"];
+    AD2 [label="+ residual", shape=ellipse, fillcolor="#ffffff"];
+    LN1 -> ATT -> AD1 -> LN2 -> MLP -> AD2;
+  }
+
+  // ---- output head ----
+  NRM [label="LayerNorm cuối"];
+  HEAD[label="Linear 512→1024\n(lấy 576 vị-trí PATCH của frame t)", fillcolor="#eef6ee", color="#2e7d32"];
+  OUT [label="ẑ_t+1 : 576 patch token × 1024-D\n(dự đoán latent frame kế)", fillcolor="#eaf2fb", color="#0275d8", penwidth=2.0];
+  LOSS[label="Loss = L1( ẑ_t+1 , z_t+1 )\n(teacher-forcing + rollout 2 bước)", fillcolor="#f3eafb", color="#6a3d9a"];
+
+  A -> PA; S -> PS; Z -> PZ;
+  PA -> SEQ; PS -> SEQ; PZ -> SEQ;
+  SEQ -> LN1;
+  AD2 -> NRM -> HEAD -> OUT -> LOSS;
+}

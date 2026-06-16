@@ -1,5 +1,34 @@
 # HANDOFF — đọc cái này trước khi tiếp tục
 
+## 📝 2026-06-16 — REPORT bổ sung (intro world-model/JEPA, Method/Training, vẽ lại) + ĐO LẠI accuracy + hạ "B đứng-yên" xuống footnote + bỏ SeqSLAM
+
+> **TL;DR:** Theo yêu cầu user, bổ sung/sửa `docs/report/{2_REPORT_FULL,4_REPORT_PROSE_FULL}.md`. Quyết
+> định khung do user chốt (grill): **(1)** "vùng-chết đứng-yên" (nguyên nhân B) **HẠ xuống footnote** —
+> nguyên nhân CHÍNH của thất bại closed-loop là **A (descriptor định-vị không bất-biến sáng/heading)**;
+> B chỉ là deadlock điều-khiển đã vá (sau khi vá xe vẫn bung ở A). **(2)** Sửa **cả 2 file** report.
+> Thay đổi chính:
+> - **Thêm §5 nền tảng:** world model là gì, JEPA/đường-lối-LeCun, V-JEPA→2→2.1, V-JEPA 2-AC (Franka).
+> - **Thêm §9.5/9.6 Method/Training:** hàm loss = **L1 teacher-forcing + rollout 2 bước** (`train_ac_car.py:_losses`);
+>   AdamW lr 2.5e-4(base)/1.2e-4(cd4), wd 1e-4, bf16, grad-checkpoint, torch.compile, batch64, WSD
+>   (base cosine→plateau 0.60→cooldown LR→0→**val 0.569**, rollout@1/idn 0.744). **Hình loss curve mới**
+>   `fig_loss_curve.png` (`scripts/plot_loss_curve.py`).
+> - **Transfer = 3 bước** (đo lại `runs/lewm_overnight/20260608_015058`): chỉ-TowerPro **1.073** →
+>   pretrain-KDS-finetune-TowerPro **0.975** → trộn **0.65**. `plot_transfer.py` vẽ 3 cột.
+> - **Accuracy MỚI (đo lại):** Tầng 1 lái lệch |argminE−teacher| median **0.146** (probe_energy turn-only
+>   300w); Tầng 2 lái |Δsteer| median **0.118**, ga |Δthrottle| median **0.033** (đọc `data/demo/*/demo.json`).
+> - **Hình mới:** `fig_arch_predictor_detail.png` (kiến trúc predictor chi tiết, dot), `fig_data_overview.png`
+>   (thay bảng §7.1), `fig_steer_tracking.png` (thay energy-landscape khó nhìn). Hình PNG render bằng
+>   **graphviz `dot`** (mermaid-cli không có). Đánh số lại Hình 1–15.
+> - **Bỏ khỏi report:** khung "teach & repeat" → đổi thành **goal-conditioned**; "kết quả âm" → "chưa
+>   lái được/phân tích cơ chế"; "đánh giá đầu tiên" → "một thử nghiệm…" (data tự thu/tự đo); contribution
+>   "pipeline offline…"; so sánh ViNG ở §13 (chỉ còn so Meta); **SeqSLAM** (nhánh phụ của claude, chưa
+>   từng dùng) — bỏ khỏi report VÀ handoff.
+> - **384px:** lý do = encoder V-JEPA 2.1 train gốc ở 384 (đừng đổi resolution). Predictor nhỏ 39.2M:
+>   thêm lý do **phần cứng = 1× RTX 5070 Ti 16GB**.
+> - ⚠ Còn `scripts/probe_seqslam_lighting.py` trên đĩa (không xoá file) nhưng KHÔNG còn được report/handoff
+>   tham chiếu. Số §13.2 (cross-lighting) giờ lấy từ **log chạy thật** (cùng-buổi 66% tick cos>0.3 vs
+>   lệch-nắng 0%), không từ probe seqslam.
+
 ## 📝 2026-06-15 (khuya) — REPORT VIẾT LẠI THEO CĂN CỨ (sửa các claim nghi "chém gió")
 
 > **TL;DR:** Viết lại bộ `docs/report/*` chuyên-nghiệp-hơn theo yêu cầu user, **đo lại trực tiếp** các
@@ -10,9 +39,9 @@
 > - **B đứng-yên — số CŨ "0.41→0.11" KHÔNG tái lập** (script chỉ ở `/tmp`). Viết MỚI
 >   `scripts/probe_speed_confound.py` (3 điều kiện): baseline xe-chạy **0.335** → stalled (speed≡0 suốt
 >   horizon, ga≈0) **0.088** (×3.8, CÙNG cảnh). Cơ chế `yaw=k·steer·speed` (dynamics.py:43). Fix=sàn ga TMIN=0.07.
-> - **A lighting — KHÔNG phải "V-JEPA hỏng".** `probe_seqslam_lighting.py` chấm trên **latent mean-pool
->   + cosine** = chỉ indict **descriptor ĐỊNH-VỊ**; control path dùng **patch-L1 vẫn bền**. Confound
->   heading. Report nói rõ phân biệt này.
+> - **A lighting — KHÔNG phải "V-JEPA hỏng".** Khâu **định-vị** dùng **latent mean-pool + cosine** → chỉ
+>   indict **descriptor ĐỊNH-VỊ** (sập khi đổi sáng/heading); khâu **điều khiển** dùng **patch-L1 vẫn bền**.
+>   Bằng chứng (log chạy thật): cùng-buổi 66% tick cos>0.3 vs lệch-nắng 0% tick. Report nói rõ phân biệt này.
 > - **BỎ HẲN:** nhãn "OOD"; "thiếu recovery" (data CÓ corrective driving — 13,871 sự kiện quẹo, có
 >   biểu đồ); phần encoder R²(speed); phép tính tham số dài (chỉ ghi ≈39.2M); câu out-of-scope; câu torch.hub;
 >   từ "trung thực" (label). **Domain reframe:** servo KDS **hỏng→thay TowerPro** (không phải "thiết kế 2 domain").
@@ -30,7 +59,7 @@
 
 > **TL;DR:** Viết lại hoàn toàn 4 file `docs/report/*` (cấu trúc mới: **phần cứng + dữ liệu TRƯỚC** kiến
 > trúc; teach&repeat là HỆ CHÍNH; đồ-thị-ảnh chỉ là thử-nghiệm-phụ). **Loại bỏ** khỏi hệ chính: PiJEPA,
-> SeqSLAM, SLAM, LeJEPA/LeWM (chỉ còn ở future-work). **Mọi số đếm/đo lại trực tiếp bằng script** (không
+> SLAM, LeJEPA/LeWM (chỉ còn ở future-work). **Mọi số đếm/đo lại trực tiếp bằng script** (không
 > chép ghi chú cũ):
 > - **Tham số AC predictor = 39,192,576 ≈ 39.2M** (đếm từ checkpoint cd4; bản cũ ghi "26M" = SAI). Script: 1 dòng torch.load.
 > - **R²(speed) = +0.30 held-out** (`scripts/measure_speed_r2.py`, ridge fit-train/eval-val) — latent CÓ
@@ -129,37 +158,25 @@
 > **Việc tiếp:** validate GOAL-MODE ở bãi (goal in-view); tốt → demo + report. Auto reach-stop (patch-L1
 > < ngưỡng → neutral) CHƯA làm. Knob mới đều ở cuối `run_infer.sh` (NEARCOS/POPRISE/SPATIAL/GOALMODE).
 
-## 🔦 2026-06-14 TỐI (đợt 3, offline) — "VẤN ĐỀ COSINE" CHẨN ĐÚNG GỐC: descriptor V-JEPA KHÔNG bất-biến-sáng. SeqSLAM + multi-ref ĐỀU KHÔNG cứu → hướng = LEARNED head
+## 🔦 2026-06-14 TỐI (đợt 3, offline) — "VẤN ĐỀ COSINE" CHẨN ĐÚNG GỐC: descriptor V-JEPA KHÔNG bất-biến-sáng → hướng = LEARNED head
 
 > **TL;DR (eval offline thuần, KHÔNG đụng xe/inference — chỉ ra số quyết hướng cho "tường ánh sáng"):**
-> Bám tiếp tường-ánh-sáng (đợt 2 dưới). Câu hỏi: POP/localize sập khi đổi sáng — **sequence-matching
-> (SeqSLAM)** có cứu được như literature không? **KHÔNG.** Đã dựng probe `scripts/probe_seqslam_lighting.py`
-> (thuần numpy/CPU, dùng latent đã encode; tự tìm cặp session cross-lighting Δt≈53h, Δbright 11–18/255).
+> Bám tiếp tường-ánh-sáng (đợt 2 dưới). "Tường ánh sáng" là **giới hạn của DESCRIPTOR định-vị**
+> (latent mean-pool + cosine), KHÔNG phải biểu diễn V-JEPA hỏng và KHÔNG phải khâu điều khiển.
 >
-> 1. **CHẨN ĐOÁN QUYẾT ĐỊNH (assumption-free): rank của ref ĐÚNG-HÌNH-HỌC theo cosine.** Sáng-gần
->    (Δbright 11): median rank **0**, %top1 **79** → descriptor TỐT. Sáng-xa (Δbright 18): median rank
->    **41–62 / 557–776**, %top1 **0–3**, %top20 **1–15** → ref đúng BỊ CHÔN sâu. ⇒ tín hiệu **per-frame
->    SAI**, không phải mờ/ambiguous.
-> 2. **SeqSLAM FAIL.** seq-RAW (cộng-dồn chuỗi) ≈ single-frame (cùng 0% khi sáng-xa); seq-NORM (contrast-
->    norm chuẩn SeqSLAM) **TỆ HƠN** (locks-onto-lap sai vì towerpro đa-vòng, revisit 7–15). Lý do gốc:
->    chuỗi chỉ rerank được ứng-viên GẦN-TOP — ref đúng ở rank 41 thì **không trick temporal nào kéo nổi**.
-> 3. **Multi-reference (đa-sáng) cũng FAIL** — kể cả **GPS-GATED (≤5m, đúng cách deploy gate)**: bank 6
->    session, ref-đúng là best-appearance trong gate chỉ **%top1 1 / %top3 4**. Distractor + sai-appearance
->    lấn. ⇒ **không phải artifact distractor-xa**; descriptor THẬT SỰ sai dưới đổi-sáng.
-> 4. **Control KHÔNG dính** (đã xác nhận lại): CEM chấm **patch-L1** (`cem.py:159-178`), lighting-robust
+> 1. **Chất-lượng-cosine phụ thuộc độ lệch SÁNG/GIỜ giữa dạy↔chạy, không phải cảnh** (đo từ log chạy
+>    thật): route cùng-buổi-sáng-gần **66% tick** đạt cos>0.3; route dạy/chạy lệch nắng **0% tick**
+>    đạt cos>0.3. ⇒ descriptor pooled-cosine sập khi đổi-sáng + đổi-heading.
+> 2. **Control KHÔNG dính** (xác nhận lại): CEM chấm **patch-L1** (`cem.py:159-178`), lighting-robust
 >    (sun→cloud <5%). Vấn đề CHỈ ở **POP/localize = centered-pooled-cosine** (`inference_loop.py:962-971`).
 >
-> **➡️ KẾT LUẬN HƯỚNG (cho report + sau deadline):** "tường ánh sáng" là **giới hạn DESCRIPTOR**, không
-> sửa được bằng đo-lường (cosine/seq/multi-ref/photometric đều ngõ cụt — xem cả đợt 2). **Fix nguyên-lý
-> DUY NHẤT = LEARNED lighting-invariant descriptor / reachability-head (ViNG)** trên frozen V-JEPA, train
-> cross-session (dataset 181 session ĐÃ có positive cross-lighting: cùng xy+heading khác buổi). Rẻ (head
-> nhỏ, backbone đóng băng). **Deadline fallback KHÔNG đổi:** re-teach CÙNG BUỔI (descriptor tốt khi sáng-gần
-> — rank-0 79%). Đóng góp chính (world-model offline + control patch-L1) VẪN VỮNG; đây là negative-finding
-> trung thực ở tầng nav-localize.
->
-> **Lệnh tái lập:** `PYTHONPATH=src python scripts/probe_seqslam_lighting.py --auto-pairs 3 --multiref 6`
-> (CPU ~3'). Probe có cờ `--with-patch` (thử base patch-L1, nặng) — chưa chạy; prior `probe_route_sim`
-> đã đo patch-L1 localize cross-session cũng ≈ random 15%. **KHÔNG sửa inference phiên này** (scope = eval).
+> **➡️ KẾT LUẬN HƯỚNG (cho report + sau deadline):** "tường ánh sáng" là **giới hạn DESCRIPTOR**. **Fix
+> nguyên-lý = LEARNED lighting-invariant descriptor / reachability-head (kiểu ViNG)** trên frozen V-JEPA,
+> train cross-session (dataset 181 session ĐÃ có positive cross-lighting: cùng xy+heading khác buổi). Rẻ
+> (head nhỏ, backbone đóng băng). **Deadline fallback:** re-teach CÙNG BUỔI (descriptor tốt khi sáng-gần).
+> Đóng góp chính (world-model offline + control patch-L1) VẪN VỮNG; đây là negative-finding trung thực ở
+> tầng nav-localize. *(Lưu ý dọn dẹp 2026-06-16: các thử nghiệm sequence-matching trước đây là nhánh phụ
+> KHÔNG dùng — đã bỏ khỏi report và mục này.)*
 
 ## 🔁 2026-06-14 CHIỀU (đợt 2) — ĐÍNH CHÍNH "OOD": KHÔNG OOD. Flat-landscape = XE ĐỨNG YÊN. 3 fix + tường mới = ÁNH SÁNG
 
@@ -191,9 +208,10 @@
 >
 > **➡️ VIỆC NGAY (deadline 06-15):** **RE-TEACH route DƯỚI ÁNH SÁNG HIỆN TẠI rồi chạy LIỀN** (5') —
 > đúng-buổi là cách CHỮA GỐC duy nhất kịp deadline. Rồi `POLICY= TMIN=0.07 bash run_infer.sh` (cold +
-> sàn ga + pop qua-đỉnh default 0.08). **Hướng SAU deadline (lighting-invariance):** SeqSLAM (khớp CHUỖI
-> frame), reachability/temporal-distance head (ViNG), multi-lighting reference per subgoal + fine-tune,
-> Cosmos relight. Đóng góp chính (world-model offline + lái in-domain khi đủ ga) VẪN VỮNG.
+> sàn ga + pop qua-đỉnh default 0.08). **Hướng SAU deadline (lighting-invariance):** LEARNED
+> lighting-invariant descriptor / reachability/temporal-distance head (kiểu ViNG) trên frozen V-JEPA,
+> multi-lighting reference per subgoal + fine-tune, Cosmos relight. Đóng góp chính (world-model offline
+> + lái in-domain khi đủ ga) VẪN VỮNG.
 >
 > **Code đổi (commit phiên này):** `scripts/inference_loop.py` (+arg `--manual-pop-drop`, peak-then-
 > decline pop, `man_cos_peak`), `run_infer.sh` (env `POPDROP`, echo, knob doc). Probe offline ở `/tmp`
@@ -521,9 +539,9 @@ băng sg6 → d 1.5→15m, steer ±1 (CEM mất target).
   xác cm" của họ = encoder khớp tay máy, không phải phép đo ảnh. Phép đo của ta là phần TỰ CHẾ.
 - **Việc nên làm:** (1) **RE-TEACH route ngay trước mỗi buổi chạy** (teach_record 5' hoặc
   route_from_session — xem Q5) — rẻ nhất, chữa đúng gốc; (2) giữ pop = GPS-qua + (ảnh khớp HOẶC
-  geo-confirm <1.5m) như hiện tại; (3) nâng cấp ĐO (sau deadline): seq-matching kiểu SeqSLAM
-  (khớp chuỗi 5–20 frame, chịu đổi-sáng tốt theo literature), hoặc reachability/temporal-distance
-  head kiểu ViNG (học "còn mấy bước tới goal" từ data — nguyên tắc đúng hơn cosine).
+  geo-confirm <1.5m) như hiện tại; (3) nâng cấp ĐO (sau deadline): LEARNED lighting-invariant
+  descriptor, hoặc reachability/temporal-distance head kiểu ViNG (học "còn mấy bước tới goal" từ
+  data — nguyên tắc đúng hơn cosine).
 
 **★ Q2 GPS — vai trò + nâng cấp:**
 - Vai trò hiện tại (đúng như user hiểu): pop gate (`reach-m`) + geo-confirm <1.5m + stuck-detect +
