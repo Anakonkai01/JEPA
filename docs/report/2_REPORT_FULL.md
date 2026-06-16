@@ -42,8 +42,8 @@ action is generated from the visual goal, so changing the goal changes the behav
 
 ## List of Figures
 - **Figure 1** — Results at a glance: three-tier scorecard (§1)
-- **Figure 2** — Data pipeline: capture → sync → pair → split (§6.3)
-- **Figure 3** — Representative onboard frames across time of day & both servo domains (§6.2)
+- **Figure 2** — Representative onboard frames across time of day & both servo domains (§6.2)
+- **Figure 3** — Data pipeline: capture → sync → pair → split (§6.3)
 - **Figure 4** — Dataset overview by servo domain (§7.1)
 - **Figure 5** — Joint steering × throttle action density (§7.2)
 - **Figure 6** — Steering time series of a typical session (corrective driving) (§7.3)
@@ -310,21 +310,21 @@ our AC Predictor builds on, with adaptations for the RC car (same/different/why 
   δ_cam ≈ 100 ms** (measured on the A42, stable at 98–103 ms), recorded per-frame and corrected during
   synchronization.
 
-Figure 3 shows representative frames the onboard camera captures — the same frames the frozen encoder
+Figure 2 shows representative frames the onboard camera captures — the same frames the frozen encoder
 later sees. They span a wide range of lighting and time of day, which becomes central in §13.
 
 ![Representative onboard frames](figures/fig_frame_montage.png)
-*Figure 3 — Representative onboard frames sampled across time of day (11:18 → 22:53) and both servo
+*Figure 2 — Representative onboard frames sampled across time of day (11:18 → 22:53) and both servo
 domains. The variety of lighting, shadows and scenes is exactly the domain shift the system must
 handle; §13 shows it is the localization descriptor — not the encoder — that struggles with it.*
 
 ### 6.3. The pipeline that forms the train/val data
-Figure 2 describes the entire flow from capture to a train/val set (it describes the flow, not file
+Figure 3 describes the entire flow from capture to a train/val set (it describes the flow, not file
 names). The key point: because **frame, telemetry, GPS and IMU share one clock**, we can pair each
 frame precisely with the action *at the exact moment that scene occurred*.
 
 ![Data pipeline](figures/fig_data_pipeline.png)
-*Figure 2 — Data flow: capture (one shared clock) → sync (linearly interpolate 50 Hz telemetry at each
+*Figure 3 — Data flow: capture (one shared clock) → sync (linearly interpolate 50 Hz telemetry at each
 frame's scene time, correct δ_cam, drop packet-loss frames) → each frame becomes (image, action 3-D,
 state 12-D) → split by session 80/20 → 167 train / 42 val. (Diagram source in Appendix §18.5.)*
 
@@ -1054,7 +1054,7 @@ python scripts/plot_closed_loop.py logs/infer_20260613_171912.log --out docs/rep
 The body shows the rendered PNGs (via graphviz). The equivalent **mermaid** source is kept here so the
 diagrams also render on GitHub/VS Code; the canonical sources live in `docs/report/figures/src/*.{dot,mmd}`.
 
-**Figure 2 — Data pipeline (`data_pipeline.mmd`):**
+**Figure 3 — Data pipeline (`data_pipeline.mmd`):**
 ```mermaid
 %%{init: {'theme':'base','themeVariables':{'fontSize':'14px','primaryColor':'#eef6ee','primaryBorderColor':'#2e7d32','lineColor':'#555'}}}%%
 flowchart TB
