@@ -1,0 +1,30 @@
+// N7 — closed-loop deployment block diagram
+// render: dot -Tpng deploy_loop.dot -o ../fig_deploy_loop.png
+digraph deploy_loop {
+  rankdir=LR; bgcolor="white"; fontname="DejaVu Sans"; labelloc="t"; fontsize=13;
+  label="Closed-loop deployment — onboard phone streams to the PC; the PC plans and returns an action";
+  node [shape=box, style="rounded,filled", fontname="DejaVu Sans", fontsize=11,
+        fillcolor="#ffffff", color="#999999", margin="0.15,0.10"];
+  edge [color="#555555", penwidth=1.3, fontname="DejaVu Sans", fontsize=9];
+
+  subgraph cluster_car {
+    label="ON THE CAR"; style="rounded,filled"; fillcolor="#f3f8f3"; color="#2e7d32"; fontsize=11;
+    PHONE [label="Android phone\nultrawide camera + GPS + rotvec", fillcolor="#eef6ee", color="#2e7d32"];
+    ESP   [label="ESP32-S3\nservo (steer) + ESC (throttle)", fillcolor="#fff8e1", color="#f0ad4e"];
+  }
+
+  subgraph cluster_pc {
+    label="ON THE PC (RTX 5070 Ti)"; style="rounded,filled"; fillcolor="#f4f9ff"; color="#0275d8"; fontsize=11;
+    ENC  [label="V-JEPA 2.1 ViT-L 384\nFROZEN encoder → z_t", fillcolor="#fdecea", color="#d9534f", penwidth=2.0];
+    AC   [label="AC Predictor (cd4)\nroll candidate actions → ẑ", fillcolor="#eaf2fb", color="#0275d8", penwidth=2.0];
+    CEM  [label="CEM planner + bicycle model\nargmin E = ‖ẑ − z_goal‖₁", fillcolor="#f3eafb", color="#6a3d9a"];
+  }
+
+  GOAL [label="goal image(s)\n(taught route subgoals)", shape=note, fillcolor="#fffde7", color="#bbbbbb"];
+
+  PHONE -> ENC [label="  TCP: frame + GPS + rotvec  "];
+  ENC -> AC -> CEM;
+  GOAL -> CEM [style=dashed];
+  CEM -> ESP [label="  TCP: 2-byte [steer, throttle]  "];
+  ESP -> PHONE [style=dotted, color="#999999", label="  drives the car → new view  "];
+}
