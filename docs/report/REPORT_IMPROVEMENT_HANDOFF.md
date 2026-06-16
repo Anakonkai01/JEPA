@@ -42,11 +42,10 @@ Out of scope unless asked: `3_SLIDES.md`, `4_REPORT_PROSE_FULL.md`.
 - **Task 5 ✓** — verified: 0 Vietnamese-specific chars; 27/27 image links resolve; all `[n]` resolve
   (no orphans); Fig/Table caption numbers match the Lists; key numbers consistent with §18.3.
 
-### ⏳ ONLY REMAINING ITEM — N6 rig photo (needs the user)
-§6.1 has a placeholder note for a real photo of the rig (car + onboard phone + ESP32). Ask the user to
-supply a photo, save it as `docs/report/figures/fig_rig_photo.jpg`, then replace the placeholder note in
-§6.1 with `![Rig](figures/fig_rig_photo.jpg)` + a caption (and add it to the List of Figures as Figure 2,
-renumbering the rest, or append as an unnumbered photo to avoid renumbering).
+### ✅ N6 rig photo — DONE (2026-06-16, commit 099ebdc)
+User supplied `docs/report/figures/fig_rig_photo.jpg`. Inserted in §6.1 as **Figure 2** with a caption;
+all later figures renumbered +1 → the report now has **28 figures** (List of Figures 1–28). Nothing
+left — report is complete and verified.
 
 ---
 
