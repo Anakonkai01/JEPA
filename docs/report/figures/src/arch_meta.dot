@@ -1,20 +1,20 @@
 digraph arch_meta {
   rankdir=LR; bgcolor="white"; fontname="DejaVu Sans"; labelloc="t"; fontsize=13;
-  label="Kiến trúc tham khảo — Meta V-JEPA 2-AC (cánh tay robot)";
+  label="Reference architecture — Meta V-JEPA 2-AC (robot arm)";
   node [shape=box, style="rounded,filled", fontname="DejaVu Sans", fontsize=11,
         fillcolor="#ffffff", color="#999999", margin="0.14,0.09"];
   edge [color="#555555", penwidth=1.2];
 
-  IMG  [label="Frame\n(ảnh 256px)"];
-  ENC  [label="V-JEPA 2 ViT\nĐÓNG BĂNG · per-frame", fillcolor="#fdecea", color="#d9534f", penwidth=2.2];
-  TOK  [label="patch token"];
+  IMG  [label="Frame\n(256px image)"];
+  ENC  [label="V-JEPA 2 ViT\nFROZEN · per-frame", fillcolor="#fdecea", color="#d9534f", penwidth=2.2];
+  TOK  [label="patch tokens"];
   ACT  [label="action (7-D)\nΔ end-effector", fillcolor="#fff8e1", color="#f0ad4e"];
-  ST   [label="state (7-D)\npose tay máy · proprioception sub-mm", fillcolor="#fff8e1", color="#f0ad4e"];
-  GRP  [label="interleave mỗi frame\n[action, state, patch]", shape=hexagon, fillcolor="#eef6ee", color="#2e7d32"];
-  PRED [label="Predictor block-causal\n~24 lớp · ~300M tham số · 3D-RoPE", fillcolor="#f3eafb", color="#6a3d9a", penwidth=2.2];
+  ST   [label="state (7-D)\narm pose · sub-mm proprioception", fillcolor="#fff8e1", color="#f0ad4e"];
+  GRP  [label="interleave per frame\n[action, state, patch]", shape=hexagon, fillcolor="#eef6ee", color="#2e7d32"];
+  PRED [label="Block-causal predictor\n~24 layers · ~300M params · 3D-RoPE", fillcolor="#f3eafb", color="#6a3d9a", penwidth=2.2];
   ZH   [label="ẑ_t+1"];
   CEM  [label="CEM planning\nE = ‖P − z_goal‖₁", fillcolor="#f3eafb", color="#6a3d9a"];
-  OUT  [label="Δ pose → cánh tay robot\n(cảnh bàn cố định)"];
+  OUT  [label="Δ pose → robot arm\n(fixed tabletop scene)"];
 
   IMG -> ENC -> TOK -> GRP; ACT -> GRP; ST -> GRP; GRP -> PRED -> ZH -> CEM -> OUT;
 }

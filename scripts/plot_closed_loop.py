@@ -87,7 +87,7 @@ def fig_dropout(rows, title, out):
     ax2.plot(t, raw, "-o", color="#ff7f0e", ms=4, lw=1.6, label="|raw steer| (CEM output)")
     ax2.axhline(1.0, color="grey", ls=":", lw=0.8)
     ax2.set_ylabel("|raw steer|")
-    ax2.set_xlabel("tick (mỗi tick ≈ 1.8 s)")
+    ax2.set_xlabel("tick (each ≈ 1.8 s)")
     ax2.set_ylim(0, 1.08)
     ax2.legend(loc="upper left", fontsize=8, framealpha=0.9)
 
@@ -114,18 +114,18 @@ def fig_traj(rows, title, route_name, out):
     teach = load_teach_xy(route_name)
     if teach is not None and len(teach) > 1:
         ax.plot(teach[:, 0], teach[:, 1], "-", color="#2ca02c", lw=2.4, alpha=0.55,
-                label="tuyến teach (subgoal)", zorder=1)
+                label="teach route (subgoals)", zorder=1)
     sc = ax.scatter(x, y, c=cos, cmap="RdYlBu", vmin=-0.2, vmax=0.35, s=45,
                     edgecolor="k", linewidth=0.4, zorder=3)
     ax.plot(x, y, "-", color="grey", lw=0.8, alpha=0.6, zorder=2)
     ax.scatter([x[0]], [y[0]], marker="o", s=120, facecolor="none",
-               edgecolor="green", linewidth=2, label="bắt đầu", zorder=4)
+               edgecolor="green", linewidth=2, label="start", zorder=4)
     ax.scatter([x[-1]], [y[-1]], marker="X", s=120, color="#d62728",
-               label="bung → STOP", zorder=4)
+               label="veer off → STOP", zorder=4)
     cb = fig.colorbar(sc, ax=ax)
     cb.set_label("centered-cos")
-    ax.set_xlabel("x (m, hệ graph)")
-    ax.set_ylabel("y (m, hệ graph)")
+    ax.set_xlabel("x (m, graph frame)")
+    ax.set_ylabel("y (m, graph frame)")
     ax.set_title(title, fontsize=11)
     ax.legend(loc="best", fontsize=8)
     ax.set_aspect("equal", adjustable="datalim")
@@ -156,9 +156,9 @@ def main():
         route = m.group(1) if m else ""
 
     stem = args.log.stem.replace("infer_", "")
-    fig_dropout(rows, f"Closed-loop run {stem}: cos-dropout → mất gradient → full-lock",
+    fig_dropout(rows, f"Closed-loop run {stem}: cos-dropout → lost gradient → full-lock",
                 args.out / f"fig_cos_dropout_{stem}.png")
-    fig_traj(rows, f"Quỹ đạo run {stem}: bám tuyến rồi bung (màu = cos)",
+    fig_traj(rows, f"Run {stem} trajectory: tracks then veers off (color = cos)",
              route, args.out / f"fig_trajectory_{stem}.png")
 
 

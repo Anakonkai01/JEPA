@@ -1,19 +1,19 @@
 digraph encoder_pipeline {
   rankdir=LR; bgcolor="white"; fontname="DejaVu Sans"; labelloc="t"; fontsize=13;
-  label="Pipeline encoder — pre-encode offline 1 lần, train đọc latent";
+  label="Encoder pipeline — pre-encode offline once, training reads latents";
   node [shape=box, style="rounded,filled", fontname="DejaVu Sans", fontsize=11,
         fillcolor="#ffffff", color="#999999", margin="0.14,0.09"];
   edge [color="#555555", penwidth=1.2];
 
   subgraph cluster_off {
-    label="PRE-ENCODE OFFLINE — chạy 1 lần cho cả dataset"; fontname="DejaVu Sans"; fontsize=11;
+    label="PRE-ENCODE OFFLINE — run once for the whole dataset"; fontname="DejaVu Sans"; fontsize=11;
     style="rounded,filled"; fillcolor="#f7fafc"; color="#0275d8";
-    A [label="mỗi frame JPG"];
-    B [label="resize 384×384\nchuẩn hoá ImageNet"];
-    C [label="V-JEPA 2.1 ViT-L 384\nĐÓNG BĂNG · image-path (1 frame)", fillcolor="#fdecea", color="#d9534f", penwidth=2.2];
-    D [label="576 token × 1024-D\nlưu fp16 → đĩa"];
+    A [label="each JPG frame"];
+    B [label="resize 384×384\nImageNet normalize"];
+    C [label="V-JEPA 2.1 ViT-L 384\nFROZEN · image-path (1 frame)", fillcolor="#fdecea", color="#d9534f", penwidth=2.2];
+    D [label="576 tokens × 1024-D\nsave fp16 → disk"];
     A -> B -> C -> D;
   }
-  E [label="HUẤN LUYỆN: đọc latent trực tiếp\nKHÔNG forward V-JEPA → nhanh ~50–100×", fillcolor="#eaf2fb", color="#0275d8", penwidth=2.2];
+  E [label="TRAINING: read latents directly\nNO V-JEPA forward pass → ~50–100× faster", fillcolor="#eaf2fb", color="#0275d8", penwidth=2.2];
   D -> E;
 }

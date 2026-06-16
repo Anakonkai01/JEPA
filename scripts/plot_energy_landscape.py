@@ -63,10 +63,10 @@ def main():
         axA.plot(grid[int(np.argmin(en))], 0.0, "o", color=col, ms=11, mec="k", mew=0.8)
         axA.axvline(tea, color=col, ls=":", lw=1.6, alpha=0.7)
     axA.axvline(0, color="grey", lw=0.7)
-    axA.set_xlabel("góc lái quét  (−1 = trái … +1 = phải)", fontsize=10)
-    axA.set_ylabel("năng lượng chuẩn hoá  E = ‖P̂ − z_goal‖₁", fontsize=10)
-    axA.set_title("(A) Đáy năng lượng (●=argmin) nằm đúng phía người lái (chấm)\n"
-                  "đỏ = người cua trái · xanh = cua phải", fontsize=9.5)
+    axA.set_xlabel("swept steering  (−1 = left … +1 = right)", fontsize=10)
+    axA.set_ylabel("normalized energy  E = ‖P̂ − z_goal‖₁", fontsize=10)
+    axA.set_title("(A) Energy valley (●=argmin) sits on the human's turn side (dot)\n"
+                  "red = human turned left · blue = right", fontsize=9.5)
 
     # ---- (B) scatter model vs human ----
     teas = np.asarray([f["human_steer"] for f in turns])
@@ -74,15 +74,15 @@ def main():
     same = np.sign(teas) == np.sign(bests)
     axB.fill([0, 1, 1, 0], [0, 0, 1, 1], color="#2ca02c", alpha=0.06)
     axB.fill([0, -1, -1, 0], [0, 0, -1, -1], color="#2ca02c", alpha=0.06)
-    axB.scatter(teas[same], bests[same], c="#2ca02c", s=26, edgecolor="k", linewidth=0.3, label="cùng dấu")
-    axB.scatter(teas[~same], bests[~same], c="#d62728", s=34, marker="x", label="khác dấu")
+    axB.scatter(teas[same], bests[same], c="#2ca02c", s=26, edgecolor="k", linewidth=0.3, label="same sign")
+    axB.scatter(teas[~same], bests[~same], c="#d62728", s=34, marker="x", label="diff sign")
     axB.plot([-1, 1], [-1, 1], color="grey", ls="--", lw=0.8)
     axB.axhline(0, color="grey", lw=0.6); axB.axvline(0, color="grey", lw=0.6)
     axB.set_xlim(-1.1, 1.1); axB.set_ylim(-1.1, 1.1); axB.set_aspect("equal")
-    axB.set_xlabel("góc lái người (teacher)", fontsize=10)
-    axB.set_ylabel("argmin-E (model chọn)", fontsize=10)
-    axB.set_title(f"(B) Model vs người trên {len(turns)} frame quẹo\n"
-                  f"đúng dấu {s['sign_correct_turn']}/{s['sign_total_turn']} = "
+    axB.set_xlabel("human steering (teacher)", fontsize=10)
+    axB.set_ylabel("argmin-E (model's choice)", fontsize=10)
+    axB.set_title(f"(B) Model vs human on {len(turns)} turn frames\n"
+                  f"sign-correct {s['sign_correct_turn']}/{s['sign_total_turn']} = "
                   f"{100*s['sign_acc_turn']:.0f}%", fontsize=9.5)
     axB.legend(fontsize=8, loc="lower right")
 
@@ -103,16 +103,16 @@ def main():
     im = axC.imshow(M, aspect="auto", origin="lower", cmap="magma",
                     extent=[0, len(frames), grid.min(), grid.max()], vmin=0, vmax=1)
     hj, hv = zip(*hs); mj, mv = zip(*ms)
-    axC.plot(hj, hv, color="#39ff14", lw=1.2, alpha=0.85, label="người lái")
-    axC.set_xlabel("frame (thời gian →)", fontsize=10)
-    axC.set_ylabel("góc lái", fontsize=10)
-    axC.set_title("(C) Toàn session: 'sườn sáng' = góc model thích (đậm khi quẹo) bám người lái",
+    axC.plot(hj, hv, color="#39ff14", lw=1.2, alpha=0.85, label="human")
+    axC.set_xlabel("frame (time →)", fontsize=10)
+    axC.set_ylabel("steering", fontsize=10)
+    axC.set_title("(C) Whole session: 'bright ridge' = model-preferred steer (bold at turns) tracks the human",
                   fontsize=9.5)
     axC.legend(fontsize=8, loc="upper right", framealpha=0.85)
-    fig.colorbar(im, ax=axC, fraction=0.046, pad=0.02, label="ưu tiên (sáng=E thấp) × contrast")
+    fig.colorbar(im, ax=axC, fraction=0.046, pad=0.02, label="preference (bright=low E) × contrast")
 
-    fig.suptitle(f"Energy landscape lái — session {sess} (VAL held-out), goal ~{lead}s phía trước, "
-                 f"ga = teacher · contrast median {s['median_contrast']}", fontsize=10.5, y=1.02)
+    fig.suptitle(f"Steering energy landscape — session {sess} (VAL held-out), goal ~{lead}s ahead, "
+                 f"throttle = teacher · median contrast {s['median_contrast']}", fontsize=10.5, y=1.02)
     fig.tight_layout()
     fig.savefig(args.out, dpi=150, bbox_inches="tight")
     print("wrote", args.out, "| curves:", len(ex), "| turn frames:", len(turns))

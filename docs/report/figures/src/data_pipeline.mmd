@@ -1,16 +1,16 @@
 %%{init: {'theme':'base','themeVariables':{'fontSize':'14px','primaryColor':'#eef6ee','primaryBorderColor':'#2e7d32','lineColor':'#555'}}}%%
 flowchart TB
-  subgraph REC["THU DỮ LIỆU — điện thoại onboard, MỘT đồng hồ chung"]
+  subgraph REC["DATA CAPTURE — onboard phone, ONE shared clock"]
     direction LR
-    CAM["Camera ultrawide<br/>frame + thời điểm cảnh<br/>(chỉnh trễ chụp δ_cam ≈ 100 ms)"]
-    TEL["ESP32 telemetry 50 Hz qua USB<br/>steer · throttle · mode"]
+    CAM["Ultrawide camera<br/>frame + scene timestamp<br/>(capture latency δ_cam ≈ 100 ms corrected)"]
+    TEL["ESP32 telemetry 50 Hz over USB<br/>steer · throttle · mode"]
     SEN["GPS ~1 Hz + IMU<br/>gyro · accel · rotation-vector"]
   end
   CAM --> SYNC
   TEL --> SYNC
   SEN --> SYNC
-  SYNC["<b>ĐỒNG BỘ</b> — nội suy tuyến tính telemetry 50 Hz<br/>tại đúng thời điểm cảnh của mỗi frame<br/>· loại frame rơi vào lỗ telemetry (mất gói)"]
-  SYNC --> PAIR["mỗi frame ⇒ (ảnh, action 3-D, state 12-D)"]
-  PAIR --> SPLIT{{"chia theo SESSION 80/20 · seed 0"}}
-  SPLIT --> TR["167 session · train"]
-  SPLIT --> VA["42 session · val (held-out)"]
+  SYNC["<b>SYNC</b> — linearly interpolate 50 Hz telemetry<br/>at each frame's exact scene time<br/>· drop frames falling in telemetry gaps (packet loss)"]
+  SYNC --> PAIR["each frame ⇒ (image, action 3-D, state 12-D)"]
+  PAIR --> SPLIT{{"split by SESSION 80/20 · seed 0"}}
+  SPLIT --> TR["167 sessions · train"]
+  SPLIT --> VA["42 sessions · val (held-out)"]

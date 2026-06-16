@@ -118,21 +118,21 @@ def main():
             v = agg[d][col]
             if len(v):
                 plt.hist(v, bins=60, range=rng, alpha=0.6, label=f"{d} (n={len(v):,})", color=C[d], density=True)
-        plt.xlabel(xlabel); plt.ylabel("mật độ"); plt.title(title); plt.legend(fontsize=8)
+        plt.xlabel(xlabel); plt.ylabel("density"); plt.title(title); plt.legend(fontsize=8)
         plt.tight_layout(); p = FIG / fname; plt.savefig(p, dpi=130); plt.close()
         summ["figures"].append(str(p)); print("wrote", p)
 
-    hist("steer", "Phân bố góc lái (steering)", "fig_data_steer_hist.png", "steer [-1,1]", (-1, 1))
-    hist("throt", "Phân bố ga (throttle) — KDS ~hằng vs TowerPro biến thiên", "fig_data_throttle_hist.png", "throttle", (-0.2, 0.3))
-    hist("speed", "Phân bố tốc độ (GPS)", "fig_data_speed_hist.png", "speed (m/s)", (0, max(2.0, float(np.percentile(all_speed, 99)))))
+    hist("steer", "Steering distribution", "fig_data_steer_hist.png", "steer [-1,1]", (-1, 1))
+    hist("throt", "Throttle distribution — KDS ~constant vs TowerPro varied", "fig_data_throttle_hist.png", "throttle", (-0.2, 0.3))
+    hist("speed", "Speed distribution (GPS)", "fig_data_speed_hist.png", "speed (m/s)", (0, max(2.0, float(np.percentile(all_speed, 99)))))
 
     # per-session duration sorted, colored by domain
     plt.figure(figsize=(7, 3.4))
     rows = sorted(per_session, key=lambda r: r["dur_s"])
     plt.bar(range(len(rows)), [r["dur_s"] for r in rows],
             color=[C[r["domain"]] for r in rows], width=1.0)
-    plt.xlabel("session (sắp theo độ dài)"); plt.ylabel("thời lượng (s)")
-    plt.title(f"Độ dài {len(rows)} session (đỏ=KDS, xanh=TowerPro)")
+    plt.xlabel("session (sorted by length)"); plt.ylabel("duration (s)")
+    plt.title(f"Length of {len(rows)} sessions (red=KDS, blue=TowerPro)")
     plt.tight_layout(); p = FIG / "fig_data_sessions.png"; plt.savefig(p, dpi=130); plt.close()
     summ["figures"].append(str(p)); print("wrote", p)
 
@@ -140,7 +140,7 @@ def main():
     plt.figure(figsize=(6, 3.0))
     hs = sorted(hour_frames)
     plt.bar(hs, [hour_frames[h] for h in hs], color="#5cb85c")
-    plt.xlabel("giờ trong ngày"); plt.ylabel("số frame"); plt.title("Phủ thời gian thu data (giờ)")
+    plt.xlabel("hour of day"); plt.ylabel("#frames"); plt.title("Data-collection time-of-day coverage")
     plt.tight_layout(); p = FIG / "fig_data_timeofday.png"; plt.savefig(p, dpi=130); plt.close()
     summ["figures"].append(str(p)); print("wrote", p)
 
@@ -152,13 +152,13 @@ def main():
     m = tt <= min(tt.max(), 90.0)                      # first ~90 s for readability
     fig, ax = plt.subplots(figsize=(8, 3.2))
     ax.axhline(0, color="grey", lw=0.6)
-    ax.plot(tt[m], st[m], color="#6a3d9a", lw=1.4, label="góc lái (steer)")
-    ax.plot(tt[m], th[m], color="#ff7f0e", lw=1.0, alpha=0.8, label="ga (throttle)")
+    ax.plot(tt[m], st[m], color="#6a3d9a", lw=1.4, label="steering (steer)")
+    ax.plot(tt[m], th[m], color="#ff7f0e", lw=1.0, alpha=0.8, label="throttle")
     ax.fill_between(tt[m], -1, 1, where=np.abs(st[m]) > TURN, color="#6a3d9a", alpha=0.06)
-    ax.set_xlabel("thời gian (s)"); ax.set_ylabel("lệnh chuẩn hoá [-1,1]")
+    ax.set_xlabel("time (s)"); ax.set_ylabel("normalized command [-1,1]")
     ax.set_ylim(-1.05, 1.05)
-    ax.set_title(f"Lái tay dao động hai phía liên tục ({ex_name}, {int(m.sum())} frame)\n"
-                 "→ dữ liệu CHỨA hành vi điều chỉnh / sửa lệch (không phải lái-một-đường-thẳng)",
+    ax.set_title(f"Manual steering oscillates both ways continuously ({ex_name}, {int(m.sum())} frames)\n"
+                 "→ data CONTAINS corrective / recovery behavior (not straight-line driving)",
                  fontsize=9)
     ax.legend(fontsize=8, loc="upper right")
     plt.tight_layout(); p = FIG / "fig_data_steer_timeseries.png"; plt.savefig(p, dpi=140); plt.close()
@@ -168,9 +168,9 @@ def main():
     plt.figure(figsize=(5.4, 4.2))
     h = plt.hist2d(all_steer, all_throt, bins=[60, 50], range=[[-1, 1], [-0.2, 0.3]],
                    cmap="magma", cmin=1)
-    plt.colorbar(h[3], label="số frame")
-    plt.xlabel("góc lái (steer)"); plt.ylabel("ga (throttle)")
-    plt.title("Mật độ chung góc-lái × ga (toàn dataset)")
+    plt.colorbar(h[3], label="#frames")
+    plt.xlabel("steering (steer)"); plt.ylabel("throttle")
+    plt.title("Joint steering × throttle density (whole dataset)")
     plt.tight_layout(); p = FIG / "fig_data_steer_throttle_2d.png"; plt.savefig(p, dpi=140); plt.close()
     summ["figures"].append(str(p)); print("wrote", p)
     summ["example_session"] = ex_name

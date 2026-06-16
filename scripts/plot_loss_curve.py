@@ -49,10 +49,10 @@ def main():
     ax.axvspan(0, 6, color="#0275d8", alpha=0.05)
     ax.axvspan(6, 9, color="#5cb85c", alpha=0.06)
     ax.axvspan(9, ep_cd[-1], color="#d9534f", alpha=0.06)
-    ax.annotate("WSD 'stable' plateau ~0.60\n(cosine tail không tới kịp deadline)",
+    ax.annotate("WSD 'stable' plateau ~0.60\n(cosine tail never arrives before deadline)",
                 xy=(8, 0.605), xytext=(3.4, 0.66), fontsize=8.2,
                 arrowprops=dict(arrowstyle="->", color="#5cb85c"))
-    ax.annotate("cúp điện giữa ep12 →\nre-init ep9 best.pt, cooldown",
+    ax.annotate("power cut mid-ep12 →\nre-init ep9 best.pt, cooldown",
                 xy=(9, 0.600), xytext=(4.6, 0.55), fontsize=8.2,
                 arrowprops=dict(arrowstyle="->", color="#d9534f"))
     ax.annotate(f"deploy best.pt (cd4)\nval {VAL_COOLDOWN[-1]:.3f} · rollout@1/idn 0.744",
@@ -62,7 +62,7 @@ def main():
     ax.set_xlabel("epoch", fontsize=10)
     ax.set_ylabel("val L1 loss  (teacher-forcing + 2-step rollout)", fontsize=10)
     ax.set_ylim(0.54, 0.82)
-    ax.set_title("Đường cong huấn luyện AC Predictor (val) — lịch LR kiểu WSD: base cosine "
+    ax.set_title("AC Predictor training curve (val) — WSD-style LR schedule: base cosine "
                  "→ plateau → cooldown LR→0", fontsize=9.8)
     ax.grid(alpha=0.25)
     ax.legend(fontsize=9, loc="upper right")

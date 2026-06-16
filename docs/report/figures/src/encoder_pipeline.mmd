@@ -1,11 +1,11 @@
 %%{init: {'theme':'base','themeVariables':{'fontSize':'15px','primaryColor':'#eaf2fb','primaryBorderColor':'#0275d8','lineColor':'#555'}}}%%
 flowchart LR
-  subgraph OFF["PRE-ENCODE OFFLINE — chạy 1 lần cho cả dataset"]
+  subgraph OFF["PRE-ENCODE OFFLINE — run once for the whole dataset"]
     direction LR
-    A["mỗi frame JPG"] --> B["resize 384×384<br/>chuẩn hoá ImageNet"]
-    B --> C["<b>V-JEPA 2.1 ViT-L 384</b><br/>ĐÓNG BĂNG · image-path (1 frame)"]
-    C --> D["576 token × 1024-D<br/>lưu fp16 → đĩa"]
+    A["each JPG frame"] --> B["resize 384×384<br/>ImageNet normalize"]
+    B --> C["<b>V-JEPA 2.1 ViT-L 384</b><br/>FROZEN · image-path (1 frame)"]
+    C --> D["576 tokens × 1024-D<br/>save fp16 → disk"]
   end
-  D --> E["<b>HUẤN LUYỆN</b>: đọc latent trực tiếp<br/>KHÔNG forward V-JEPA → nhanh ~50–100×"]
+  D --> E["<b>TRAINING</b>: read latents directly<br/>NO V-JEPA forward pass → ~50–100× faster"]
   classDef frozen fill:#fdecea,stroke:#d9534f,stroke-width:2px;
   class C frozen;

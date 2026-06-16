@@ -40,21 +40,21 @@ def main():
     fig, (axA, axB) = plt.subplots(1, 2, figsize=(11, 4.2))
 
     # ---- (A) 3-step progression ----
-    bars = [("Chỉ TowerPro\n(servo mới)", TOWERPRO_ONLY, "#d9534f"),
+    bars = [("TowerPro only\n(new servo)", TOWERPRO_ONLY, "#d9534f"),
             ("Pretrain KDS →\nfinetune TowerPro", FINETUNE, "#f0ad4e"),
-            ("Train trộn\nKDS + TowerPro", MIXED, "#0275d8")]
+            ("Mixed train\nKDS + TowerPro", MIXED, "#0275d8")]
     xs = np.arange(len(bars))
     axA.bar(xs, [b[1] for b in bars], color=[b[2] for b in bars], width=0.6, zorder=3)
     axA.axhline(1.0, color="k", ls="--", lw=1.2, zorder=2)
-    axA.text(2.45, 1.005, "baseline đứng-yên (=1.0)", ha="right", va="bottom", fontsize=8.5)
+    axA.text(2.45, 1.005, "stand-still baseline (=1.0)", ha="right", va="bottom", fontsize=8.5)
     for x, (lab, v, _) in zip(xs, bars):
         axA.text(x, v + 0.02, f"{v:.3f}", ha="center", va="bottom", fontsize=11, fontweight="bold")
-        axA.text(x, 0.04, "THUA" if v >= 1.0 else "THẮNG", ha="center", va="bottom",
+        axA.text(x, 0.04, "LOSE" if v >= 1.0 else "WIN", ha="center", va="bottom",
                  color="white", fontsize=9, fontweight="bold")
     axA.set_xticks(xs); axA.set_xticklabels([b[0] for b in bars], fontsize=8.5)
     axA.set_ylabel("rollout@1 / identity  (eval TowerPro held-out)", fontsize=9.5)
     axA.set_ylim(0, 1.2)
-    axA.set_title("(A) Càng dùng nhiều dữ liệu servo-cũ càng tốt:\nchỉ-servo-mới THUA → finetune ≈ hoà → trộn THẮNG",
+    axA.set_title("(A) More old-servo data is better:\nnew-servo-only LOSES → finetune ≈ tie → mixed WINS",
                   fontsize=9.5)
 
     # ---- (B) val curve over epochs ----
@@ -63,12 +63,12 @@ def main():
     axB.set_xlabel("epoch", fontsize=9.5)
     axB.set_ylabel("val L1 loss (tf + rollout)", fontsize=9.5)
     axB.set_ylim(0.55, 0.85)
-    axB.set_title("(B) Model trộn: val loss giảm đều 0.79 → 0.60\n(học động học chung, không overfit servo)",
+    axB.set_title("(B) Mixed model: val loss steadily 0.79 → 0.60\n(learns shared dynamics, no servo overfit)",
                   fontsize=9.5)
     axB.grid(alpha=0.25)
 
-    fig.suptitle("Transfer chéo-domain-servo: dữ liệu servo-khác giúp học động học chung "
-                 "(domain_id phân biệt ánh xạ lệnh→góc)", fontsize=10, y=1.02)
+    fig.suptitle("Cross-servo-domain transfer: other-servo data helps learn shared dynamics "
+                 "(domain_id separates the command→angle mappings)", fontsize=10, y=1.02)
     fig.tight_layout()
     fig.savefig(args.out, dpi=150, bbox_inches="tight")
     print("wrote", args.out)

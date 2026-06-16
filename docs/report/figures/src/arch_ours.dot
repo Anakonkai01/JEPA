@@ -1,19 +1,19 @@
 digraph arch_ours {
   rankdir=LR; bgcolor="white"; fontname="DejaVu Sans"; labelloc="t"; fontsize=13;
-  label="Kiến trúc của chúng tôi — V-JEPA 2.1 frozen + AC Predictor (xe RC)";
+  label="Our architecture — frozen V-JEPA 2.1 + AC Predictor (RC car)";
   node [shape=box, style="rounded,filled", fontname="DejaVu Sans", fontsize=11,
         fillcolor="#ffffff", color="#999999", margin="0.14,0.09"];
   edge [color="#555555", penwidth=1.2];
 
-  IMG  [label="Frame x_t\n(ảnh 384px)"];
-  ENC  [label="V-JEPA 2.1 ViT-L 384\nĐÓNG BĂNG · per-frame", fillcolor="#fdecea", color="#d9534f", penwidth=2.2];
-  TOK  [label="z_t : 576 patch token × 1024-D"];
+  IMG  [label="Frame x_t\n(384px image)"];
+  ENC  [label="V-JEPA 2.1 ViT-L 384\nFROZEN · per-frame", fillcolor="#fdecea", color="#d9534f", penwidth=2.2];
+  TOK  [label="z_t : 576 patch tokens × 1024-D"];
   ACT  [label="action a_t (3-D)\nsteer · throttle · domain_id", fillcolor="#fff8e1", color="#f0ad4e"];
   ST   [label="state s_t (12-D)\nspeed · gyro · accel · rotvec\nprev_steer · prev_throttle", fillcolor="#fff8e1", color="#f0ad4e"];
-  GRP  [label="interleave mỗi frame\n[action, state, patch×576] = 578 token", shape=hexagon, fillcolor="#eef6ee", color="#2e7d32"];
-  PRED [label="AC Predictor — block-causal Transformer\n12 lớp · 512-rộng · 8 head\n≈ 39.2M tham số (chỉ predictor)", fillcolor="#eaf2fb", color="#0275d8", penwidth=2.2];
-  ZH   [label="ẑ_t+1 : 576 patch token dự đoán"];
-  CEM  [label="CEM + bicycle-model\nargmin E = ‖ẑ − z_goal‖₁", fillcolor="#f3eafb", color="#6a3d9a"];
+  GRP  [label="interleave per frame\n[action, state, patch×576] = 578 tokens", shape=hexagon, fillcolor="#eef6ee", color="#2e7d32"];
+  PRED [label="AC Predictor — block-causal Transformer\n12 layers · width 512 · 8 heads\n≈ 39.2M params (predictor only)", fillcolor="#eaf2fb", color="#0275d8", penwidth=2.2];
+  ZH   [label="ẑ_t+1 : 576 predicted patch tokens"];
+  CEM  [label="CEM + bicycle model\nargmin E = ‖ẑ − z_goal‖₁", fillcolor="#f3eafb", color="#6a3d9a"];
   OUT  [label="[steer, throttle]\n→ ESP32 → servo / ESC"];
 
   IMG -> ENC -> TOK -> GRP; ACT -> GRP; ST -> GRP; GRP -> PRED -> ZH -> CEM -> OUT;

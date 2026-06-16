@@ -1,25 +1,25 @@
-// Cơ chế thất bại cos-dropout — render: dot -Tpng fig_cos_dropout_mechanism.dot -o ../fig_cos_dropout_mechanism.png
+// cos-dropout failure mechanism — render: dot -Tpng fig_cos_dropout_mechanism.dot -o ../fig_cos_dropout_mechanism.png
 digraph dropout {
   rankdir=TB;
   graph [fontname="DejaVu Sans", bgcolor="white", ranksep=0.40, pad=0.2];
   node  [fontname="DejaVu Sans", shape=box, style="rounded,filled", fontsize=11, margin="0.18,0.09"];
   edge  [fontname="DejaVu Sans", fontsize=9, color="#444444"];
 
-  A [label="Bám tuyến (cos > 0.15)", fillcolor="#a3cfbb"];
-  B [label="Tới subgoal yếu: ảnh live ≠ ảnh teach", fillcolor="#ffe69c"];
+  A [label="On track (cos > 0.15)", fillcolor="#a3cfbb"];
+  B [label="Reach a weak subgoal: live image ≠ taught image", fillcolor="#ffe69c"];
   C [label="centered-cos < 0.1", fillcolor="#ffda9e"];
-  D [label="Energy phẳng theo steering\nCEM mất gradient", fillcolor="#f1aeb5"];
-  E [label="Lái loạn full-lock ±1, đảo chiều", fillcolor="#f1aeb5"];
-  F [label="Văng > 2 m khỏi tuyến", fillcolor="#ea868f"];
-  G [label="KHÔNG có ảnh teach dạy\n'lệch 2 m thì bẻ về đâu' (no-recovery)", fillcolor="#ea868f"];
-  H [label="ĐÂM LỀ", fillcolor="#dc3545", fontcolor="white", penwidth=2];
-  K [label="kick steer-aware nâng ga\n-> tăng tốc khi đang quẹo bậy", fillcolor="#fed7aa"];
+  D [label="Energy flat in steering\nCEM loses gradient", fillcolor="#f1aeb5"];
+  E [label="Erratic steering: full-lock ±1, sign flips", fillcolor="#f1aeb5"];
+  F [label="Drifts > 2 m off route", fillcolor="#ea868f"];
+  G [label="NO taught image for\n'how to steer back when 2 m off' (no recovery)", fillcolor="#ea868f"];
+  H [label="HITS THE EDGE", fillcolor="#dc3545", fontcolor="white", penwidth=2];
+  K [label="steer-aware kick raises throttle\n-> speeds up mid-bad-turn", fillcolor="#fed7aa"];
 
   A -> B -> C -> D -> E -> F -> G -> H;
-  E -> K [style=dashed, color="#fd7e14", label="cộng hưởng"];
+  E -> K [style=dashed, color="#fd7e14", label="compounds"];
   K -> F [style=dashed, color="#fd7e14"];
 
   labelloc="t";
-  label="Vòng xoáy cos-dropout (đo trên ~10 run): mất gradient -> lái loạn -> văng -> không tín hiệu kéo về";
+  label="cos-dropout spiral (observed over ~10 runs): lost gradient -> erratic steering -> drift -> no signal to pull back";
   fontname="DejaVu Sans"; fontsize=10;
 }

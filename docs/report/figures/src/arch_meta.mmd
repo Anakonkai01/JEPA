@@ -1,14 +1,14 @@
 %%{init: {'theme':'base','themeVariables':{'fontSize':'15px','primaryColor':'#f3eafb','primaryBorderColor':'#6a3d9a','lineColor':'#555'}}}%%
 flowchart LR
-  IMG["Frame<br/>ảnh 256px"] --> ENC["<b>V-JEPA 2 ViT</b><br/>ĐÓNG BĂNG · per-frame"]
-  ENC --> TOK["patch token"]
+  IMG["Frame<br/>256px image"] --> ENC["<b>V-JEPA 2 ViT</b><br/>FROZEN · per-frame"]
+  ENC --> TOK["patch tokens"]
   ACT["action (7-D)<br/>Δ end-effector"] --> GRP
-  ST["state (7-D)<br/>pose tay máy · proprioception sub-mm"] --> GRP
-  TOK --> GRP{{"interleave mỗi frame<br/>[action, state, patch]"}}
-  GRP --> PRED["<b>Predictor block-causal</b><br/>~24 lớp · ~300M tham số · 3D-RoPE"]
+  ST["state (7-D)<br/>arm pose · sub-mm proprioception"] --> GRP
+  TOK --> GRP{{"interleave per frame<br/>[action, state, patch]"}}
+  GRP --> PRED["<b>Block-causal predictor</b><br/>~24 layers · ~300M params · 3D-RoPE"]
   PRED --> ZH["ẑ_t+1"]
   ZH --> CEM["<b>CEM planning</b><br/>E = ‖P − z_goal‖₁"]
-  CEM --> OUT["Δ pose → cánh tay robot<br/>(cảnh bàn cố định)"]
+  CEM --> OUT["Δ pose → robot arm<br/>(fixed tabletop scene)"]
   classDef frozen fill:#fdecea,stroke:#d9534f,stroke-width:2px;
   classDef train fill:#f3eafb,stroke:#6a3d9a,stroke-width:2px;
   class ENC frozen;

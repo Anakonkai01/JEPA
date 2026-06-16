@@ -1,22 +1,22 @@
 digraph data_pipeline {
   rankdir=TB; bgcolor="white"; fontname="DejaVu Sans"; labelloc="t"; fontsize=13;
-  label="Pipeline dữ liệu — thu (1 đồng hồ) → đồng bộ → ghép action/state → chia train/val";
+  label="Data pipeline — capture (one clock) → sync → pair action/state → split train/val";
   node [shape=box, style="rounded,filled", fontname="DejaVu Sans", fontsize=11,
         fillcolor="#ffffff", color="#999999", margin="0.14,0.09"];
   edge [color="#555555", penwidth=1.2];
 
   subgraph cluster_rec {
-    label="THU DỮ LIỆU — điện thoại onboard, MỘT đồng hồ chung"; fontname="DejaVu Sans"; fontsize=11;
+    label="DATA CAPTURE — onboard phone, ONE shared clock"; fontname="DejaVu Sans"; fontsize=11;
     style="rounded,filled"; fillcolor="#f3f8f3"; color="#2e7d32"; rank=same;
-    CAM [label="Camera ultrawide\nframe + thời điểm cảnh\n(chỉnh trễ chụp δ_cam ≈ 100 ms)"];
+    CAM [label="Ultrawide camera\nframe + scene timestamp\n(capture latency δ_cam ≈ 100 ms corrected)"];
     TEL [label="ESP32 telemetry 50 Hz (USB)\nsteer · throttle · mode"];
     SEN [label="GPS ~1 Hz + IMU\ngyro · accel · rotation-vector"];
   }
-  SYNC [label="ĐỒNG BỘ — nội suy tuyến tính telemetry 50 Hz\ntại đúng thời điểm cảnh của mỗi frame\n· loại frame rơi vào lỗ telemetry (mất gói)", fillcolor="#eaf2fb", color="#0275d8", penwidth=2.2];
-  PAIR [label="mỗi frame ⇒ (ảnh, action 3-D, state 12-D)"];
-  SPLIT [label="chia theo SESSION 80/20 · seed 0", shape=hexagon, fillcolor="#eef6ee", color="#2e7d32"];
-  TR [label="167 session · train"];
-  VA [label="42 session · val (held-out)"];
+  SYNC [label="SYNC — linearly interpolate 50 Hz telemetry\nat each frame's exact scene time\n· drop frames falling in telemetry gaps (packet loss)", fillcolor="#eaf2fb", color="#0275d8", penwidth=2.2];
+  PAIR [label="each frame ⇒ (image, action 3-D, state 12-D)"];
+  SPLIT [label="split by SESSION 80/20 · seed 0", shape=hexagon, fillcolor="#eef6ee", color="#2e7d32"];
+  TR [label="167 sessions · train"];
+  VA [label="42 sessions · val (held-out)"];
 
   CAM -> SYNC; TEL -> SYNC; SEN -> SYNC;
   SYNC -> PAIR -> SPLIT; SPLIT -> TR; SPLIT -> VA;
