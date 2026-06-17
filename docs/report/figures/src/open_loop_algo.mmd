@@ -1,0 +1,28 @@
+%%{init: {'theme':'base','themeVariables':{'fontSize':'14px','primaryColor':'#eaf2fb','primaryBorderColor':'#0275d8','lineColor':'#444','edgeLabelBackground':'#ffffff'}}}%%
+flowchart TB
+  START(["frame t in VAL session"]):::start --> FETCH
+
+  FETCH["<b>Fetch inputs</b><br/>z_t ← pre-encoded latent of frame t<br/>z_goal ← pre-encoded latent of frame t+d &nbsp;⟵&nbsp; goal ~0.9 s ahead<br/>s_t ← state 12-D at t"]:::data --> GRID
+
+  GRID(["for (steer, throttle) in 15×9 grid — 135 combinations"]):::loop --> ROLL
+
+  ROLL["<b>Roll d steps</b><br/>AC Predictor + bicycle model<br/>→ predicted latent <b>ẑ</b>"]:::compute --> ENERGY
+
+  ENERGY["E[steer, throttle] = mean L1(<b>ẑ</b>, z_goal)"]:::compute --> CHECK
+
+  CHECK{"more\ncombinations?"}:::decision
+  CHECK -- yes --> ROLL
+  CHECK -- no --> ARGMIN
+
+  ARGMIN["<b>(steer*, throttle*)</b> = argmin E<br/>model picks <b>both axes simultaneously</b>"]:::result --> RECORD
+
+  RECORD["<b>Record</b><br/>sign(steer*) == sign(human_steer)?<br/>throttle* > 0?"]:::result --> NEXTFRAME
+
+  NEXTFRAME(["next frame t"]):::start --> FETCH
+
+  classDef start    fill:#e8f5e9,stroke:#2e7d32,stroke-width:1.5px,color:#1b5e20
+  classDef data     fill:#eaf2fb,stroke:#0275d8,stroke-width:1.5px,color:#01304a
+  classDef loop     fill:#fff8e1,stroke:#f0ad4e,stroke-width:1.5px,color:#4a3000
+  classDef compute  fill:#f3eafb,stroke:#6a3d9a,stroke-width:1.5px,color:#2d0f5a
+  classDef decision fill:#fdecea,stroke:#d9534f,stroke-width:1.5px,color:#5a0f0f
+  classDef result   fill:#e8f5e9,stroke:#2e7d32,stroke-width:1.5px,color:#1b5e20

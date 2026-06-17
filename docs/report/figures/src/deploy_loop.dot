@@ -25,6 +25,7 @@ digraph deploy_loop {
   PHONE -> ENC [label="  TCP: frame + GPS + rotvec  "];
   ENC -> AC -> CEM;
   GOAL -> CEM [style=dashed];
-  CEM -> ESP [label="  TCP: 2-byte [steer, throttle]  "];
-  ESP -> PHONE [style=dotted, color="#999999", label="  drives the car → new view  "];
+  CEM -> PHONE [label="  TCP: 2-byte [steer, throttle]  "];
+  PHONE -> ESP [label="  USB: forward action  "];
+  ESP -> PHONE [style=dotted, color="#999999", label="  car moves → camera captures new view  ", constraint=false];
 }

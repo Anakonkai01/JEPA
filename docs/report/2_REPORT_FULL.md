@@ -46,7 +46,6 @@ action is generated from the visual goal, so changing the goal changes the behav
 - **Figure 3** — Representative onboard frames across time of day & both servo domains (§6.2)
 - **Figure 4** — Data pipeline: capture → sync → pair → split (§6.3)
 - **Figure 5** — Dataset overview by servo domain (§7.1)
-- **Figure 6** — Joint steering × throttle action density (§7.2)
 - **Figure 7** — Steering time series of a typical session (corrective driving) (§7.3)
 - **Figure 8** — Throttle distribution, two domains (§7.4)
 - **Figure 9** — Steering distribution (§7.4)
@@ -59,7 +58,6 @@ action is generated from the visual goal, so changing the goal changes the behav
 - **Figure 16** — Reference architecture: Meta V-JEPA 2-AC (§9.3)
 - **Figure 17** — Validation L1 loss curve (§9.6)
 - **Figure 18** — Cross-servo-domain transfer (§11.3)
-- **Figure 19** — Energy landscape / action sensitivity on a VAL session (§11.4)
 - **Figure 20** — Planner steering vs human steering (§11.4)
 - **Figure 21** — Energy contrast vs goal horizon d, justifying d = 4 (§12.1)
 - **Figure 22** — Joint energy landscape E(steer, throttle) for one VAL frame (§12.2)
@@ -381,14 +379,6 @@ domains. Session-level 80/20 split, seed 0 → **167 train / 42 val**.*
 
 *Table 1 — Action & motion distribution over all 228,511 frames.*
 
-The joint steering × throttle distribution (Figure 6) shows the actual action space the planner must
-operate in: steering spans the full range while throttle clusters tightly forward.
-
-![Joint steering × throttle density](figures/fig_data_steer_throttle_2d.png)
-*Figure 6 — Joint steering × throttle action density over the whole dataset. Throttle is concentrated
-in a narrow forward band (median 0.084) while steering uses the full [−1,1] range — this motivates the
-forward-biased throttle grid used by the planner in §12.1.*
-
 ### 7.3. The data DOES contain corrective driving
 The data is **free-form manual driving** in a park, not driving down a single straight line. With
 **13,871 turning events** and continuous two-sided steering oscillation (Figure 7), the human driver
@@ -659,15 +649,8 @@ higher because straight-driving frames also have a clear minimum at steer ≈ 0.
 
 → The model does **NOT "steer weakly" offline**: not only is it **95% correct in sign**, the chosen
 angle is also **close** to the human's — **median deviation only 0.146** on the [−1,1] scale (i.e.
-~7% of the full range). The energy minimum is clear and on the right side, on **both axes**. Figure 19
-visualizes the energy landscape on a VAL session, and Figure 20 shows the planner tracking the human's
-steering.
-
-![Energy landscape / action sensitivity](figures/fig_energy_landscape.png)
-*Figure 19 — Energy landscape on a VAL session: (A) for one turning frame, the steering energy valley
-(argmin = ●) sits on the human's turn side; (B) over the session's turning frames the model's
-sign-correct rate is ~95%; (C) the whole-session "bright ridge" (model-preferred steering) tracks the
-human's steering through the turns.*
+~7% of the full range). The energy minimum is clear and on the right side, on **both axes**. Figure 20
+shows the planner tracking the human's steering on a concrete VAL session with actual numbers.
 
 ![Planner steering vs human](figures/fig_steer_tracking.png)
 *Figure 20 — The planner picks steering that matches the human (VAL session `162959`, goal ~0.9 s
@@ -704,16 +687,30 @@ Take a held-out VAL session. For **each real frame** t:
 5. Compare against the human's real `(steer, throttle)` at that frame; **sign-turn** =
    sign(model_steer) == sign(human_steer) on frames with |human_steer| > 0.15.
 
-```
-for each real frame t in the VAL session:
-    z_t   ← latent of frame t        (pre-encoded)
-    z_goal ← latent of frame t+d     (the marker ~0.9 s ahead)
-    s_t   ← state 12-D at t
-    for (steer, throttle) in the 15×9 grid:    # 135 combinations
-        roll d steps through the AC predictor (state via bicycle model) → ẑ
-        E[steer, throttle] ← mean L1(ẑ, z_goal)
-    (steer*, throttle*) ← argmin E             # the model picks BOTH axes
-    record: sign(steer*) == sign(human_steer)?  ;  throttle* > 0?
+```mermaid
+%%{init: {'theme':'base','themeVariables':{'fontSize':'14px','primaryColor':'#eaf2fb','primaryBorderColor':'#0275d8','lineColor':'#444'}}}%%
+flowchart TB
+  START(["frame t in VAL session"]):::start --> FETCH
+  FETCH["z_t ← pre-encoded latent of frame t
+z_goal ← pre-encoded latent of frame t+d  ⟵ goal ~0.9 s ahead
+s_t ← state 12-D at t"]:::data --> GRID
+  GRID(["for (steer, throttle) in 15×9 grid — 135 combinations"]):::loop --> ROLL
+  ROLL["roll d steps: AC Predictor + bicycle model → ẑ"]:::compute --> ENERGY
+  ENERGY["E[steer, throttle] = mean L1(ẑ, z_goal)"]:::compute --> CHECK
+  CHECK{"more\ncombinations?"}:::decision
+  CHECK -- yes --> ROLL
+  CHECK -- no --> ARGMIN
+  ARGMIN["(steer*, throttle*) = argmin E
+model picks both axes simultaneously"]:::result --> RECORD
+  RECORD["sign(steer*) == sign(human_steer)?  ·  throttle* > 0?"]:::result --> NEXT
+  NEXT(["next frame t"]):::start --> FETCH
+
+  classDef start    fill:#e8f5e9,stroke:#2e7d32,stroke-width:1.5px
+  classDef data     fill:#eaf2fb,stroke:#0275d8,stroke-width:1.5px
+  classDef loop     fill:#fff8e1,stroke:#f0ad4e,stroke-width:1.5px
+  classDef compute  fill:#f3eafb,stroke:#6a3d9a,stroke-width:1.5px
+  classDef decision fill:#fdecea,stroke:#d9534f,stroke-width:1.5px
+  classDef result   fill:#e8f5e9,stroke:#2e7d32,stroke-width:1.5px
 ```
 
 **Why it is called OPEN-LOOP:** the video **plays back the real human drive** — the model **only
@@ -765,10 +762,13 @@ low-energy valley on the correct (left) turn side, at a forward throttle — a c
 > When the loop is closed for real, it **tracks the route well over the first half, then veers off**.
 > Tuning hyperparameters only **moves the breakaway point, it does not remove it** → the limit is in
 > the model/data/descriptor, not the hyperparameters. (~10 runs, 1 environment, 0 runs reached the goal
-> → the result is **qualitative + mechanistic**, not large-scale statistics.) The analysis attributes
-> the **primary** cause to the **localization stage** (a descriptor not invariant to lighting/heading),
-> **NOT** to representation quality; additionally a **secondary control deadlock when the car stands
-> still was patched** (footnote §13.3).
+> → the result is **qualitative + mechanistic**, not large-scale statistics.) The analysis identifies
+> multiple causes: the **primary** cause is the **localization stage** (a descriptor not invariant to
+> lighting/heading), **NOT** representation quality (§13.2); attempted localization remedies all fell
+> short within the deadline (§13.3); a **structural standstill deadlock** (creep–stop–creep from
+> inference latency, patched with a throttle floor — §13.4) and **variable inference latency** (§13.5)
+> force the car to drive blind between decisions; **coarse sensor state and bicycle-model dynamics**
+> (§13.6) further limit closed-loop precision.
 
 ### 13.1. Deployment & raw results
 **Flow.** *Teach:* drive manually once, capturing a sequence of goal images + GPS along the route
@@ -779,7 +779,8 @@ is a taught route with its visual subgoals.
 ![Closed-loop deployment](figures/fig_deploy_loop.png)
 *Figure 23 — Closed-loop deployment: the onboard phone streams frame + GPS + rotvec over TCP to the PC,
 which runs the frozen V-JEPA encoder → AC predictor → CEM planner and returns a 2-byte [steer,
-throttle] to the ESP32; the car drives, producing the next view. (Diagram source: `figures/src/deploy_loop.dot`.)*
+throttle] back to the **phone over TCP**; the phone forwards it to the **ESP32 over USB**, which drives
+the servo and ESC. (Diagram source: `figures/src/deploy_loop.dot`.)*
 
 ![Taught route and subgoals](figures/fig_route_graph.png)
 *Figure 24 — A taught route and its visual subgoals (the images the local CEM chases in order): the
@@ -858,10 +859,64 @@ centered-cos < 0.1 → energy flat in steering → CEM loses gradient → full-l
 > cross-session — §16). **The deadline-compatible fix = re-teach in the SAME session** (the descriptor
 > is very good when lighting is close).
 
-### 13.3. Footnote — a secondary control deadlock when the car stands still (patched, NOT the primary cause)
-While debugging with the `--step` mode, in addition to the primary cause (A) we hit a **secondary**
-issue: when the car is **standing still** the `E(steer)` landscape is also flat — but for a **dynamics**
-reason, not a descriptor reason.
+### 13.3. Attempted remedies for the localization collapse (all insufficient within the deadline)
+
+After identifying cause A, several remedies were tested. All reduced the symptom partially but did not
+eliminate the root cause (descriptor sensitivity to lighting/heading change):
+
+1. **Tuning the cosine threshold** (the cutoff below which the goal is considered "lost"). Lowering it
+   → the car pops to the next goal too eagerly on a false match; raising it → the car stays locked on a
+   collapsed goal. Moving the threshold only shifts *when* the collapse manifests, not *whether* it
+   happens. The breakaway point moves to a different subgoal — the car still veers.
+
+2. **Teaching and running in the same session, close in time.** This works: 66% of ticks have cos > 0.3
+   when teach and run are close in time vs 0% when lighting shifts (§13.2, Figure 26). However it
+   constrains operation to a narrow time window (teach, then run immediately) — the general case (teach
+   once, re-run any time) is not solved.
+
+3. **GPS-gated goal-popping** (advance to the next subgoal when GPS distance to marker < threshold
+   rather than waiting for cos > threshold). The 1 Hz GPS and ~0.44 m noise cause erratic triggering:
+   the pop fires before the car has reached the marker, or fails to fire because the GPS fix drifts.
+   Combined with heading uncertainty it does not reliably pop at the right moment.
+
+4. **CEM parameter sweeps** (N samples, K iterations, initial σ). These shift the breakaway point
+   (better coverage of the action space slightly delays the onset of flat landscape) but cannot fix the
+   root cause: once the localization cosine collapses, the goal energy is uniformly low across actions
+   → no parameter change rescues a flat landscape.
+
+The principled fix (a learned cross-session invariant descriptor — §16) was not completed before the
+deadline. The `--step` debugging mode was used to isolate each failure, but all failures reproduce in
+the continuous live loop (cause A is structural, not a mode artifact).
+
+### 13.4. Standstill deadlock — a structural problem in any latency-limited loop (patched)
+
+This is **not** an artifact of the `--step` debugging mode; it is a **structural issue** in any
+closed-loop run where inference latency is significant (§13.5). Because each CEM tick takes ~0.5–1 s,
+the car cannot maintain continuous motion: it **lurches forward with the last command, then decelerates
+and stops** while the next plan is computed. The resulting pattern is a **creep–stop–creep–stop** cycle.
+During the stopped moments the `E(steer)` landscape goes flat for a **dynamics** reason (not a
+descriptor reason), producing garbage steering that compounds the overall failure.
+
+**Mechanism (simple).** The car dynamics: `yaw_rate = k_yaw · steer · speed` (§10). When speed ≈ 0,
+**steering does not rotate the scene**, so the predictor (correctly) makes **every steering angle yield
+almost the same scene** → sweeping steer creates no energy difference → flat. In other words: **a
+stationary car has nothing to "steer toward"** — the flatness is *because the car is stopped*, not
+because the scene is unfamiliar or the model is poor.
+
+**Single-variable check** (`scripts/probe_speed_confound.py`, **same scene & goal**, only changing the
+motion state): when the car is **moving** the `E(steer)` contrast = **0.335**; when forced
+**standing-still throughout** it drops to **0.088** — collapses **~3.8×** just because the car is
+stopped, with no scene change at all. (Live measurement: throttle ≥ 0.07 → contrast 0.2–0.57;
+throttle < 0.06 → flat 0.01–0.02.)
+
+**The deadlock cycle.** The CEM throttle box `[0, 0.10]` contains a static-friction dead zone
+`[0, 0.06)`: CEM picks a low throttle → car does not move → speed = 0 → landscape flat → garbage
+steering → car stays put → next tick: same. The **patch** is a **throttle floor `TMIN = 0.07`**
+(forcing the car to always roll above the dead zone) → the steering landscape revives between ticks.
+After the patch the car drives but **still veers off at cause A** — so A is the primary bottleneck; the
+standstill deadlock is a secondary (but real and recurring) structural issue that the throttle floor
+only partially mitigates: the car still stops momentarily at each tick, just less deeply into the dead
+zone.
 
 **Mechanism (simple).** The car dynamics: `yaw_rate = k_yaw · steer · speed` (§10). When speed ≈ 0,
 **steering does not rotate the scene**, so the predictor (correctly) makes **every steering angle yield
@@ -882,7 +937,50 @@ a **static-friction dead zone** `[0, 0.06)`: CEM picks a low throttle → the ca
 This is only a **(control-mode) implementation bug that was fixed**; **after the patch the car drives
 but still veers off at cause A** — so A is the real bottleneck, B is only a footnote.
 
-### 13.4. Why it cannot recover once it has veered (relation to A)
+### 13.5. Variable inference latency: the car drives blind between decisions
+
+A structural constraint that fundamentally limits closed-loop quality, independent of the planner's
+quality: **the control loop is not real-time**. One CEM tick costs **≈ 0.5 s (32 samples / 1 iteration)**
+at minimum; a denser search (256/2) costs **≈ 5.5 s** (Table 7 bench). During that entire compute
+round-trip — phone TCP stream → PC encode → CEM → action → ESP32 — **the car drives blind** with
+whatever the last command was.
+
+- **Stale-state planning.** The bicycle model in CEM integrates forward from the *current* state
+  (speed, heading). But "current" is already **0.5–1.5 s stale** by the time the action is computed
+  and acted upon. At 1 m/s walking pace this means the car is **0.5–1.5 m ahead** of where the model
+  thinks it is — so the planned action is optimal for a past position, not the present one.
+- **Aperiodic loop.** TCP buffering, GPU scheduling, and variable CEM budget (the number of valid
+  samples varies per tick) all make the inter-tick interval **non-constant**. The bicycle model
+  integrates a fixed `dt`; any mismatch between assumed and real `dt` accumulates heading error.
+- **Latency × veering interaction.** Once the localization collapse (§13.2) begins pushing the car
+  off-route, a 0.5–1 s dead-time between corrections gives the car **0.5–1 m of uncontrolled drift**
+  per cycle, rapidly compounding the off-route displacement.
+- **Root cause.** ViT-L cannot run on the phone → off-board GPU required → TCP round-trip latency
+  unavoidable with this architecture. On-board inference (a lighter encoder or NPU quantization) would
+  reduce dead-time to < 50 ms, but is outside the current hardware budget.
+
+### 13.6. State approximation: bicycle model vs. proprioception
+
+Meta's V-JEPA 2-AC runs on a robot arm with **7-D sub-mm proprioception** (exact Cartesian pose +
+joint angles sampled at the servo controller frequency). The arm's CEM plans in the *exact* current
+state. Our car's state at inference time is fundamentally coarser:
+
+- **Speed from GPS at 1 Hz** (then interpolated), with ~0.44 m position noise → speed estimate is
+  delayed and smoothed, not instantaneous.
+- **Heading from phone IMU** (gyro integration + magnetometer). The phone compass is unreliable
+  outdoors near the brushless motor and ESC (strong magnetic interference) — large heading errors were
+  observed when attempting geometric heading-following.
+- **No absolute position at inference time** (only coarse GPS for goal-popping, not for control).
+- **Bicycle model** (`yaw_rate = k_yaw · steer · speed`) is a linearized kinematic approximation:
+  it assumes no tire slip, flat terrain, and constant drag coefficients. A real RC car on outdoor
+  gravel/grass has significant slip, load transfer on bumps, and nonlinear tire behavior.
+- **Consequence.** The CEM rolls forward an imprecise state through an imprecise model — so even when
+  the energy landscape is clear, the action that *actually* moves the car in the right direction can
+  deviate from what the bicycle model predicts. By contrast, Meta's arm has exact state → exact
+  dynamics → CEM explores the real state space accurately. This gap is not a failure of the V-JEPA
+  representation; it is a **sensor + dynamics modeling gap** inherent to the current mobile rig.
+
+### 13.7. Why it cannot recover once it has veered (relation to A)
 Teach&repeat only captures goal images **along one path** (during teaching the car is in the middle of
 the route). When the car **veers out of the taught corridor**, the live image falls into a region *never
 captured as a marker* → the cosine to the next marker drops (exactly mechanism A) → **there is no valid
@@ -892,13 +990,16 @@ back when off-route**, i.e. a consequence of the *teach-once-down-the-middle* me
 collapse (A), not "the driving data lacks recovery". (A latent-level remedy — token-shift augmentation —
 is discussed in §16 as future work.)
 
-### 13.5. Comparison with Meta (V-JEPA 2-AC)
+### 13.8. Comparison with Meta (V-JEPA 2-AC)
 - **Meta (robot arm):** a fixed tabletop scene, actions cause large + immediate scene changes, **no**
   heading / lighting / lateral offset to deal with. Meta's "cm-accurate" claim matches the arm's
-  **proprioception** (**a different measurement**), not "a more accurate world model".
-- **Our car (outdoor):** action → small scene change + **cosine-localization-dropout** (lighting/heading
-  shift between teach and run) → **far harder on robustness**. Same architecture family; the gap is not
-  in the representation but in **localization robustness** under real domain shift.
+  **sub-mm proprioception** (**a different measurement** — exact Cartesian pose, not a world-model
+  accuracy claim), not "a more accurate world model". CEM plans in the exact current state.
+- **Our car (outdoor):** action → small scene change + **cosine-localization-dropout** (§13.2,
+  lighting/heading shift between teach and run) + **0.5–1 s blind dead-time per tick** (§13.5) +
+  **coarse GPS/IMU state and bicycle-model dynamics** (§13.6) → **far harder on robustness than a
+  fixed tabletop**. Same architecture family; the gap is not in the representation but in
+  **localization robustness** under real domain shift, compounded by sensor + latency constraints.
 
 ---
 
@@ -1109,6 +1210,33 @@ flowchart LR
   classDef train fill:#eaf2fb,stroke:#0275d8,stroke-width:2px;
   class ENC frozen;
   class PRED train;
+```
+
+**Algorithm — Open-loop planner (§12.1) (`open_loop_algo.mmd`):**
+```mermaid
+%%{init: {'theme':'base','themeVariables':{'fontSize':'14px','primaryColor':'#eaf2fb','primaryBorderColor':'#0275d8','lineColor':'#444'}}}%%
+flowchart TB
+  START(["frame t in VAL session"]):::start --> FETCH
+  FETCH["z_t ← pre-encoded latent of frame t
+z_goal ← pre-encoded latent of frame t+d  ⟵ goal ~0.9 s ahead
+s_t ← state 12-D at t"]:::data --> GRID
+  GRID(["for (steer, throttle) in 15×9 grid — 135 combinations"]):::loop --> ROLL
+  ROLL["roll d steps: AC Predictor + bicycle model → ẑ"]:::compute --> ENERGY
+  ENERGY["E[steer, throttle] = mean L1(ẑ, z_goal)"]:::compute --> CHECK
+  CHECK{"more\ncombinations?"}:::decision
+  CHECK -- yes --> ROLL
+  CHECK -- no --> ARGMIN
+  ARGMIN["(steer*, throttle*) = argmin E
+model picks both axes simultaneously"]:::result --> RECORD
+  RECORD["sign(steer*) == sign(human_steer)?  ·  throttle* > 0?"]:::result --> NEXT
+  NEXT(["next frame t"]):::start --> FETCH
+
+  classDef start    fill:#e8f5e9,stroke:#2e7d32,stroke-width:1.5px
+  classDef data     fill:#eaf2fb,stroke:#0275d8,stroke-width:1.5px
+  classDef loop     fill:#fff8e1,stroke:#f0ad4e,stroke-width:1.5px
+  classDef compute  fill:#f3eafb,stroke:#6a3d9a,stroke-width:1.5px
+  classDef decision fill:#fdecea,stroke:#d9534f,stroke-width:1.5px
+  classDef result   fill:#e8f5e9,stroke:#2e7d32,stroke-width:1.5px
 ```
 
 **Figure 16 — Meta V-JEPA 2-AC (`arch_meta.mmd`):**
