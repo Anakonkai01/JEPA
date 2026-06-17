@@ -117,7 +117,7 @@ robustness, not the world model.*
   quality: the **localization descriptor** (mean-pooled latent + cosine) is **not invariant** to
   lighting + heading changes between teach time and run time → image matching collapses → the goal
   becomes indistinguishable → CEM loses direction. (A secondary control deadlock when the car is
-  standing still was also found and patched with a throttle floor — see the footnote in §13.3.)
+  standing still was also found and patched with a throttle floor — see §13.4.)
 
 **Contributions.**
 1. **An experiment of the V-JEPA 2 family on a MOBILE robot (RC car)** — Meta published mainly on
@@ -384,7 +384,7 @@ The data is **free-form manual driving** in a park, not driving down a single st
 **13,871 turning events** and continuous two-sided steering oscillation (Figure 7), the human driver
 **continuously corrects** left/right. This matters for the closed-loop analysis (§13): **the training
 set does not lack corrective behaviour** — what is missing at *deploy* time is something else (see
-§13.4).
+§13.7).
 
 ![Two-sided steering time series](figures/fig_data_steer_timeseries.png)
 *Figure 7 — A typical session: steering (purple) oscillates two-sided continuously, alongside throttle
@@ -560,7 +560,7 @@ training log (wandb) plus the `val` value stored in the checkpoint.*
 - **CarDynamics (bicycle model)** [8]: integrate `[x, y, heading, speed]` from `[steer, throttle]`;
   coefficients fit from real car data: `k_thr=1.588, k_drag=0.078, k_yaw=0.088`. **One important
   physical point:** `yaw_rate = k_yaw · steer · speed` → **speed = 0 ⇒ steering produces no yaw**
-  (relevant to the footnote in §13.3).
+  (relevant to §13.4).
 
 ---
 
@@ -1073,7 +1073,7 @@ and **close in magnitude** (steering deviation ~0.12, throttle deviation ~0.03),
 forward throttle 92% — on held-out video (open-loop). However, (Tier 3) the outdoor closed-loop
 deployment **veers off** — and the quantitative analysis attributes the **primary** cause to the
 **localization stage (a pooled-cosine descriptor not invariant to lighting/heading)**, **NOT** to
-representation quality (a secondary standstill control deadlock was patched, §13.3). Because the data was
+representation quality (a secondary standstill control deadlock was patched, §13.4). Because the data was
 collected and measured by us, we present this as **an experiment of the V-JEPA 2 family on a MOBILE
 robot** (a harder robustness regime than a robot arm) together with **a mechanistic failure analysis**:
 with the same strong representation, the gap between "good latent prediction + expert-matching offline
@@ -1101,7 +1101,7 @@ PYTHONPATH=src python scripts/plot_transfer.py            # 3-step transfer (1.0
 # TIER 2: joint open-loop planner (demo + accuracy) + steering-tracking figure
 PYTHONPATH=src python scripts/demo_precompute.py <session> -d 4
 PYTHONPATH=src python scripts/plot_steer_tracking.py
-# §13.3 footnote: standstill ablation (speed=0)
+# §13.4 standstill ablation (speed=0)
 PYTHONPATH=src python scripts/probe_speed_confound.py -d 4 --n-windows 200
 # §13.2 (cross-lighting localization): read from real-run logs logs/infer_20260613_*.log (cos>0.3 per tick)
 # Report figures (regenerate every PNG with English labels):
@@ -1135,7 +1135,7 @@ python scripts/plot_closed_loop.py logs/infer_20260613_171912.log --out docs/rep
   +0.090), **median \|Δthrottle\| 0.033**; joint contrast median **0.52**.
 - **§13.2 (cross-lighting localization):** from real-run logs — same-session-near-time **66% ticks
   cos>0.3** vs teach/run lighting-shifted **0% ticks cos>0.3**.
-- **§13.3 footnote (standstill deadlock):** `probe_speed_confound.py` ablation (200 turning VAL windows,
+- **§13.4 (standstill deadlock):** `probe_speed_confound.py` ablation (200 turning VAL windows,
   same scene): contrast E(steer) **0.335 (moving) → 0.088 (standing still, ×3.8)**; fix = throttle floor
   TMIN=0.07.
 
