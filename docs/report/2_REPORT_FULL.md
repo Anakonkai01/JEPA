@@ -76,7 +76,8 @@ action is generated from the visual goal, so changing the goal changes the behav
 - **Table 5** — Per-axis action sensitivity (§11.4)
 - **Table 6** — Tier-2 joint open-loop planner results (§12.2)
 - **Table 7** — Closed-loop runs (raw outcomes) (§13.1)
-- **Table 8** — File map (Appendix §18.4)
+- **Table 8** — Localization descriptor variants tried (§13.3)
+- **Table 9** — File map (Appendix §18.4)
 
 ---
 
@@ -862,7 +863,45 @@ centered-cos < 0.1 → energy flat in steering → CEM loses gradient → full-l
 ### 13.3. Attempted remedies for the localization collapse (all insufficient within the deadline)
 
 After identifying cause A, several remedies were tested. All reduced the symptom partially but did not
-eliminate the root cause (descriptor sensitivity to lighting/heading change):
+eliminate the root cause (descriptor sensitivity to lighting/heading change). We group them into
+**(A) replacing the descriptor itself** and **(B) heuristic / gating fixes**.
+
+**(A) Alternative localization descriptors.** The pooled-cosine fails two ways: (i) *saturation* — in a
+self-similar park the mean-pooled vector is dominated by a large common "outdoor scene" component, so
+the cosine between *different* places is still 0.94–0.97 ("every place looks alike"); (ii) *lighting
+sensitivity* — a sun→cloud change rotates the whole pooled vector, dropping the cosine to the correct
+marker even at the same place. Before resorting to heuristics we measured candidate descriptors
+**offline** with three probes: `probe_reach.py` (encode a route's images in capture order, print the
+pairwise similarity matrix per metric — a good descriptor has the diagonal clearly separated from
+off-diagonal, is monotone in `|i−j|`, and its nearest neighbour is the *adjacent* frame);
+`probe_route_sim.py --cross-sessions` (pull old human-driven frames whose GPS+heading land on each
+subgoal — "a live frame from a different day" — and measure teach-vs-other-day similarity at the exact
+marker, a direct lighting domain-shift test); and `probe_seqslam_lighting.py` (sequence matching vs
+single-frame, scored *geometrically* as localize-error in metres / %<tol over sequence lengths
+`Ls ∈ {1,5,10,20}`).
+
+| Descriptor | Idea | Result / status |
+|---|---|---|
+| plain pooled cosine | mean-pool 576→1024, L2-normalize, cosine | baseline; **saturates** (0.94–0.97 across *different* places) + lighting-sensitive |
+| centered cosine | subtract the route's mean pooled vector, then cosine | de-saturates (near ≈ +0.5 / far ≈ −0.4); **deployed default**; still coarse + lighting-sensitive |
+| centered spatial-token | keep all 576 patches, center per patch-position, mean per-patch cosine | demands a *local* (layout) match → sharper; **deployed opt-in** (`--pop-spatial`); cosine scale differs |
+| patch-L1 (energy h=0) | mean \|Δ\| of LN'd patch tokens (the control-stage metric) | best place-separation, lighting-robust (<5%) — but is the *control* metric, not yet wired as the locator |
+| remove-top-PC | project out the top principal component (the global-lighting direction) | partial (probe only) |
+| whiten-shrink | whiten dims to unit variance with shrinkage, then cosine | partial (probe only) |
+| sequence matching (SeqSLAM) | match a velocity-constrained *sequence* with local-contrast normalization | literature fix for condition-invariance; **not wired into the live loop** before the deadline |
+
+*Table 8 — Localization descriptor variants tried (deployed vs probe-only).*
+
+**Key result:** every *single-frame* descriptor (centered, remove-top-PC, patch-L1) collapses to ~random
+(≈ 15% localize-±1) under a **cross-lighting** test (teach vs run at a different time). Centering /
+PC-removal / whitening / keeping-spatial all reduce *saturation* (helping same-session place
+discrimination) but do **not** remove the *cross-session lighting shift* — a deeper domain shift that a
+hand-crafted linear transform cannot cancel. Sequence matching is the most promising remaining direction
+but was not integrated + closed-loop-verified in time. This **reinforces the conclusion**: the principled
+fix is a *learned* lighting/heading-invariant descriptor (§16), not further hand-tuning of cosine
+variants.
+
+**(B) Heuristic / gating remedies.**
 
 1. **Tuning the cosine threshold** (the cutoff below which the goal is considered "lost"). Lowering it
    → the car pops to the next goal too eagerly on a false match; raising it → the car stays locked on a
@@ -917,25 +956,6 @@ After the patch the car drives but **still veers off at cause A** — so A is th
 standstill deadlock is a secondary (but real and recurring) structural issue that the throttle floor
 only partially mitigates: the car still stops momentarily at each tick, just less deeply into the dead
 zone.
-
-**Mechanism (simple).** The car dynamics: `yaw_rate = k_yaw · steer · speed` (§10). When speed ≈ 0,
-**steering does not rotate the scene**, so the predictor (correctly) makes **every steering angle yield
-almost the same scene** → sweeping steer creates no energy difference → flat. In other words: **a
-stationary car has nothing to "steer toward"** — the flatness here is *because the car is stopped*, not
-because the scene is unfamiliar or the model is poor.
-
-**Single-variable check** (`scripts/probe_speed_confound.py`, **same scene & goal**, only changing the
-motion state): when the car is **moving** the `E(steer)` contrast = **0.335**; when forced
-**standing-still throughout** it drops to **0.088** — i.e. **collapses ~3.8× just because the car is
-stopped**, with no scene change at all. (This matches the live measurement: throttle ≥ 0.07 → contrast
-0.2–0.57; throttle < 0.06 → flat 0.01–0.02.)
-
-**Root cause = a standstill deadlock & the patch.** The CEM throttle box `[0, 0.10]` happens to contain
-a **static-friction dead zone** `[0, 0.06)`: CEM picks a low throttle → the car does not move → speed =
-0 → the landscape goes flat → it outputs garbage steering → the car stays put. We patch this with a
-**throttle floor `TMIN = 0.07`** (forcing the car to always roll) → the steering landscape revives.
-This is only a **(control-mode) implementation bug that was fixed**; **after the patch the car drives
-but still veers off at cause A** — so A is the real bottleneck, B is only a footnote.
 
 ### 13.5. Variable inference latency: the car drives blind between decisions
 
@@ -1104,6 +1124,10 @@ PYTHONPATH=src python scripts/plot_steer_tracking.py
 # §13.4 standstill ablation (speed=0)
 PYTHONPATH=src python scripts/probe_speed_confound.py -d 4 --n-windows 200
 # §13.2 (cross-lighting localization): read from real-run logs logs/infer_20260613_*.log (cos>0.3 per tick)
+# §13.3 localization descriptor variants (cos / centered / spatial / patch-L1 / remove-PC / whiten / SeqSLAM)
+PYTHONPATH=src python scripts/probe_reach.py --dir data/routes/manual/<route>
+PYTHONPATH=src python scripts/probe_route_sim.py --route <route> --cross-sessions 3
+PYTHONPATH=src python scripts/probe_seqslam_lighting.py --auto-pairs 3 --with-patch
 # Report figures (regenerate every PNG with English labels):
 PYTHONPATH=src python scripts/plot_results_summary.py        # N1
 PYTHONPATH=src python scripts/plot_cross_lighting.py         # N2
@@ -1150,9 +1174,10 @@ python scripts/plot_closed_loop.py logs/infer_20260613_171912.log --out docs/rep
 | Open-loop demo (Tier 2) | `scripts/demo_precompute.py`, `scripts/demo_web.py`, `scripts/plot_steer_tracking.py` |
 | Planning | `src/jepa_wm/planning/cem.py`, `src/jepa_wm/planning/dynamics.py` |
 | Closed-loop (Tier 3) | `scripts/inference_loop.py`, `scripts/probe_speed_confound.py` |
+| Localization descriptors (Tier 3, §13.3) | `scripts/probe_reach.py`, `scripts/probe_route_sim.py`, `scripts/probe_seqslam_lighting.py`, `src/jepa_wm/nav/graph.py` |
 | Report figures | `scripts/plot_*.py`, `docs/report/figures/src/*.dot`, `docs/report/figures/fig_*.png` |
 
-*Table 8 — File map.*
+*Table 9 — File map.*
 
 ### 18.5. Figure sources (diagram code)
 The body shows the rendered PNGs (via graphviz). The equivalent **mermaid** source is kept here so the
